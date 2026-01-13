@@ -208,18 +208,20 @@ def teleop_loop(
     def create_transform(xyz, rpy):
         roll, pitch, yaw = rpy
         R = rpy_to_rotation(roll, pitch, yaw)
-        T = np.eye(4)`
+        T = np.eye(4)
         T[:3, :3] = R
         T[:3, 3] = xyz
         return T
 
     # 正向运动学函数
-    def forward_kinematics(joint_angles):
+    def forward_kinematics(joint_angles_deg):
         """
         根据关节角度计算末端位置和姿态
         joint_angles: 长度为6的列表，包含关节1-6的角度值
         返回：末端的位置(xyz)和姿态(四元数或rpy)
         """
+
+        joint_angles = np.deg2rad(joint_angles_deg)
         # 从URDF中提取的关节参数
         joint_params = [
             # joint 1: base -> shoulder
@@ -279,6 +281,8 @@ def teleop_loop(
         orientation_matrix = T_total[:3, :3]
         
         return position, orientation_matrix
+    
+
     while True:
         loop_start = time.perf_counter()
 
@@ -293,6 +297,12 @@ def teleop_loop(
         # Get teleop action
         raw_action = teleop.get_action()
         print(f"\n\nraw_action: {raw_action}")
+        position, orientation = forward_kinematics(list(raw_action.values()))
+        position = position.tolist()
+        print("末端位置：", position)
+        print(type(position))
+        print("末端姿态：")
+        print(orientation)
 
         # Process teleop action through pipeline
         teleop_action = teleop_action_processor((raw_action, obs))
@@ -304,14 +314,14 @@ def teleop_loop(
 
         robot_action_to_send.pop("gripper.pos",None)
 
-        slave_data = master_to_slave(robot_action_to_send)
-        print(f"\n\nslave_data: {slave_data}")
-
-
-
+        # slave_data = master_to_slave(robot_action_to_send)
+        # print(f"\n\nslave_data: {slave_data}")
 
         # Send processed action to robot (robot_action_processor.to_output should return dict[str, Any])
-        _ = robot.send_action(slave_data)
+        position = [i*3 for i in position]
+        position[2] = position[2] - 0.3
+        print(f"send_position: {position}")
+        _ = robot.send_action(position)
 
         if display_data:
             # Process robot observation through pipeline

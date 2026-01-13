@@ -77,24 +77,33 @@ class AuboI10Robot(Robot):
 
         return 0
     
-    def send_action(self, action: dict[str, Any]) -> [str, Any]:
-        import math
-        print(f"\n\naction: {action}")
-        for joint, value in action.items():
-            action[joint] = value * (math.pi / 180)
-        q = list(action.values())
-        q.insert(4, math.pi * 0.5)
+    # def send_action(self, action: dict[str, Any]) -> [str, Any]:
+    #     import math
+    #     print(f"\n\naction: {action}")
+    #     for joint, value in action.items():
+    #         action[joint] = value * (math.pi / 180)
+    #     q = list(action.values())
+    #     q.insert(4, math.pi * 0.5)
         
-        robot_name = self.robot_rpc_client.getRobotNames()[0]
+    #     robot_name = self.robot_rpc_client.getRobotNames()[0]
 
+    #     robot_interface = self.robot_rpc_client.getRobotInterface(robot_name)
+    #     robot_interface.getMotionControl().setSpeedFraction(0.95)
+    #     robot_interface.getMotionControl() \
+    #     .moveJoint(q, 80 * (math.pi / 180), 60 * (math.pi / 180), 0, 0)
+
+    #     ret = self.wait_arrival(robot_interface)
+    #     return q
+    def send_action(self, action):
+        robot_name = self.robot_rpc_client.getRobotNames()[0]
         robot_interface = self.robot_rpc_client.getRobotInterface(robot_name)
         robot_interface.getMotionControl().setSpeedFraction(0.95)
-        robot_interface.getMotionControl() \
-        .moveJoint(q, 80 * (math.pi / 180), 60 * (math.pi / 180), 0, 0)
-
+        action.append(-3.134)
+        action.append(0.004)
+        action.append(1.567)
+        robot_interface.getMotionControl().moveLine(action, 1.2, 0.25, 0, 0)
         ret = self.wait_arrival(robot_interface)
-        return q
-
+        return action
         
 
 
