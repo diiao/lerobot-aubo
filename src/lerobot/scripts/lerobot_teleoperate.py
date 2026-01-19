@@ -141,53 +141,6 @@ def teleop_loop(
     display_len = max(len(key) for key in teleop.action_features)
     start = time.perf_counter()
     
-    from typing import Dict, Tuple
-
-    def lerp_map(m: float, m1: float, m2: float, s1: float, s2: float, clamp: bool = True) -> float:
-        """
-        根据两点 (m1->s1), (m2->s2) 做线性映射。
-        clamp=True 时会把 m 限制在 [min(m1,m2), max(m1,m2)] 之间。
-        """
-        if clamp:
-            lo, hi = (m1, m2) if m1 < m2 else (m2, m1)
-            if m < lo: m = lo
-            if m > hi: m = hi
-
-        k = (s2 - s1) / (m2 - m1)
-        return s1 + (m - m1) * k
-
-
-    # 你给的 5 行对应关系：每行是 (m1, m2, s1, s2)
-    # 左侧为主臂(lero)，右侧为从臂(aubo)
-    MAPPINGS: Dict[str, Tuple[float, float, float, float]] = {
-        "shoulder_pan.pos":  (-100,  100,   91.93,  -97.69),
-        "shoulder_lift.pos": ( 100, -100,  -59.73,   73.75),
-        "elbow_flex.pos":    ( 100, -100,  157.50,  -62.81),
-        "wrist_flex.pos":    ( 100, -100,  -82.69,  141.77),
-        "wrist_roll.pos":    (-100,  100, -164.00,   42.17),
-    }
-    # MAPPINGS: Dict[str, Tuple[float, float, float, float]] = {
-    #     "shoulder_pan.pos":  (-60,  60,   91.93,  -97.69),
-    #     "shoulder_lift.pos": ( 60, -60,  -59.73,   73.75),
-    #     "elbow_flex.pos":    ( 60, -60,  157.50,  -62.81),
-    #     "wrist_flex.pos":    ( 60, -60,  -82.69,  141.77),
-    #     "wrist_roll.pos":    (-60,  60, -164.00,   42.17),
-    # }
-
-
-    def master_to_slave(master: Dict[str, float]) -> Dict[str, float]:
-        """
-        输入：主臂关节值（-100~100）
-        输出：从臂关节值（aubo角度/位置，单位按你表里的数值）
-        """
-        slave: Dict[str, float] = {}
-        for joint, (m1, m2, s1, s2) in MAPPINGS.items():
-            if joint not in master:
-                raise KeyError(f"Missing master joint: {joint}")
-            slave[joint] = lerp_map(master[joint], m1, m2, s1, s2, clamp=True)
-        return slave
-    
-
     # 工具函数：将rpy角度转换为旋转矩阵
     def rpy_to_rotation(roll, pitch, yaw):
         R_x = np.array([[1, 0, 0],
