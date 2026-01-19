@@ -55,7 +55,6 @@ import logging
 import time
 from dataclasses import asdict, dataclass
 from pprint import pformat
-import numpy as np
 
 import rerun as rr
 
@@ -79,7 +78,6 @@ from lerobot.robots import (  # noqa: F401
     omx_follower,
     reachy2,
     so_follower,
-    aubo_i10,
 )
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
@@ -106,7 +104,7 @@ class TeleoperateConfig:
     teleop: TeleoperatorConfig
     robot: RobotConfig
     # Limit the maximum frames per second.
-    fps: int = 100
+    fps: int = 60
     teleop_time_s: float | None = None
     # Display all cameras on screen
     display_data: bool = False
@@ -146,103 +144,8 @@ def teleop_loop(
         robot_observation_processor: An optional pipeline to process raw observations from the robot.
     """
 
-    display_len = max(len(key) for key in teleop.action_features)
+    display_len = max(len(key) for key in robot.action_features)
     start = time.perf_counter()
-    
-    # 工具函数：将rpy角度转换为旋转矩阵
-    def rpy_to_rotation(roll, pitch, yaw):
-        R_x = np.array([[1, 0, 0],
-                        [0, np.cos(roll), -np.sin(roll)],
-                        [0, np.sin(roll), np.cos(roll)]])
-        
-        R_y = np.array([[np.cos(pitch), 0, np.sin(pitch)],
-                        [0, 1, 0],
-                        [-np.sin(pitch), 0, np.cos(pitch)]])
-        
-        R_z = np.array([[np.cos(yaw), -np.sin(yaw), 0],
-                        [np.sin(yaw), np.cos(yaw), 0],
-                        [0, 0, 1]])
-        
-        return R_z @ R_y @ R_x
-
-    # 工具函数：创建齐次变换矩阵
-    def create_transform(xyz, rpy):
-        roll, pitch, yaw = rpy
-        R = rpy_to_rotation(roll, pitch, yaw)
-        T = np.eye(4)
-        T[:3, :3] = R
-        T[:3, 3] = xyz
-        return T
-
-    # 正向运动学函数
-    def forward_kinematics(joint_angles_deg):
-        """
-        根据关节角度计算末端位置和姿态
-        joint_angles: 长度为6的列表，包含关节1-6的角度值
-        返回：末端的位置(xyz)和姿态(四元数或rpy)
-        """
-
-        joint_angles = np.deg2rad(joint_angles_deg)
-        # 从URDF中提取的关节参数
-        joint_params = [
-            # joint 1: base -> shoulder
-            {"origin_xyz": [0.0207909, -0.0230745, 0.0948817],
-            "origin_rpy": [-3.14159, 6.03684e-16, 1.5708],
-            "axis": [0, 0, 1]},
-            
-            # joint 2: shoulder -> upper_arm
-            {"origin_xyz": [-0.0303992, -0.0182778, -0.0542],
-            "origin_rpy": [-1.5708, -1.5708, 0],
-            "axis": [0, 0, 1]},
-            
-            # joint 3: upper_arm -> lower_arm
-            {"origin_xyz": [-0.11257, -0.028, 2.46331e-16],
-            "origin_rpy": [-1.22818e-15, 5.75928e-16, 1.5708],
-            "axis": [0, 0, 1]},
-            
-            # joint 4: lower_arm -> wrist
-            {"origin_xyz": [-0.1349, 0.0052, 1.65232e-16],
-            "origin_rpy": [3.2474e-15, 2.86219e-15, -1.5708],
-            "axis": [0, 0, 1]},
-            
-            # joint 5: wrist -> gripper
-            {"origin_xyz": [0, -0.0611, 0.0181],
-            "origin_rpy": [1.5708, 1.5708, 3.14159],
-            "axis": [0, 0, 1]},
-            
-            # joint 6: gripper -> jaw
-            {"origin_xyz": [0.0202, 0.0188, -0.0234],
-            "origin_rpy": [1.5708, -5.14108e-17, -1.38655e-14],
-            "axis": [0, 0, 1]}
-        ]
-        
-        # 初始化总变换矩阵为单位矩阵
-        T_total = np.eye(4)
-        
-        # 计算每个关节的变换并连乘
-        for i in range(6):
-            params = joint_params[i]
-            angle = joint_angles[i]
-            
-            # 关节固定变换（来自origin）
-            T_origin = create_transform(params["origin_xyz"], params["origin_rpy"])
-            
-            # 关节旋转变换
-            R_joint = rpy_to_rotation(0, 0, angle)  # 绕z轴旋转
-            T_joint = np.eye(4)
-            T_joint[:3, :3] = R_joint
-            
-            # 合并变换
-            T_total = T_total @ T_origin @ T_joint
-        
-        # 提取末端位置
-        position = T_total[:3, 3]
-        
-        # 提取末端姿态（旋转矩阵）
-        orientation_matrix = T_total[:3, :3]
-        
-        return position, orientation_matrix
-    
 
     while True:
         loop_start = time.perf_counter()
@@ -251,38 +154,19 @@ def teleop_loop(
         # Not really needed for now other than for visualization
         # teleop_action_processor can take None as an observation
         # given that it is the identity processor as default
-
         obs = robot.get_observation()
-        obs = {"test":111}
 
         # Get teleop action
         raw_action = teleop.get_action()
-        print(f"\n\nraw_action: {raw_action}")
-        position, orientation = forward_kinematics(list(raw_action.values()))
-        position = position.tolist()
-        print("末端位置：", position)
-        print(type(position))
-        print("末端姿态：")
-        print(orientation)
 
         # Process teleop action through pipeline
         teleop_action = teleop_action_processor((raw_action, obs))
-        # print(f"\n\nteleop_action: {teleop_action}")
 
         # Process action for robot through pipeline
         robot_action_to_send = robot_action_processor((teleop_action, obs))
-        # print(f"\n\nrobot_action_to_send: {robot_action_to_send}")
 
-        robot_action_to_send.pop("gripper.pos",None)
-
-        # slave_data = master_to_slave(robot_action_to_send)
-        # print(f"\n\nslave_data: {slave_data}")
-
-        # Send processed action to robot (robot_action_processor.to_output should return dict[str, Any])
-        position = [i*3 for i in position]
-        position[2] = position[2] - 0.3
-        print(f"send_position: {position}")
-        _ = robot.send_action(position)
+        # Send processed action to robot (robot_action_processor.to_output should return RobotAction)
+        _ = robot.send_action(robot_action_to_send)
 
         if display_data:
             # Process robot observation through pipeline
