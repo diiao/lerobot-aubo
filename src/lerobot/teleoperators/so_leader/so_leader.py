@@ -144,6 +144,7 @@ class SOLeader(Teleoperator):
         action = {f"{motor}.pos": val for motor, val in action.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read action: {dt_ms:.1f}ms")
+        logger.debug(f"raw_action: {action}")
         return action
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
