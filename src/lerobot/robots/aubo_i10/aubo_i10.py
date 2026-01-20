@@ -12,6 +12,7 @@ from lerobot.processor import (
 
 from .config_aubo_i10 import AuboI10Config
 import pyaubo_sdk, time, math
+import logging
 
 class AuboI10Robot(Robot):
     config_class = AuboI10Config
@@ -28,7 +29,12 @@ class AuboI10Robot(Robot):
         # 全局变量，供其他函数使用
         self.robot_name = None
         self.robot_interface = None
-
+        #软爪控制相关属性#################################################################################################################
+        self.softpaws_open_pin = 4  # 数字输出DO04
+        self.softpaws_close_pin = 5  # 数字输出DO05
+        self.is_softpaws_open = False
+        self.is_softpaws_close = False
+        self.io_control = None
 
     @property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -56,6 +62,10 @@ class AuboI10Robot(Robot):
                 print(f"{'='*8} Robot status {'='*8}")
                 self.get_robot_status()
                 print(f"{'='*8} End robot status {'='*8}")
+                 # 初始化IO控制接口##################################################################################################
+
+                self.io_control = self.robot_interface.getIoControl()
+                print(f"软爪控制初始化完成 - 打开引脚: {self.softpaws_open_pin}, 关闭引脚: {self.softpaws_close_pin}")
 
     @property
     def is_calibrated(self) -> bool:
@@ -81,11 +91,57 @@ class AuboI10Robot(Robot):
             action["ee.wy"],
             action["ee.wz"],
         ]
-        gripper = action["ee.gripper_pos"] # TODO(Rory): make gripper useful
-        self.robot_interface.getMotionControl().moveLine(position, 3, 0.25, 0, 0)
+        # ============ 软爪控制部分 ============###############################################################################
+        #gripper = action["ee.gripper_pos"] # TODO(Rory): make gripper useful
+        # 从action中获取夹爪位置（百分比 0-100）
+        print(action)
+        gripper_pos = action.get("ee.gripper_pos", 0)
+        print(f"\n发送动作 - 夹爪位置: {gripper_pos}%")
+        # 根据夹爪位置控制软爪
+        self._control_softpaws_based_on_gripper(gripper_pos)
+        # ============ 软爪控制部分结束 ============#########################################################
+        self.robot_interface.getMotionControl().moveLine(position, 1.2, 0.25, 0, 0)
         _ = self.wait_arrival(self.robot_interface)
         return action
-        
+########################################################################
+    def _control_softpaws_based_on_gripper(self, gripper_pos: float):
+    
+        try:
+            if gripper_pos > 60:
+                print("leader夹爪超过60度，打开aubo夹爪")
+                if hasattr(self, 'softpaws_open'):
+                    # 确保软爪处于open状态，如果当前是close状态则先关闭close
+                    if hasattr(self, 'is_softpaws_close') and self.is_softpaws_close:
+                        self.softpaws_close_off()
+                    # 如果软爪当前不是open状态，则执行open
+                    if hasattr(self, 'is_softpaws_open') and not self.is_softpaws_open:
+                        self.softpaws_open()
+                else:
+                    print("aubo_i10没有软爪控制功能")
+                    
+            elif gripper_pos < 20:
+                print("Leader 夹爪关闭到20度以下，关闭 aubo 软爪")
+                if hasattr(self, 'softpaws_close'):
+                    # 确保软爪处于close状态，如果当前是open状态则先关闭open
+                    if hasattr(self, 'is_softpaws_open') and self.is_softpaws_open:
+                        self.softpaws_open_off()
+                    # 如果软爪当前不是close状态，则执行close
+                    if hasattr(self, 'is_softpaws_close') and not self.is_softpaws_close:
+                        self.softpaws_close()
+                else:
+                    print("警告：aubo robot 没有软爪控制方法")
+                    
+            else:
+                # 20-60度之间，关闭所有夹爪状态
+                print("Leader 夹爪在20-60度之间，关闭aubo软爪所有状态")
+                #if hasattr(robot, 'softpaws_open_off') and hasattr(robot, 'is_softpaws_open') and robot.is_softpaws_open:
+                self.softpaws_open_off()
+                #if hasattr(robot, 'softpaws_close_off') and hasattr(robot, 'is_softpaws_close') and robot.is_softpaws_close:
+                self.softpaws_close_off()
+            
+        except Exception as e:
+            print(f"控制软爪时发生错误: {e}")
+##############################################################################
     def disconnect(self) -> None:
         self.robot_rpc_client.logout()  # 退出登录
         self.robot_rpc_client.disconnect()  # 断开连接
@@ -181,3 +237,61 @@ class AuboI10Robot(Robot):
         # base_force_offset = self.robot_interface.getRobotConfig().getBaseForceOffset()
         # print("底座力矩偏移", base_force_offset)
         # 接口调用: 获取安全参数校验码 CRC
+    ###############################################################################################
+    def softpaws_open(self):
+        try:
+            if self.io_control is None:
+                print("错误: IO控制接口未初始化，请先调用connect方法")
+                return False
+            if self.is_softpaws_close:
+                self.softpaws_close_off()
+                time.sleep(0.05)
+            self.io_control.setStandardDigitalOutput(self.softpaws_open_pin, True)
+            self.is_softpaws_open = True
+            print("softpaws is open")
+            return True
+        except Exception as e:
+            print(f"打开软爪失败: {e}")
+            return False
+
+    def softpaws_open_off(self):
+        try:
+            if self.io_control is None:
+                print("错误: IO控制接口未初始化，请先调用connect方法")
+                return False
+            self.io_control.setStandardDigitalOutput(self.softpaws_open_pin, False)
+            self.is_softpaws_open = False
+            print("softpaws open off")
+            return True
+        except Exception as e:
+            print(f"关闭软爪失败: {e}")
+            return False
+            
+    def softpaws_close(self):
+        try:
+            if self.io_control is None:
+                print("错误: IO控制接口未初始化，请先调用connect方法")
+                return False
+            if self.is_softpaws_open:
+                self.softpaws_open_off()
+                time.sleep(0.05)
+            self.io_control.setStandardDigitalOutput(self.softpaws_close_pin, True)
+            self.is_softpaws_close = True
+            print("softpaws is close")
+            return True
+        except Exception as e:
+            print(f"关闭软爪失败: {e}")
+            return False
+        
+    def softpaws_close_off(self):
+        try:
+            if self.io_control is None:
+                print("错误: IO控制接口未初始化，请先调用connect方法")
+                return False
+            self.io_control.setStandardDigitalOutput(self.softpaws_close_pin, False)
+            self.is_softpaws_close = False
+            print("softpaws close off")
+            return True
+        except Exception as e:
+            print(f"关闭软爪失败: {e}")
+            return False
