@@ -49,13 +49,13 @@ class AuboI10Robot(Robot):
             print("RPC客户端连接成功!")
             self.robot_rpc_client.login("aubo", "123456")  # 接口调用: 登录
             if self.robot_rpc_client.hasLogined():
-                print(f"{'='*8} Robot status {'='*8}")
-                self.get_robot_status()
-                print(f"{'='*8} End robot status {'='*8}")
                 print("RPC客户端登录成功!")
                 # 登录成功后初始化全局变量
                 self.robot_name = self.robot_rpc_client.getRobotNames()[0]
                 self.robot_interface = self.robot_rpc_client.getRobotInterface(self.robot_name)
+                print(f"{'='*8} Robot status {'='*8}")
+                self.get_robot_status()
+                print(f"{'='*8} End robot status {'='*8}")
 
     @property
     def is_calibrated(self) -> bool:
@@ -72,7 +72,7 @@ class AuboI10Robot(Robot):
         return {"test": 1}
     
     def send_action(self, action: RobotAction) -> RobotAction:
-        self.robot_interface.getMotionControl().setSpeedFraction(0.95)
+        self.robot_interface.getMotionControl().setSpeedFraction(0.85)
         position = [
             action["ee.x"],
             action["ee.y"],
@@ -82,7 +82,7 @@ class AuboI10Robot(Robot):
             action["ee.wz"],
         ]
         gripper = action["ee.gripper_pos"] # TODO(Rory): make gripper useful
-        self.robot_interface.getMotionControl().moveLine(position, 1.2, 0.25, 0, 0)
+        self.robot_interface.getMotionControl().moveLine(position, 3, 0.25, 0, 0)
         _ = self.wait_arrival(self.robot_interface)
         return action
         

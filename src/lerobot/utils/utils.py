@@ -130,7 +130,7 @@ def is_amp_available(device: str):
 def init_logging(
     log_file: Path | None = None,
     display_pid: bool = False,
-    console_level: str = "INFO",
+    console_level: str = "DEBUG",
     file_level: str = "DEBUG",
     accelerator: Accelerator | None = None,
 ):

@@ -1,4 +1,3 @@
-from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 from lerobot.robots.aubo_i10 import AuboI10Config, AuboI10Robot
 
 from lerobot.model.kinematics import RobotKinematics
@@ -12,21 +11,20 @@ from lerobot.processor.converters import (
     transition_to_robot_action,
     robot_action_observation_to_transition
 )
+from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.utils import init_logging
 
 import time
 import logging
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(name)s - %(levelname)s - %(message)s"
-)
+
 
 FPS = 30
 
 def main():
+    init_logging()
     leader_config = SO101LeaderConfig(
         port="/dev/ttyACM0", id="so101_leader", use_degrees=True
     )
@@ -38,7 +36,7 @@ def main():
     follower = AuboI10Robot(follower_config)
 
     leader_kinematics_solver = RobotKinematics(
-        urdf_path="so101_new_calib.urdf",
+        urdf_path="./SO101/so101_new_calib.urdf",
         target_frame_name="gripper_frame_link",
         joint_names=list(leader.bus.motors.keys())
     )
@@ -77,15 +75,15 @@ def main():
 
         # Get teleop observation
         leader_joints_obs = leader.get_action()
-        logger.debug(f"leader joints obs: {leader_joints_obs}")
+        logging.info(f"leader joints obs: {leader_joints_obs}")
 
         # teleop joints -> teleop EE action
         leader_ee_act = leader_to_ee(leader_joints_obs)
-        logger.debug(f"leader EE act: {leader_ee_act}")
+        logging.debug(f"leader EE act: {leader_ee_act}")
 
         # teleop EE -> follower EE
         follower_ee_act = leader_ee_to_follower_ee(leader_ee_act)
-        logger.debug(f"follower EE act: {follower_ee_act}")
+        logging.debug(f"follower EE act: {follower_ee_act}")
 
         # Send action to robot
         _ = follower.send_action(follower_ee_act)
