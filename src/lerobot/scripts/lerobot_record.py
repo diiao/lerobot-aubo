@@ -107,6 +107,7 @@ from lerobot.robots import (  # noqa: F401
     reachy2,
     so_follower,
     unitree_g1,
+    aubo_i10  #加
 )
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
@@ -401,6 +402,7 @@ def record_loop(
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
     init_logging()
+    logging.getLogger().setLevel(logging.WARNING)
     logging.info(pformat(asdict(cfg)))
     if cfg.display_data:
         init_rerun(session_name="recording", ip=cfg.display_ip, port=cfg.display_port)

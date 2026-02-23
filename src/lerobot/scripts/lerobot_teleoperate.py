@@ -78,6 +78,7 @@ from lerobot.robots import (  # noqa: F401
     omx_follower,
     reachy2,
     so_follower,
+    aubo_i10 #加
 )
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
