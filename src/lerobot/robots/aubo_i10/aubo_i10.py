@@ -1,71 +1,84 @@
-from dataclasses import dataclass
 from typing import Any, Dict
-
-from lerobot.robots import Robot, RobotConfig
-from lerobot.motors import Motor, MotorCalibration, MotorNormMode
-from lerobot.robots.config import RobotConfig
-from lerobot.processor import (
-    RobotAction,
-    RobotObservation,
-    RobotProcessorPipeline,
-)
-
-from .config_aubo_i10 import AuboI10Config
-import pyaubo_sdk, time, math
 import logging
+import math
+import time
 
+from lerobot.robots import Robot
+from .config_aubo_i10 import AuboI10Config
+import pyaubo_sdk
+
+
+logger = logging.getLogger(__name__)
 class AuboI10Robot(Robot):
+    """
+    AuboI10Robot 的变体版本
+    映射规则:SO101 leader 5个关节 → Aubo J1, J2, J3, J4, J6
+    Aubo J5(第五轴)固定为 self.fixed_axis5_deg 度
+    用于测试不同关节映射方案
+    """
+
     config_class = AuboI10Config
-    name = "aubo_i10"
+    name = "aubo_i10"   
 
     def __init__(self, config: AuboI10Config):
         super().__init__(config)
         self.config = config
 
-        self.robot_ip = "192.168.31.200"  # 机械臂 IP 地址
-        self.robot_port = 30004  # 端口号
+        from lerobot.cameras.utils import make_cameras_from_configs   # 根據你的 __init__.py 已經有這個匯入
+
+        self.cameras = (
+            make_cameras_from_configs(config.cameras)
+            if hasattr(config, 'cameras') and config.cameras
+            else {}
+        )
+        self.robot_ip = "192.168.31.200"
+        self.robot_port = 30004
 
         self.robot_rpc_client = pyaubo_sdk.RpcClient()
-        # 全局变量，供其他函数使用
         self.robot_name = None
         self.robot_interface = None
-        #软爪控制相关属性#################################################################################################################
-        self.softpaws_open_pin = 4  # 数字输出DO04
-        self.softpaws_close_pin = 5  # 数字输出DO05
+
+        # 软爪相关
+        self.softpaws_open_pin = 4
+        self.softpaws_close_pin = 5
         self.is_softpaws_open = False
         self.is_softpaws_close = False
         self.io_control = None
 
-    @property
-    def observation_features(self) -> dict[str, type | tuple]:
-        pass
-
-    @property
-    def action_features(self) -> dict[str, type]:
-        pass
-
+        # 固定 Aubo 的第五轴角度（单位：度）
+        # 建议值：0.0（默认）、90.0、-90.0、180.0 等，根据工具朝向调整
+        self.fixed_axis5_deg = 90.0   # ← 你可以随时修改这个值
+        ############################################################
+        # print("[DEBUG] AuboI10Robot __init__ 完成，cameras keys:", list(self.cameras.keys()) if hasattr(self, 'cameras') else "无 cameras 属性")
     @property
     def is_connected(self) -> bool:
         return self.robot_rpc_client.hasConnected()
 
     def connect(self, calibrate: bool = True) -> None:
-        self.robot_rpc_client.setRequestTimeout(1000)  # 接口调用: 设置 RPC 超时
-        self.robot_rpc_client.connect(self.robot_ip, self.robot_port)  # 接口调用: 连接 RPC 服务
+        self.robot_rpc_client.setRequestTimeout(1000)
+        self.robot_rpc_client.connect(self.robot_ip, self.robot_port)
+        ########################################################
+        # print("[DEBUG] AuboI10Robot 开始连接 cameras...")
+        for cam_name, cam in self.cameras.items():##
+            try:
+                cam.connect()
+                print(f"  → {cam_name} connect 后 is_connected = {cam.is_connected}")
+            except Exception as e:
+                print(f"  → {cam_name} connect 失败: {e}")##
+        # print("[DEBUG] 所有 cameras 连接尝试结束")##
         if self.robot_rpc_client.hasConnected():
-            print("RPC客户端连接成功!")
-            self.robot_rpc_client.login("aubo", "123456")  # 接口调用: 登录
+            # print("RPC客户端连接成功!")
+            self.robot_rpc_client.login("aubo", "123456")
             if self.robot_rpc_client.hasLogined():
-                print("RPC客户端登录成功!")
-                # 登录成功后初始化全局变量
+                # print("RPC客户端登录成功!")
                 self.robot_name = self.robot_rpc_client.getRobotNames()[0]
                 self.robot_interface = self.robot_rpc_client.getRobotInterface(self.robot_name)
-                print(f"{'='*8} Robot status {'='*8}")
+                # print(f"{'='*8} Robot status {'='*8}")
                 self.get_robot_status()
-                print(f"{'='*8} End robot status {'='*8}")
-                 # 初始化IO控制接口##################################################################################################
+                # print(f"{'='*8} End robot status {'='*8}")
 
                 self.io_control = self.robot_interface.getIoControl()
-                print(f"软爪控制初始化完成 - 打开引脚: {self.softpaws_open_pin}, 关闭引脚: {self.softpaws_close_pin}")
+                # print(f"软爪控制初始化完成 - 打开引脚: {self.softpaws_open_pin}, 关闭引脚: {self.softpaws_close_pin}")
 
     @property
     def is_calibrated(self) -> bool:
@@ -78,220 +91,287 @@ class AuboI10Robot(Robot):
         pass
 
     def get_observation(self) -> dict[str, Any]:
-        # TODO(Rory):  Get the video from Mech-Mind camera
-        return {"test": 1}
-    
-    def send_action(self, action: RobotAction) -> RobotAction:
-        self.robot_interface.getMotionControl().setSpeedFraction(0.85)
-        position = [
-            action["ee.x"],
-            action["ee.y"],
-            action["ee.z"],
-            action["ee.wx"],
-            action["ee.wy"],
-            action["ee.wz"],
+        start = time.perf_counter()
+
+        obs_dict = {}
+
+        if self.is_connected and self.robot_interface:
+                try:
+                    # 获取当前关节位置（弧度）
+                    robot_state = self.robot_interface.getRobotState()
+                    joints_rad = robot_state.getJointPositions()  # 返回 list[float]，6个值
+                    # 转成度数（更直观）
+                    joints_deg = [math.degrees(rad) for rad in joints_rad]
+                    obs_dict["shoulder_pan.pos"]  = joints_deg[0]   # J1
+                    obs_dict["shoulder_lift.pos"] = joints_deg[1]   # J2
+                    obs_dict["elbow_flex.pos"] = joints_deg[2]   
+                    obs_dict["wrist_flex.pos"] = joints_deg[3]    
+                    obs_dict["wrist_roll.pos"] = joints_deg[5]
+
+                except Exception as e:
+                    logging.error(f"读取关节状态失败: {e}")
+        else:
+            logging.warning("机器人未连接，无法读取关节状态")
+
+        import os
+        save_dir = "debug_camera_images"
+        os.makedirs(save_dir, exist_ok=True)  # 提前创建目录，避免每次循环都创建
+
+        for cam_key, cam in self.cameras.items():
+            start_cam = time.perf_counter()
+            try:
+                img = cam.async_read()   # 假设返回 numpy array (h,w,c) 或 PIL Image
+                if img is not None:
+                    obs_dict[cam_key] = img
+
+                    # 保存图像用于调试（只在开发阶段启用，正式运行可注释掉）
+                    # timestamp = int(time.time() * 1000)
+                    # path = f"{save_dir}/{cam_key}_{timestamp}.jpg"
+
+                    # if len(img.shape) == 3 and img.shape[2] == 3:
+                    #     cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+                    #     print(f"已保存调试图像: {path}")
+                    # else:
+                    #     print(f"警告: {cam_key} 图像格式异常,shape={getattr(img, 'shape', '未知')}")
+
+                else:
+                    obs_dict[cam_key] = None
+                    logging.debug(f"相机 {cam_key} 本次无图像")
+            except Exception as e:
+                logging.error(f"读取相机 {cam_key} 失败: {e}")
+                obs_dict[cam_key] = None
+
+            dt_cam = (time.perf_counter() - start_cam) * 1e3
+            logger.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
+
+        dt = (time.perf_counter() - start) * 1e3
+        logger.debug(f"get_observation 总耗时: {dt:.1f}ms")
+        ###############################################################
+        obs_dict["observation.image.handeye"] = obs_dict.pop("handeye", None)##
+        obs_dict["observation.image.fixed"]   = obs_dict.pop("fixed", None)##
+        return obs_dict
+
+    def send_action(self, action: dict) -> dict:
+        """
+        leader 的 5 个关节 → Aubo 的 J1,J2,J3,J4,J6
+        Aubo J5 使用固定值 self.fixed_axis5_deg
+        """
+        if not self.is_connected:
+            logging.error("机器人未连接，无法发送动作")
+            return action
+
+        motion = self.robot_interface.getMotionControl()
+        motion.setSpeedFraction(1)  
+
+        # leader 常见的关节名称（如果实际不同，请在这里修改）
+        leader_joint_keys = [
+            'shoulder_pan.pos',     # → Aubo J1
+            'shoulder_lift.pos',    # → Aubo J2
+            'elbow_flex.pos',       # → Aubo J3
+            'wrist_flex.pos',       # → Aubo J4
+            'wrist_roll.pos',       # → Aubo J6
         ]
-        # ============ 软爪控制部分 ============###############################################################################
-        #gripper = action["ee.gripper_pos"] # TODO(Rory): make gripper useful
-        # 从action中获取夹爪位置（百分比 0-100）
-        print(action)
-        gripper_pos = action.get("ee.gripper_pos", 0)
-        print(f"\n发送动作 - 夹爪位置: {gripper_pos}%")
-        # 根据夹爪位置控制软爪
+
+        try:
+            leader_joints_deg = [action[key] for key in leader_joint_keys]
+            logging.debug("Leader 关节角度（度）:")
+            for key, value in zip(leader_joint_keys, leader_joints_deg):
+                logging.debug(f"  {key:18} : {value:8.3f}°")
+        except KeyError as e:
+            logging.error(f"缺少关节键: {e}，实际 action: {action}")
+            return action
+        
+        # 校正参数（根据你的数据初步估计，可继续调）
+        directions = [-1, -1, 1, -1, 1]      
+        offsets     = [ 0,  0, 100, 90, 40]     
+        scale       = 1                  
+
+        # 校正 + 缩放
+        corrected = []
+        for i in range(5):
+            deg = leader_joints_deg[i]
+            deg = deg * directions[i] + offsets[i]
+            deg *= scale
+            corrected.append(deg)
+
+        # 构建 Aubo 6关节列表（度）
+        aubo_joints_deg = [
+            corrected[0],              # J1
+            corrected[1],              # J2
+            corrected[2],              # J3
+            corrected[3],              # J4
+            self.fixed_axis5_deg,      # J5 固定
+            corrected[4],              # J6
+        ]
+
+        # 转换为弧度
+        aubo_joints_rad = [math.radians(deg) for deg in aubo_joints_deg]
+
+        # 发送关节运动指令
+        motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
+
+        # 处理夹爪
+        gripper_pos = action.get('gripper.pos', action.get('ee.gripper_pos', 0))
         self._control_softpaws_based_on_gripper(gripper_pos)
-        # ============ 软爪控制部分结束 ============#########################################################
-        self.robot_interface.getMotionControl().moveLine(position, 1.2, 0.25, 0, 0)
-        _ = self.wait_arrival(self.robot_interface)
-        return action
-########################################################################
+
+        # 返回发送的内容（用于记录或可视化）
+        sent = {
+            'j1': aubo_joints_deg[0],
+            'j2': aubo_joints_deg[1],
+            'j3': aubo_joints_deg[2],
+            'j4': aubo_joints_deg[3],
+            'j5_fixed': aubo_joints_deg[4],
+            'j6': aubo_joints_deg[5],
+            'gripper.pos': gripper_pos
+        }
+        return sent
+
     def _control_softpaws_based_on_gripper(self, gripper_pos: float):
-    
         try:
             if gripper_pos > 60:
-                print("leader夹爪超过60度，打开aubo夹爪")
-                if hasattr(self, 'softpaws_open'):
-                    # 确保软爪处于open状态，如果当前是close状态则先关闭close
-                    if hasattr(self, 'is_softpaws_close') and self.is_softpaws_close:
-                        self.softpaws_close_off()
-                    # 如果软爪当前不是open状态，则执行open
-                    if hasattr(self, 'is_softpaws_open') and not self.is_softpaws_open:
-                        self.softpaws_open()
-                else:
-                    print("aubo_i10没有软爪控制功能")
-                    
+                if self.is_softpaws_close:
+                    self.softpaws_close_off()
+                if not self.is_softpaws_open:
+                    self.softpaws_open()
             elif gripper_pos < 20:
-                print("Leader 夹爪关闭到20度以下，关闭 aubo 软爪")
-                if hasattr(self, 'softpaws_close'):
-                    # 确保软爪处于close状态，如果当前是open状态则先关闭open
-                    if hasattr(self, 'is_softpaws_open') and self.is_softpaws_open:
-                        self.softpaws_open_off()
-                    # 如果软爪当前不是close状态，则执行close
-                    if hasattr(self, 'is_softpaws_close') and not self.is_softpaws_close:
-                        self.softpaws_close()
-                else:
-                    print("警告：aubo robot 没有软爪控制方法")
-                    
+                if self.is_softpaws_open:
+                    self.softpaws_open_off()
+                if not self.is_softpaws_close:
+                    self.softpaws_close()
             else:
-                # 20-60度之间，关闭所有夹爪状态
-                print("Leader 夹爪在20-60度之间，关闭aubo软爪所有状态")
-                #if hasattr(robot, 'softpaws_open_off') and hasattr(robot, 'is_softpaws_open') and robot.is_softpaws_open:
                 self.softpaws_open_off()
-                #if hasattr(robot, 'softpaws_close_off') and hasattr(robot, 'is_softpaws_close') and robot.is_softpaws_close:
                 self.softpaws_close_off()
-            
         except Exception as e:
-            print(f"控制软爪时发生错误: {e}")
-##############################################################################
-    def disconnect(self) -> None:
-        self.robot_rpc_client.logout()  # 退出登录
-        self.robot_rpc_client.disconnect()  # 断开连接
-    
-    # 阻塞
-    def wait_arrival(self, robot_interface):
-        max_retry_count = 5
-        cnt = 0
+            logging.error(f"控制软爪时发生错误: {e}")
 
-        # 接口调用: 获取当前的运动指令 ID
-        exec_id = robot_interface.getMotionControl().getExecId()
-
-        # 等待机械臂开始运动
-        while exec_id == -1:
-            if cnt > max_retry_count:
-                return -1
-            time.sleep(0.001)
-            cnt += 1
-            exec_id = robot_interface.getMotionControl().getExecId()
-
-        # 等待机械臂运动完成
-        while robot_interface.getMotionControl().getExecId() != -1:
-            time.sleep(0.001)
-
-        return 0
-
-    def get_robot_status(self):
-        # 使用全局变量
-        name = self.robot_interface.getRobotConfig().getName()
-        print("机器人的名字:", name)
-        # 接口调用: 获取机器人的自由度
-        dof = self.robot_interface.getRobotConfig().getDof()
-        print("机器人的自由度:", dof)
-        # 接口调用: 获取机器人的伺服控制周期（从硬件抽象层读取）
-        cycle_time = self.robot_interface.getRobotConfig().getCycletime()
-        print("伺服控制周期:", cycle_time)
-        # 接口调用: 获取默认的工具端加速度，单位: m/s^2
-        default_tool_acc = self.robot_interface.getRobotConfig().getDefaultToolAcc()
-        print("默认的工具端加速度:", default_tool_acc)
-        # 接口调用: 获取默认的工具端速度，单位: m/s
-        default_tool_speed = self.robot_interface.getRobotConfig().getDefaultToolSpeed()
-        print("默认的工具端速度:", default_tool_speed)
-        # 接口调用: 获取默认的关节加速度，单位: rad/s
-        default_joint_acc = self.robot_interface.getRobotConfig().getDefaultJointAcc()
-        print("默认的关节加速度", default_joint_acc)
-        # 接口调用: 获取默认的关节速度，单位: rad/s
-        default_joint_speed = self.robot_interface.getRobotConfig().getDefaultJointSpeed()
-        print("默认的关节加速度", default_joint_speed)
-        # 接口调用: 获取机器人类型代码
-        # robot_type = self.robot_interface.getRobotConfig().getRobotType()
-        # print("机器人类型代码", robot_type)
-        # # 接口调用: 获取机器人子类型代码
-        # sub_robot_type = self.robot_interface.getRobotConfig().getRobotSubType()
-        # print("机器人子类型代码", sub_robot_type)
-        # # 接口调用: 获取控制柜类型代码
-        # control_box_type = self.robot_interface.getRobotConfig().getControlBoxType()
-        # print("控制柜类型代码", control_box_type)
-        # # 接口调用: 获取安装位姿(机器人的基坐标系相对于世界坐标系)
-        # mounting_pose = self.robot_interface.getRobotConfig().getMountingPose()
-        # print("安装位姿(机器人的基坐标系相对于世界坐标系)", mounting_pose)
-        # # 接口调用: 设置碰撞灵敏度等级
-        # level = 6
-        # self.robot_interface.getRobotConfig().setCollisionLevel(level)
-        # print("设置碰撞灵敏度等级:", level)
-        # # 接口调用: 获取碰撞灵敏度等级
-        # level = self.robot_interface.getRobotConfig().getCollisionLevel()
-        # print("碰撞灵敏度等级", level)
-        # # 接口调用: 设置碰撞停止类型
-        # collision_stop_type = 1
-        # self.robot_interface.getRobotConfig().setCollisionStopType(collision_stop_type)
-        # print("设置碰撞停止类型", collision_stop_type)
-        # # 接口调用: 获取碰撞停止类型
-        # collision_stop_type = self.robot_interface.getRobotConfig().getCollisionStopType()
-        # print("碰撞停止类型", collision_stop_type)
-        # # 接口调用: 获取机器人DH参数
-        # kin_param = self.robot_interface.getRobotConfig().getKinematicsParam(True)
-        # print("机器人DH参数", kin_param)
-        # # 接口调用: 获取指定温度下的DH参数补偿值
-        # temperature = 20
-        # kin_compensate = self.robot_interface.getRobotConfig().getKinematicsCompensate(
-        #     temperature)
-        # print("指定温度下的DH参数补偿值", kin_compensate)
-        # # 接口调用: 获取可用的末端力矩传感器的名字
-        # tcp_force_sensor_name = self.robot_interface.getRobotConfig().getTcpForceSensorNames()
-        # print("可用的末端力矩传感器的名字", tcp_force_sensor_name)
-        # # 接口调用: 获取末端力矩偏移
-        # tcp_force_offset = self.robot_interface.getRobotConfig().getTcpForceOffset()
-        # print("末端力矩偏移", tcp_force_offset)
-        # # 接口调用: 获取可用的底座力矩传感器的名字
-        # base_force_sensor_names = self.robot_interface.getRobotConfig().getBaseForceSensorNames()
-        # print("可用的底座力矩传感器的名字", base_force_sensor_names)
-        # # 接口调用: 获取底座力矩偏移
-        # base_force_offset = self.robot_interface.getRobotConfig().getBaseForceOffset()
-        # print("底座力矩偏移", base_force_offset)
-        # 接口调用: 获取安全参数校验码 CRC
-    ###############################################################################################
     def softpaws_open(self):
         try:
             if self.io_control is None:
-                print("错误: IO控制接口未初始化，请先调用connect方法")
+                # print("错误: IO控制接口未初始化")
                 return False
             if self.is_softpaws_close:
                 self.softpaws_close_off()
                 time.sleep(0.05)
             self.io_control.setStandardDigitalOutput(self.softpaws_open_pin, True)
             self.is_softpaws_open = True
-            print("softpaws is open")
+            # print("softpaws is open")
             return True
         except Exception as e:
-            print(f"打开软爪失败: {e}")
+            # print(f"打开软爪失败: {e}")
             return False
 
     def softpaws_open_off(self):
         try:
             if self.io_control is None:
-                print("错误: IO控制接口未初始化，请先调用connect方法")
+                # print("错误: IO控制接口未初始化")
                 return False
             self.io_control.setStandardDigitalOutput(self.softpaws_open_pin, False)
             self.is_softpaws_open = False
-            print("softpaws open off")
+            # print("softpaws open off")
             return True
         except Exception as e:
-            print(f"关闭软爪失败: {e}")
+            # print(f"关闭软爪失败: {e}")
             return False
-            
+
     def softpaws_close(self):
         try:
             if self.io_control is None:
-                print("错误: IO控制接口未初始化，请先调用connect方法")
+                # print("错误: IO控制接口未初始化")
                 return False
             if self.is_softpaws_open:
                 self.softpaws_open_off()
                 time.sleep(0.05)
             self.io_control.setStandardDigitalOutput(self.softpaws_close_pin, True)
             self.is_softpaws_close = True
-            print("softpaws is close")
+            # print("softpaws is close")
             return True
         except Exception as e:
-            print(f"关闭软爪失败: {e}")
+            # print(f"关闭软爪失败: {e}")
             return False
-        
+
     def softpaws_close_off(self):
         try:
             if self.io_control is None:
-                print("错误: IO控制接口未初始化，请先调用connect方法")
+                # print("错误: IO控制接口未初始化")
                 return False
             self.io_control.setStandardDigitalOutput(self.softpaws_close_pin, False)
             self.is_softpaws_close = False
-            print("softpaws close off")
+            # print("softpaws close off")
             return True
         except Exception as e:
-            print(f"关闭软爪失败: {e}")
+            # print(f"关闭软爪失败: {e}")
             return False
+
+    def disconnect(self) -> None:
+        if self.robot_rpc_client.hasLogined():
+            self.robot_rpc_client.logout()
+        self.robot_rpc_client.disconnect()
+
+
+##############################
+#开启阻塞，会导致遥操时真机卡顿
+    # def wait_arrival(self, robot_interface):
+    #     max_retry_count = 5
+    #     cnt = 0
+
+    #     motion = robot_interface.getMotionControl()
+    #     exec_id = motion.getExecId()
+
+    #     while exec_id == -1:
+    #         if cnt > max_retry_count:
+    #             return -1
+    #         time.sleep(0.001)
+    #         cnt += 1
+    #         exec_id = motion.getExecId()
+
+    #     while motion.getExecId() != -1:
+    #         time.sleep(0.001)
+
+    #     return 0
+
+    def get_robot_status(self):
+        if not self.robot_interface:
+            # print("机器人接口未初始化")
+            return
+
+        config = self.robot_interface.getRobotConfig()
+        # print("机器人的名字:", config.getName())
+        # print("机器人的自由度:", config.getDof())
+        # print("伺服控制周期:", config.getCycletime())
+        # print("默认的工具端加速度:", config.getDefaultToolAcc())
+        # print("默认的工具端速度:", config.getDefaultToolSpeed())
+        # print("默认的关节加速度:", config.getDefaultJointAcc())
+        # print("默认的关节速度:", config.getDefaultJointSpeed())
+
+    @property
+    def observation_features(self) -> dict[str, type | tuple]:
+        """
+        定义数据集能识别的 observation 特征，包括图像 shape。
+        shape 格式: (height, width, channels)
+        """
+        return {
+            # 状态（关节角度等，已有就保留）
+            "shoulder_pan.pos": float,
+            "shoulder_lift.pos": float,
+            "elbow_flex.pos": float,
+            "wrist_flex.pos": float,
+            "wrist_roll.pos": float,
+            # 必须加图像特征！key 要和 self.cameras 的 key 完全匹配
+            "observation.image.handeye": (480, 640, 3),  # 注意：你的配置是 width=640, height=480, RGB=3
+            "observation.image.fixed":   (480, 640, 3),
+        }##
+
+    @property
+    def action_features(self) -> dict[str, type | tuple]:
+        """
+        定义 action 的特征和 shape(必须!否则 ACT 模型会报 None.shape 错误）
+        """
+        return {
+            "shoulder_pan.pos": float,     # J1
+            "shoulder_lift.pos": float,    # J2
+            "elbow_flex.pos": float,       # J3
+            "wrist_flex.pos": float,       # J4
+            "wrist_roll.pos": float,       # J6
+            # 如果有夹爪动作，也加进来
+            "gripper.pos": float,          # 可选，根据你的 leader 是否输出 gripper
+        }

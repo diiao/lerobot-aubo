@@ -8,6 +8,4 @@ from ..config import RobotConfig
 @RobotConfig.register_subclass("aubo_i10")
 @dataclass
 class AuboI10Config(RobotConfig):
-    pass
-
-    
+    cameras: dict[str, CameraConfig] = field(default_factory=dict)
