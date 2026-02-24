@@ -138,6 +138,8 @@ from lerobot.utils.utils import (
     log_say,
 )
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+from datetime import datetime
+import os
 
 
 @dataclass
@@ -149,7 +151,7 @@ class DatasetRecordConfig:
     # Root directory where the dataset will be stored (e.g. 'dataset/path').
     root: str | Path | None = None
     # Limit the frames per second.
-    fps: int = 30
+    fps: int = 100
     # Number of seconds for data recording for each episode.
     episode_time_s: int | float = 60
     # Number of seconds for resetting the environment after each episode.
@@ -402,7 +404,11 @@ def record_loop(
 
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
-    init_logging()
+    log_dir = Path("log")
+    log_dir.mkdir(exist_ok=True)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file_path = log_dir / f"record_{timestamp_str}.log"
+    init_logging(log_file=str(log_file_path))
     logging.getLogger().setLevel(logging.INFO)
     logging.info(pformat(asdict(cfg)))
     if cfg.display_data:

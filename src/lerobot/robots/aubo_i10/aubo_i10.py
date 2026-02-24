@@ -146,30 +146,38 @@ class AuboI10Robot(Robot):
         action应包含六个关节角度以及一个gripper的角度
         角度单位为度
         """
-        # 从 action 中提取各关节角度（单位：度）
-        j1_deg = action.get("J1", 0.0)
-        j2_deg = action.get("J2", 0.0)
-        j3_deg = action.get("J3", 0.0)
-        j4_deg = action.get("J4", 0.0)
-        j5_deg = action.get("J5", 0.0)
-        j6_deg = action.get("J6", 0.0)
+        if not self.is_connected:
+            logging.error("机器人未连接，无法发送动作")
+            return action
+        
+        try:
+            # 从 action 中提取各关节角度（单位：度）
+            j1_deg = action.get("J1", 0.0)
+            j2_deg = action.get("J2", 0.0)
+            j3_deg = action.get("J3", 0.0)
+            j4_deg = action.get("J4", 0.0)
+            j5_deg = action.get("J5", 0.0)
+            j6_deg = action.get("J6", 0.0)
 
-        # 将关节角度转换为弧度
-        j1_rad = math.radians(j1_deg)
-        j2_rad = math.radians(j2_deg)
-        j3_rad = math.radians(j3_deg)
-        j4_rad = math.radians(j4_deg)
-        j5_rad = math.radians(j5_deg)
-        j6_rad = math.radians(j6_deg)
+            # 将关节角度转换为弧度
+            j1_rad = math.radians(j1_deg)
+            j2_rad = math.radians(j2_deg)
+            j3_rad = math.radians(j3_deg)
+            j4_rad = math.radians(j4_deg)
+            j5_rad = math.radians(j5_deg)
+            j6_rad = math.radians(j6_deg)
 
-        # 构建弧度列表
-        aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
-        motion = self.robot_interface.getMotionControl()
-        motion.setSpeedFraction(1)  
-        motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
+            # 构建弧度列表
+            aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
+            motion = self.robot_interface.getMotionControl()
+            motion.setSpeedFraction(1)  
+            motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
 
-        gripper_pos = action.get("gripper_pos", 0.0)
-        self._control_softpaws_based_on_gripper(gripper_pos)
+            gripper_pos = action.get("gripper_pos", 0.0)
+            self._control_softpaws_based_on_gripper(gripper_pos)
+        except Exception as e:
+            logging.error(f"发送动作失败: {e}")
+            
         return action # sure?
 
 
