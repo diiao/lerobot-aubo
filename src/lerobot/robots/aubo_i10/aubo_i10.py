@@ -133,10 +133,10 @@ class AuboI10Robot(Robot):
                 obs_dict[cam_key] = None
 
             dt_cam = (time.perf_counter() - start_cam) * 1e3
-            logger.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
+            logging.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
 
         dt = (time.perf_counter() - start) * 1e3
-        logger.debug(f"get_observation 总耗时: {dt:.1f}ms")
+        logging.debug(f"get_observation 总耗时: {dt:.1f}ms")
         obs_dict["observation.image.handeye"] = obs_dict.pop("handeye", None)
         obs_dict["observation.image.fixed"]   = obs_dict.pop("fixed", None)
         return obs_dict
@@ -164,6 +164,8 @@ class AuboI10Robot(Robot):
 
         # 构建弧度列表
         aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
+        motion = self.robot_interface.getMotionControl()
+        motion.setSpeedFraction(1)  
         motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
 
         gripper_pos = action.get("gripper_pos", 0.0)

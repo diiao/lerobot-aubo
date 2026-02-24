@@ -403,7 +403,7 @@ def record_loop(
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
     init_logging()
-    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.INFO)
     logging.info(pformat(asdict(cfg)))
     if cfg.display_data:
         init_rerun(session_name="recording", ip=cfg.display_ip, port=cfg.display_port)
