@@ -231,29 +231,44 @@ class AuboI10Robot(Robot):
 
     def _send_ee_action(self, action: dict, motion):
         """
-        发送末端位姿控制指令（直线运动）
+        发送末端位姿控制指令（相对增量直线运动）
         
         Args:
             action: 包含 ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz 的动作字典
+                   这些值表示相对于当前位置的增量，单位：米和弧度
             motion: 运动控制接口
         """
-        # 提取末端位姿
-        # 位置单位：米，姿态单位：弧度
-        x = float(action.get("ee.x", 0.0))
-        y = float(action.get("ee.y", 0.0))
-        z = float(action.get("ee.z", 0.0))
-        rx = float(action.get("ee.wx", 0.0))
-        ry = float(action.get("ee.wy", 0.0))
-        rz = float(action.get("ee.wz", 0.0))
+        # 获取当前TCP位姿
+        current_pose = self.robot_interface.getRobotState().getTcpPose()
         
-        # 构建位姿数组 [x, y, z, rx, ry, rz]
-        pose = [x, y, z, rx, ry, rz]
+        # 提取相对增量
+        # 位置单位：米，姿态单位：弧度
+        dx = float(action.get("ee.x", 0.0))
+        dy = float(action.get("ee.y", 0.0))
+        dz = float(action.get("ee.z", 0.0))
+        drx = float(action.get("ee.wx", 0.0))
+        dry = float(action.get("ee.wy", 0.0))
+        drz = float(action.get("ee.wz", 0.0))
+        
+        # 计算目标位姿 = 当前位姿 + 增量
+        target_pose = [
+            current_pose[0] + dx,
+            current_pose[1] + dy,
+            current_pose[2] + dz,
+            current_pose[3] + drx,
+            current_pose[4] + dry,
+            current_pose[5] + drz
+        ]
         
         # 发送直线运动指令
-        motion.moveLine(pose, self.line_velocity, self.line_acceleration, 0, 0)
+        motion.moveLine(target_pose, self.line_velocity, self.line_acceleration, 0, 0)
         
-        logging.debug(f"直线运动: pos=[{x:.3f}, {y:.3f}, {z:.3f}]m, "
-                     f"rot=[{rx:.3f}, {ry:.3f}, {rz:.3f}]rad")
+        logging.debug(f"相对增量移动: delta=[{dx:.3f}, {dy:.3f}, {dz:.3f}]m, "
+                     f"delta_rot=[{drx:.3f}, {dry:.3f}, {drz:.3f}]rad")
+        logging.debug(f"当前位姿: [{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
+                     f"[{current_pose[3]:.3f}, {current_pose[4]:.3f}, {current_pose[5]:.3f}]rad")
+        logging.debug(f"目标位姿: [{target_pose[0]:.3f}, {target_pose[1]:.3f}, {target_pose[2]:.3f}]m, "
+                     f"[{target_pose[3]:.3f}, {target_pose[4]:.3f}, {target_pose[5]:.3f}]rad")
 
     def _control_softpaws_based_on_gripper(self, gripper_pos: float):
         try:

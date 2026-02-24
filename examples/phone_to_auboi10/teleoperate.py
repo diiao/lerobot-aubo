@@ -16,6 +16,7 @@
 
 import time
 import numpy as np
+import logging
 
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
 from lerobot.processor.converters import (
@@ -65,6 +66,10 @@ def main():
     print("Starting teleop loop in end-effector mode. Move your phone to teleoperate the robot...")
     print("The robot will use Aubo's moveLine interface for direct end-effector control.")
     
+    # Safety: track last sent end-effector position for delta checking
+    last_ee_pos = None
+    max_ee_delta = 0.1  # Maximum allowed position change in meters
+    
     while True:
         t0 = time.perf_counter()
 
@@ -101,10 +106,24 @@ def main():
                 robot_action[key] = float(robot_action[key])
 
         print(robot_action)
+        
+        # Safety check: verify position delta doesn't exceed threshold
+        current_ee_pos = [robot_action["ee.x"], robot_action["ee.y"], robot_action["ee.z"]]
+        if last_ee_pos is not None:
+            # Calculate Euclidean distance between current and last position
+            delta = sum((c - l) ** 2 for c, l in zip(current_ee_pos, last_ee_pos)) ** 0.5
+            if delta > max_ee_delta:
+                logging.warning(f"Position delta {delta:.3f}m exceeds safety threshold {max_ee_delta}m, skipping this action")
+                precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+                continue
+        
         # Send action to robot
         # AuboI10Robot.send_action will detect ee.x/ee.y/ee.z/ee.wx/ee.wy/ee.wz
         # and use moveLine for direct end-effector control
         _ = robot.send_action(robot_action)
+        
+        # Update last position after successful send
+        last_ee_pos = current_ee_pos
 
         # Visualize
         log_rerun_data(observation=phone_obs, action=robot_action)
