@@ -35,6 +35,9 @@ from .factory import (
     make_default_robot_action_processor,
     make_default_robot_observation_processor,
     make_default_teleop_action_processor,
+    make_processors_for_teleop_robot_pair,
+    make_so100_to_aubo_processor,
+    make_so101_to_aubo_processor,
 )
 from .gym_action_processor import (
     Numpy2TorchActionProcessorStep,
@@ -74,6 +77,7 @@ from .policy_robot_bridge import (
     RobotActionToPolicyActionProcessorStep,
 )
 from .rename_processor import RenameObservationsProcessorStep
+from .so_to_aubo_processor import SO100ToAuboProcessorStep, SO101ToAuboProcessorStep
 from .tokenizer_processor import ActionTokenizerProcessorStep, TokenizerProcessorStep
 
 __all__ = [
@@ -97,6 +101,9 @@ __all__ = [
     "make_default_teleop_action_processor",
     "make_default_robot_action_processor",
     "make_default_robot_observation_processor",
+    "make_processors_for_teleop_robot_pair",
+    "make_so100_to_aubo_processor",
+    "make_so101_to_aubo_processor",
     "MapDeltaActionToRobotActionStep",
     "MapTensorToDeltaActionDictStep",
     "NormalizerProcessorStep",
@@ -118,6 +125,8 @@ __all__ = [
     "TimeLimitProcessorStep",
     "AddBatchDimensionProcessorStep",
     "RobotProcessorPipeline",
+    "SO100ToAuboProcessorStep",
+    "SO101ToAuboProcessorStep",
     "TokenizerProcessorStep",
     "ActionTokenizerProcessorStep",
     "Torch2NumpyActionProcessorStep",

@@ -93,6 +93,7 @@ from lerobot.processor import (
     RobotObservation,
     RobotProcessorPipeline,
     make_default_processors,
+    make_processors_for_teleop_robot_pair,
 )
 from lerobot.processor.rename_processor import rename_stats
 from lerobot.robots import (  # noqa: F401
@@ -415,7 +416,12 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
 
-    teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
+    teleop_type = cfg.teleop.type if cfg.teleop is not None else None
+    robot_type = cfg.robot.type if cfg.robot else None
+    teleop_action_processor, robot_action_processor, robot_observation_processor = make_processors_for_teleop_robot_pair(
+        teleop_type=teleop_type,
+        robot_type=robot_type,
+    )
 
     dataset_features = combine_feature_dicts(
         aggregate_pipeline_dataset_features(
