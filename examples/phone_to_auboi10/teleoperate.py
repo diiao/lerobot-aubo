@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import time
+import numpy as np
 
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
 from lerobot.processor.converters import (
@@ -94,6 +95,12 @@ def main():
         else:
             robot_action["gripper_pos"] = 50.0    # Neutral
 
+        # Convert all np.float64 values to Python float
+        for key in robot_action:
+            if isinstance(robot_action[key], (np.floating, np.integer)):
+                robot_action[key] = float(robot_action[key])
+
+        print(robot_action)
         # Send action to robot
         # AuboI10Robot.send_action will detect ee.x/ee.y/ee.z/ee.wx/ee.wy/ee.wz
         # and use moveLine for direct end-effector control
