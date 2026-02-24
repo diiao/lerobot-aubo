@@ -1,0 +1,109 @@
+#!/usr/bin/env python
+
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import time
+
+from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
+from lerobot.processor.converters import (
+    robot_action_observation_to_transition,
+    transition_to_robot_action,
+)
+from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
+from lerobot.teleoperators.phone.config_phone import PhoneConfig, PhoneOS
+from lerobot.teleoperators.phone.phone_processor import MapPhoneActionToRobotAction
+from lerobot.teleoperators.phone.teleop_phone import Phone
+from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+
+FPS = 30
+
+
+def main():
+    # Initialize robot and teleoperator
+    robot_config = AuboI10Config()
+    teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)  # 使用安卓手机
+
+    # Initialize robot and teleoperator
+    robot = AuboI10Robot(robot_config)
+    teleop_device = Phone(teleop_config)
+
+    # Build pipeline to convert phone action to robot action format
+    phone_to_robot_processor = RobotProcessorPipeline[
+        tuple[RobotAction, RobotObservation], RobotAction
+    ](
+        steps=[
+            MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
+
+    # Connect to robot and teleoperator
+    robot.connect()
+    teleop_device.connect()
+
+    # Init rerun viewer
+    init_rerun(session_name="phone_auboi10_teleop")
+
+    if not robot.is_connected or not teleop_device.is_connected:
+        raise ValueError("Robot or teleop is not connected!")
+
+    print("Starting teleop loop in end-effector mode. Move your phone to teleoperate the robot...")
+    print("The robot will use Aubo's moveLine interface for direct end-effector control.")
+    
+    while True:
+        t0 = time.perf_counter()
+
+        # Get robot observation
+        robot_obs = robot.get_observation()
+
+        # Get teleop action
+        phone_obs = teleop_device.get_action()
+
+        # Phone -> EE pose (no IK conversion needed)
+        robot_action = phone_to_robot_processor((phone_obs, robot_obs))
+
+        # Convert target_* to ee.* format expected by AuboI10Robot
+        robot_action["ee.x"] = robot_action.pop("target_x", 0.0)
+        robot_action["ee.y"] = robot_action.pop("target_y", 0.0)
+        robot_action["ee.z"] = robot_action.pop("target_z", 0.0)
+        robot_action["ee.wx"] = robot_action.pop("target_wx", 0.0)
+        robot_action["ee.wy"] = robot_action.pop("target_wy", 0.0)
+        robot_action["ee.wz"] = robot_action.pop("target_wz", 0.0)
+        
+        # Convert gripper_vel to gripper_pos
+        gripper_vel = robot_action.pop("gripper_vel", 0.0)
+        # Simple conversion: positive velocity opens gripper, negative closes it
+        if gripper_vel > 0.5:
+            robot_action["gripper_pos"] = 100.0  # Open
+        elif gripper_vel < -0.5:
+            robot_action["gripper_pos"] = 0.0    # Close
+        else:
+            robot_action["gripper_pos"] = 50.0    # Neutral
+
+        # Send action to robot
+        # AuboI10Robot.send_action will detect ee.x/ee.y/ee.z/ee.wx/ee.wy/ee.wz
+        # and use moveLine for direct end-effector control
+        _ = robot.send_action(robot_action)
+
+        # Visualize
+        log_rerun_data(observation=phone_obs, action=robot_action)
+
+        precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+
+
+if __name__ == "__main__":
+    main()

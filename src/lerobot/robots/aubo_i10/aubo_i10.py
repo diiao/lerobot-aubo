@@ -2,6 +2,7 @@ from typing import Any, Dict
 import logging
 import math
 import time
+import numpy as np
 
 from lerobot.robots import Robot
 from .config_aubo_i10 import AuboI10Config
@@ -11,6 +12,10 @@ import pyaubo_sdk
 class AuboI10Robot(Robot):
     """
     AuboI10Robot 的变体版本
+    支持两种控制模式：
+    1. 关节角度控制：直接控制 J1-J6 关节角度
+    2. 末端位姿控制：使用 Aubo 的 moveLine 接口进行直线运动
+
     映射规则:SO101 leader 5个关节 → Aubo J1, J2, J3, J4, J6
     Aubo J5(第五轴)固定为 self.fixed_axis5_deg 度
     用于测试不同关节映射方案
@@ -47,6 +52,12 @@ class AuboI10Robot(Robot):
         # 固定 Aubo 的第五轴角度（单位：度）
         # 建议值：0.0（默认）、90.0、-90.0、180.0 等，根据工具朝向调整
         self.fixed_axis5_deg = 90.0   # ← 你可以随时修改这个值
+
+        # 运动控制参数
+        self.line_velocity = 1.2  # 直线运动速度 (m/s)
+        self.line_acceleration = 0.25  # 直线运动加速度 (m/s²)
+        self.joint_velocity = 80 * (math.pi / 180)  # 关节运动速度 (rad/s)
+        self.joint_acceleration = 60 * (math.pi / 180)  # 关节运动加速度 (rad/s²)
 
         
     @property
@@ -143,113 +154,106 @@ class AuboI10Robot(Robot):
 
     def send_action(self, action: dict) -> dict:
         """
-        action应包含六个关节角度以及一个gripper的角度
-        角度单位为度
+        支持两种控制模式：
+        1. 关节角度控制：action 包含 J1-J6 和 gripper_pos，角度单位为度
+        2. 末端位姿控制：action 包含 ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz 和 gripper_pos
+           位置单位为米，姿态单位为弧度
+        
+        Args:
+            action: 动作字典，包含关节角度或末端位姿
+        
+        Returns:
+            返回发送的动作
         """
         if not self.is_connected:
             logging.error("机器人未连接，无法发送动作")
             return action
         
         try:
-            # 从 action 中提取各关节角度（单位：度）
-            j1_deg = action.get("J1", 0.0)
-            j2_deg = action.get("J2", 0.0)
-            j3_deg = action.get("J3", 0.0)
-            j4_deg = action.get("J4", 0.0)
-            j5_deg = action.get("J5", 0.0)
-            j6_deg = action.get("J6", 0.0)
-
-            # 将关节角度转换为弧度
-            j1_rad = math.radians(j1_deg)
-            j2_rad = math.radians(j2_deg)
-            j3_rad = math.radians(j3_deg)
-            j4_rad = math.radians(j4_deg)
-            j5_rad = math.radians(j5_deg)
-            j6_rad = math.radians(j6_deg)
-
-            # 构建弧度列表
-            aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
             motion = self.robot_interface.getMotionControl()
-            motion.setSpeedFraction(1)  
-            motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
-
-            gripper_pos = action.get("gripper_pos", 0.0)
+            motion.setSpeedFraction(1)
+            
+            # 检测控制模式：末端位姿控制优先
+            ee_keys = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"]
+            joint_keys = ["J1", "J2", "J3", "J4", "J5", "J6"]
+            
+            if all(key in action for key in ee_keys):
+                # 末端位姿控制模式（直线运动）
+                self._send_ee_action(action, motion)
+            elif all(key in action for key in joint_keys):
+                # 关节角度控制模式
+                self._send_joint_action(action, motion)
+            else:
+                logging.warning(f"action 中缺少必要的控制参数，action keys: {list(action.keys())}")
+                return action
+            
+            # 处理夹爪
+            gripper_pos = action.get("gripper_pos", action.get("ee.gripper_pos", 0.0))
             self._control_softpaws_based_on_gripper(gripper_pos)
+            
         except Exception as e:
             logging.error(f"发送动作失败: {e}")
             
-        return action # sure?
+        return action
 
-
-        if not self.is_connected:
-            logging.error("机器人未连接，无法发送动作")
-            return action
-
-        motion = self.robot_interface.getMotionControl()
-        motion.setSpeedFraction(1)  
-
-        # leader 常见的关节名称（如果实际不同，请在这里修改）
-        leader_joint_keys = [
-            'shoulder_pan.pos',     # → Aubo J1
-            'shoulder_lift.pos',    # → Aubo J2
-            'elbow_flex.pos',       # → Aubo J3
-            'wrist_flex.pos',       # → Aubo J4
-            'wrist_roll.pos',       # → Aubo J6
-        ]
-
-        try:
-            leader_joints_deg = [action[key] for key in leader_joint_keys]
-            logging.debug("Leader 关节角度（度）:")
-            for key, value in zip(leader_joint_keys, leader_joints_deg):
-                logging.debug(f"  {key:18} : {value:8.3f}°")
-        except KeyError as e:
-            logging.error(f"缺少关节键: {e}，实际 action: {action}")
-            return action
+    def _send_joint_action(self, action: dict, motion):
+        """
+        发送关节角度控制指令
         
-        # 校正参数（根据你的数据初步估计，可继续调）
-        directions = [-1, -1, 1, -1, 1]      
-        offsets     = [ 0,  0, 100, 90, 40]     
-        scale       = 1                  
+        Args:
+            action: 包含 J1-J6 的动作字典
+            motion: 运动控制接口
+        """
+        # 从 action 中提取各关节角度（单位：度）
+        j1_deg = action.get("J1", 0.0)
+        j2_deg = action.get("J2", 0.0)
+        j3_deg = action.get("J3", 0.0)
+        j4_deg = action.get("J4", 0.0)
+        j5_deg = action.get("J5", self.fixed_axis5_deg)
+        j6_deg = action.get("J6", 0.0)
 
-        # 校正 + 缩放
-        corrected = []
-        for i in range(5):
-            deg = leader_joints_deg[i]
-            deg = deg * directions[i] + offsets[i]
-            deg *= scale
-            corrected.append(deg)
+        # 将关节角度转换为弧度
+        j1_rad = math.radians(j1_deg)
+        j2_rad = math.radians(j2_deg)
+        j3_rad = math.radians(j3_deg)
+        j4_rad = math.radians(j4_deg)
+        j5_rad = math.radians(j5_deg)
+        j6_rad = math.radians(j6_deg)
 
-        # 构建 Aubo 6关节列表（度）
-        aubo_joints_deg = [
-            corrected[0],              # J1
-            corrected[1],              # J2
-            corrected[2],              # J3
-            corrected[3],              # J4
-            self.fixed_axis5_deg,      # J5 固定
-            corrected[4],              # J6
-        ]
-
-        # 转换为弧度
-        aubo_joints_rad = [math.radians(deg) for deg in aubo_joints_deg]
-
+        # 构建弧度列表
+        aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
+        
         # 发送关节运动指令
-        motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
+        motion.moveJoint(aubo_joints_rad, self.joint_velocity, self.joint_acceleration, 0.0, 0.0)
+        
+        logging.debug(f"关节运动: J1={j1_deg:.2f}°, J2={j2_deg:.2f}°, J3={j3_deg:.2f}°, "
+                     f"J4={j4_deg:.2f}°, J5={j5_deg:.2f}°, J6={j6_deg:.2f}°")
 
-        # 处理夹爪
-        gripper_pos = action.get('gripper.pos', action.get('ee.gripper_pos', 0))
-        self._control_softpaws_based_on_gripper(gripper_pos)
-
-        # 返回发送的内容（用于记录或可视化）
-        sent = {
-            'j1': aubo_joints_deg[0],
-            'j2': aubo_joints_deg[1],
-            'j3': aubo_joints_deg[2],
-            'j4': aubo_joints_deg[3],
-            'j5_fixed': aubo_joints_deg[4],
-            'j6': aubo_joints_deg[5],
-            'gripper.pos': gripper_pos
-        }
-        return sent
+    def _send_ee_action(self, action: dict, motion):
+        """
+        发送末端位姿控制指令（直线运动）
+        
+        Args:
+            action: 包含 ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz 的动作字典
+            motion: 运动控制接口
+        """
+        # 提取末端位姿
+        # 位置单位：米，姿态单位：弧度
+        x = float(action.get("ee.x", 0.0))
+        y = float(action.get("ee.y", 0.0))
+        z = float(action.get("ee.z", 0.0))
+        rx = float(action.get("ee.wx", 0.0))
+        ry = float(action.get("ee.wy", 0.0))
+        rz = float(action.get("ee.wz", 0.0))
+        
+        # 构建位姿数组 [x, y, z, rx, ry, rz]
+        pose = [x, y, z, rx, ry, rz]
+        
+        # 发送直线运动指令
+        motion.moveLine(pose, self.line_velocity, self.line_acceleration, 0, 0)
+        
+        logging.debug(f"直线运动: pos=[{x:.3f}, {y:.3f}, {z:.3f}]m, "
+                     f"rot=[{rx:.3f}, {ry:.3f}, {rz:.3f}]rad")
 
     def _control_softpaws_based_on_gripper(self, gripper_pos: float):
         try:
