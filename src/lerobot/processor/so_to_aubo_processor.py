@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from lerobot.configs.types import PipelineFeatureType, PolicyFeature
+from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.processor.core import RobotAction
 
 from .pipeline import ProcessorStepRegistry, RobotActionProcessorStep
@@ -123,13 +123,13 @@ class SO101ToAuboProcessorStep(RobotActionProcessorStep):
         for feature_type, feature_dict in features.items():
             if feature_type == PipelineFeatureType.ACTION:
                 new_action_features = {}
-                new_action_features["J1"] = PolicyFeature(dtype="float", shape=(1,))
-                new_action_features["J2"] = PolicyFeature(dtype="float", shape=(1,))
-                new_action_features["J3"] = PolicyFeature(dtype="float", shape=(1,))
-                new_action_features["J4"] = PolicyFeature(dtype="float", shape=(1,))
-                new_action_features["J5"] = PolicyFeature(dtype="float", shape=(1,))
-                new_action_features["J6"] = PolicyFeature(dtype="float", shape=(1,))
-                new_action_features["gripper_pos"] = PolicyFeature(dtype="float", shape=(1,))
+                new_action_features["J1"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
+                new_action_features["J2"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
+                new_action_features["J3"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
+                new_action_features["J4"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
+                new_action_features["J5"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
+                new_action_features["J6"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
+                new_action_features["gripper_pos"] = PolicyFeature(type=FeatureType.ACTION, shape=(1,))
                 new_features[feature_type] = new_action_features
             else:
                 new_features[feature_type] = feature_dict.copy()
