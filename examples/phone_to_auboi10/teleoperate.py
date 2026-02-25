@@ -124,20 +124,20 @@ def main():
                 robot_action[key] = float(robot_action[key])
         t_convert_end = time.perf_counter()
 
-        print(robot_action)
+        logging.debug(f"Robot action: {robot_action}")
         
         # Safety check: verify position delta doesn't exceed threshold
         t_safety_start = time.perf_counter()
-        current_ee_pos = [robot_action["ee.x"], robot_action["ee.y"], robot_action["ee.z"]]
-        if last_ee_pos is not None:
-            # Calculate Euclidean distance between current and last position
-            delta = sum((c - l) ** 2 for c, l in zip(current_ee_pos, last_ee_pos)) ** 0.5
-            if delta > max_ee_delta:
-                logging.warning(f"Position delta {delta:.3f}m exceeds safety threshold {max_ee_delta}m, skipping this action")
-                precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
-                # Wait for user input before next iteration
-                input("Press Enter to continue to next iteration...")
-                continue
+        # current_ee_pos = [robot_action["ee.x"], robot_action["ee.y"], robot_action["ee.z"]]
+        # if last_ee_pos is not None:
+        #     # Calculate Euclidean distance between current and last position
+        #     delta = sum((c - l) ** 2 for c, l in zip(current_ee_pos, last_ee_pos)) ** 0.5
+        #     if delta > max_ee_delta:
+        #         logging.warning(f"Position delta {delta:.3f}m exceeds safety threshold {max_ee_delta}m, skipping this action")
+        #         precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+        #         # Wait for user input before next iteration
+        #         input("Press Enter to continue to next iteration...")
+        #         continue
         t_safety_end = time.perf_counter()
         
         # Send action to robot
@@ -165,20 +165,20 @@ def main():
         send_time = t_send_end - t_send_start
         visualize_time = t_visualize_end - t_visualize_start
 
-        logging.info(f"\nTiming breakdown (ms):")
-        logging.info(f"Total: {total_time*1000:.2f}")
-        logging.info(f"Robot observation: {robot_obs_time*1000:.2f}")
-        logging.info(f"Phone action: {phone_obs_time*1000:.2f}")
-        logging.info(f"Processing: {process_time*1000:.2f}")
-        logging.info(f"Conversion: {convert_time*1000:.2f}")
-        logging.info(f"Safety check: {safety_time*1000:.2f}")
-        logging.info(f"Send action: {send_time*1000:.2f}")
-        logging.info(f"Visualization: {visualize_time*1000:.2f}")
+        logging.debug(f"\nTiming breakdown (ms):")
+        logging.debug(f"Total: {total_time*1000:.2f}")
+        logging.debug(f"Robot observation: {robot_obs_time*1000:.2f}")
+        logging.debug(f"Phone action: {phone_obs_time*1000:.2f}")
+        logging.debug(f"Processing: {process_time*1000:.2f}")
+        logging.debug(f"Conversion: {convert_time*1000:.2f}")
+        logging.debug(f"Safety check: {safety_time*1000:.2f}")
+        logging.debug(f"Send action: {send_time*1000:.2f}")
+        logging.debug(f"Visualization: {visualize_time*1000:.2f}")
 
         precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
         
         # Wait for user input before next iteration
-        input("Press Enter to continue to next iteration...")
+        # input("Press Enter to continue to next iteration...")
 
 
 if __name__ == "__main__":

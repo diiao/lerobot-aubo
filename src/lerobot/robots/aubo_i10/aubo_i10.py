@@ -54,10 +54,16 @@ class AuboI10Robot(Robot):
         self.fixed_axis5_deg = 90.0   # ← 你可以随时修改这个值
 
         # 运动控制参数
-        self.line_velocity = 1.2  # 直线运动速度 (m/s)
-        self.line_acceleration = 0.25  # 直线运动加速度 (m/s²)
+        self.line_velocity = 0.25  # 直线运动速度 (m/s)
+        self.line_acceleration = 1.2  # 直线运动加速度 (m/s²)
         self.joint_velocity = 80 * (math.pi / 180)  # 关节运动速度 (rad/s)
         self.joint_acceleration = 60 * (math.pi / 180)  # 关节运动加速度 (rad/s²)
+
+        # 伺服模式参数
+        self.servo_time = 0.05  # 伺服运动周期，单位：秒（对应 20Hz）
+        self.servo_blend_radius = 0.0  # 混合半径
+        self.servo_max_queue_retry = 5  # 队列满时的最大重试次数
+        self.is_servo_mode_enabled = False  # 伺服模式状态
 
         
     @property
@@ -94,6 +100,72 @@ class AuboI10Robot(Robot):
 
     def configure(self) -> None:
         pass
+
+    def enable_servo_mode(self) -> bool:
+        """
+        开启伺服模式
+
+        Returns:
+            bool: 成功返回 True，失败返回 False
+        """
+        if not self.is_connected or not self.robot_interface:
+            logging.error("机器人未连接，无法开启伺服模式")
+            return False
+
+        try:
+            motion = self.robot_interface.getMotionControl()
+            motion.setServoMode(True)
+
+            # 等待伺服模式开启，最多重试5次
+            retry_count = 0
+            max_retries = 5
+            while not motion.isServoModeEnabled():
+                retry_count += 1
+                if retry_count > max_retries:
+                    logging.error(f"开启伺服模式失败！当前伺服模式状态：{motion.isServoModeEnabled()}")
+                    return False
+                time.sleep(0.005)
+
+            self.is_servo_mode_enabled = True
+            logging.info("伺服模式已开启")
+            return True
+
+        except Exception as e:
+            logging.error(f"开启伺服模式时发生错误: {e}")
+            return False
+
+    def disable_servo_mode(self) -> bool:
+        """
+        关闭伺服模式
+
+        Returns:
+            bool: 成功返回 True，失败返回 False
+        """
+        if not self.is_connected or not self.robot_interface:
+            logging.warning("机器人未连接")
+            return False
+
+        try:
+            motion = self.robot_interface.getMotionControl()
+            motion.setServoMode(False)
+
+            # 等待伺服模式关闭，最多重试5次
+            retry_count = 0
+            max_retries = 5
+            while motion.isServoModeEnabled():
+                retry_count += 1
+                if retry_count > max_retries:
+                    logging.error(f"关闭伺服模式失败！当前伺服模式状态：{motion.isServoModeEnabled()}")
+                    return False
+                time.sleep(0.005)
+
+            self.is_servo_mode_enabled = False
+            logging.info("伺服模式已关闭")
+            return True
+
+        except Exception as e:
+            logging.error(f"关闭伺服模式时发生错误: {e}")
+            return False
 
     def get_observation(self) -> dict[str, Any]:
         start = time.perf_counter()
@@ -158,48 +230,50 @@ class AuboI10Robot(Robot):
         1. 关节角度控制：action 包含 J1-J6 和 gripper_pos，角度单位为度
         2. 末端位姿控制：action 包含 ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz 和 gripper_pos
            位置单位为米，姿态单位为弧度
-        
-        Args:
-            action: 动作字典，包含关节角度或末端位姿
-        
-        Returns:
-            返回发送的动作
+
+        使用伺服模式进行实时控制
         """
         if not self.is_connected:
             logging.error("机器人未连接，无法发送动作")
             return action
-        
+
         try:
             motion = self.robot_interface.getMotionControl()
-            motion.setSpeedFraction(1)
-            
+            motion.setSpeedFraction(0.75)
+
+            # 如果伺服模式未开启，则开启
+            if not self.is_servo_mode_enabled:
+                if not self.enable_servo_mode():
+                    logging.error("无法开启伺服模式，退出")
+                    return action
+
             # 检测控制模式：末端位姿控制优先
             ee_keys = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"]
             joint_keys = ["J1", "J2", "J3", "J4", "J5", "J6"]
-            
+
             if all(key in action for key in ee_keys):
-                # 末端位姿控制模式（直线运动）
-                self._send_ee_action(action, motion)
+                # 末端位姿控制模式（笛卡尔伺服运动）
+                self._send_ee_action_servo(action, motion)
             elif all(key in action for key in joint_keys):
-                # 关节角度控制模式
-                self._send_joint_action(action, motion)
+                # 关节角度控制模式（关节伺服运动）
+                self._send_joint_action_servo(action, motion)
             else:
                 logging.warning(f"action 中缺少必要的控制参数，action keys: {list(action.keys())}")
                 return action
-            
+
             # 处理夹爪
             gripper_pos = action.get("gripper_pos", action.get("ee.gripper_pos", 0.0))
             self._control_softpaws_based_on_gripper(gripper_pos)
-            
+
         except Exception as e:
             logging.error(f"发送动作失败: {e}")
-            
+
         return action
 
     def _send_joint_action(self, action: dict, motion):
         """
-        发送关节角度控制指令
-        
+        发送关节角度控制指令（普通模式，已废弃）
+
         Args:
             action: 包含 J1-J6 的动作字典
             motion: 运动控制接口
@@ -222,17 +296,75 @@ class AuboI10Robot(Robot):
 
         # 构建弧度列表
         aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
-        
+
         # 发送关节运动指令
         motion.moveJoint(aubo_joints_rad, self.joint_velocity, self.joint_acceleration, 0.0, 0.0)
-        
+
         logging.debug(f"关节运动: J1={j1_deg:.2f}°, J2={j2_deg:.2f}°, J3={j3_deg:.2f}°, "
+                     f"J4={j4_deg:.2f}°, J5={j5_deg:.2f}°, J6={j6_deg:.2f}°")
+
+    def _send_joint_action_servo(self, action: dict, motion):
+        """
+        发送关节角度伺服控制指令（伺服模式）
+
+        Args:
+            action: 包含 J1-J6 的动作字典
+            motion: 运动控制接口
+        """
+        # 从 action 中提取各关节角度（单位：度）
+        j1_deg = action.get("J1", 0.0)
+        j2_deg = action.get("J2", 0.0)
+        j3_deg = action.get("J3", 0.0)
+        j4_deg = action.get("J4", 0.0)
+        j5_deg = action.get("J5", self.fixed_axis5_deg)
+        j6_deg = action.get("J6", 0.0)
+
+        # 将关节角度转换为弧度
+        j1_rad = math.radians(j1_deg)
+        j2_rad = math.radians(j2_deg)
+        j3_rad = math.radians(j3_deg)
+        j4_rad = math.radians(j4_deg)
+        j5_rad = math.radians(j5_deg)
+        j6_rad = math.radians(j6_deg)
+
+        # 构建弧度列表
+        aubo_joints_rad = [j1_rad, j2_rad, j3_rad, j4_rad, j5_rad, j6_rad]
+
+        # 发送关节伺服运动指令，处理队列满的情况
+        # servoJoint(joints, acc, vel, time, blend_radius, max_radius)
+        # 参数说明：
+        # - joints: 目标关节位置（弧度）
+        # - acc: 加速度 (rad/s²)
+        # - vel: 速度 (rad/s)
+        # - time: 运动时间 (s)，必须匹配控制周期
+        # - blend_radius: 混合半径
+        # - max_radius: 最大半径
+        retry_count = 0
+        while retry_count < self.servo_max_queue_retry:
+            ret = motion.servoJoint(
+                aubo_joints_rad,
+                self.joint_acceleration,
+                self.joint_velocity,
+                self.servo_time,
+                self.servo_blend_radius,
+                200
+            )
+
+            if ret == 2:  # 队列满
+                retry_count += 1
+                if retry_count >= self.servo_max_queue_retry:
+                    logging.warning(f"关节伺服队列持续满载，已重试 {retry_count} 次")
+                time.sleep(0.005)
+            else:
+                break
+
+        logging.debug(f"关节伺服运动: J1={j1_deg:.2f}°, J2={j2_deg:.2f}°, J3={j3_deg:.2f}°, "
                      f"J4={j4_deg:.2f}°, J5={j5_deg:.2f}°, J6={j6_deg:.2f}°")
 
     def _send_ee_action(self, action: dict, motion):
         """
-        发送末端位姿控制指令（相对增量直线运动）
-        
+        发送末端位姿控制指令（普通模式，已废弃）
+
         Args:
             action: 包含 ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz 的动作字典
                    这些值表示相对于当前位置的增量，单位：米和弧度
@@ -240,7 +372,7 @@ class AuboI10Robot(Robot):
         """
         # 获取当前TCP位姿
         current_pose = self.robot_interface.getRobotState().getTcpPose()
-        
+
         # 提取相对增量
         # 位置单位：米，姿态单位：弧度
         dx = float(action.get("ee.x", 0.0))
@@ -249,7 +381,7 @@ class AuboI10Robot(Robot):
         drx = float(action.get("ee.wx", 0.0))
         dry = float(action.get("ee.wy", 0.0))
         drz = float(action.get("ee.wz", 0.0))
-        
+
         # 计算目标位姿 = 当前位姿 + 增量
         target_pose = [
             current_pose[0] + dx,
@@ -259,11 +391,77 @@ class AuboI10Robot(Robot):
             current_pose[4] + dry,
             current_pose[5] + drz
         ]
-        
+
         # 发送直线运动指令
-        motion.moveLine(target_pose, self.line_velocity, self.line_acceleration, 0, 0)
-        
+        motion.moveLine(target_pose, self.line_acceleration, self.line_velocity, 0, 0)
+
         logging.debug(f"相对增量移动: delta=[{dx:.3f}, {dy:.3f}, {dz:.3f}]m, "
+                     f"delta_rot=[{drx:.3f}, {dry:.3f}, {drz:.3f}]rad")
+        logging.debug(f"当前位姿: [{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
+                     f"[{current_pose[3]:.3f}, {current_pose[4]:.3f}, {current_pose[5]:.3f}]rad")
+        logging.debug(f"目标位姿: [{target_pose[0]:.3f}, {target_pose[1]:.3f}, {target_pose[2]:.3f}]m, "
+                     f"[{target_pose[3]:.3f}, {target_pose[4]:.3f}, {target_pose[5]:.3f}]rad")
+
+    def _send_ee_action_servo(self, action: dict, motion):
+        """
+        发送末端位姿伺服控制指令（伺服模式）
+
+        Args:
+            action: 包含 ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz 的动作字典
+                   这些值表示相对于当前位置的增量，单位：米和弧度
+            motion: 运动控制接口
+        """
+        # 获取当前TCP位姿
+        current_pose = self.robot_interface.getRobotState().getTcpPose()
+
+        # 提取相对增量
+        # 位置单位：米，姿态单位：弧度
+        dx = float(action.get("ee.x", 0.0))
+        dy = float(action.get("ee.y", 0.0))
+        dz = float(action.get("ee.z", 0.0))
+        drx = float(action.get("ee.wx", 0.0))
+        dry = float(action.get("ee.wy", 0.0))
+        drz = float(action.get("ee.wz", 0.0))
+
+        # 计算目标位姿 = 当前位姿 + 增量
+        target_pose = [
+            current_pose[0] + dx,
+            current_pose[1] + dy,
+            current_pose[2] + dz,
+            current_pose[3] + drx,
+            current_pose[4] + dry,
+            current_pose[5] + drz
+        ]
+
+        # 发送笛卡尔伺服运动指令，处理队列满的情况
+        # servoCartesian(pose, acc, vel, time, blend_radius, max_radius)
+        # 参数说明：
+        # - pose: 目标笛卡尔位姿 [x, y, z, rx, ry, rz]
+        # - acc: 加速度 (m/s²)
+        # - vel: 速度 (m/s)
+        # - time: 运动时间 (s)，必须匹配控制周期
+        # - blend_radius: 混合半径
+        # - max_radius: 最大半径
+        retry_count = 0
+        while retry_count < self.servo_max_queue_retry:
+            ret = motion.servoCartesian(
+                target_pose,
+                self.line_acceleration,
+                self.line_velocity,
+                self.servo_time,
+                self.servo_blend_radius,
+                0.0
+            )
+
+            if ret == 2:  # 队列满
+                retry_count += 1
+                if retry_count >= self.servo_max_queue_retry:
+                    logging.warning(f"笛卡尔伺服队列持续满载，已重试 {retry_count} 次")
+                time.sleep(0.005)
+            else:
+                break
+
+        logging.debug(f"笛卡尔伺服运动: delta=[{dx:.3f}, {dy:.3f}, {dz:.3f}]m, "
                      f"delta_rot=[{drx:.3f}, {dry:.3f}, {drz:.3f}]rad")
         logging.debug(f"当前位姿: [{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
                      f"[{current_pose[3]:.3f}, {current_pose[4]:.3f}, {current_pose[5]:.3f}]rad")
@@ -336,6 +534,11 @@ class AuboI10Robot(Robot):
             return False
 
     def disconnect(self) -> None:
+        # 断开连接前关闭伺服模式
+        if self.is_servo_mode_enabled:
+            logging.info("断开连接前关闭伺服模式")
+            self.disable_servo_mode()
+
         if self.robot_rpc_client.hasLogined():
             self.robot_rpc_client.logout()
         self.robot_rpc_client.disconnect()
