@@ -31,9 +31,18 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
-
+from lerobot.utils.utils import (
+    # get_safe_torch_device,
+    init_logging,
+    # log_say,
+)
 
 def main():
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file_path = log_dir / f"record_{timestamp_str}.log"
+    init_logging(log_file=log_file_path)
     # Initialize robot and teleoperator
     robot_config = AuboI10Config()
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)  # 使用安卓手机
@@ -74,15 +83,22 @@ def main():
         t0 = time.perf_counter()
 
         # Get robot observation
+        t_robot_obs_start = time.perf_counter()
         robot_obs = robot.get_observation()
+        t_robot_obs_end = time.perf_counter()
 
         # Get teleop action
+        t_phone_obs_start = time.perf_counter()
         phone_obs = teleop_device.get_action()
+        t_phone_obs_end = time.perf_counter()
 
         # Phone -> EE pose (no IK conversion needed)
+        t_process_start = time.perf_counter()
         robot_action = phone_to_robot_processor((phone_obs, robot_obs))
+        t_process_end = time.perf_counter()
 
         # Convert target_* to ee.* format expected by AuboI10Robot
+        t_convert_start = time.perf_counter()
         robot_action["ee.x"] = robot_action.pop("target_x", 0.0)
         robot_action["ee.y"] = robot_action.pop("target_y", 0.0)
         robot_action["ee.z"] = robot_action.pop("target_z", 0.0)
@@ -104,10 +120,12 @@ def main():
         for key in robot_action:
             if isinstance(robot_action[key], (np.floating, np.integer)):
                 robot_action[key] = float(robot_action[key])
+        t_convert_end = time.perf_counter()
 
         print(robot_action)
         
         # Safety check: verify position delta doesn't exceed threshold
+        t_safety_start = time.perf_counter()
         current_ee_pos = [robot_action["ee.x"], robot_action["ee.y"], robot_action["ee.z"]]
         if last_ee_pos is not None:
             # Calculate Euclidean distance between current and last position
@@ -115,20 +133,50 @@ def main():
             if delta > max_ee_delta:
                 logging.warning(f"Position delta {delta:.3f}m exceeds safety threshold {max_ee_delta}m, skipping this action")
                 precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+                # Wait for user input before next iteration
+                input("Press Enter to continue to next iteration...")
                 continue
+        t_safety_end = time.perf_counter()
         
         # Send action to robot
         # AuboI10Robot.send_action will detect ee.x/ee.y/ee.z/ee.wx/ee.wy/ee.wz
         # and use moveLine for direct end-effector control
+        t_send_start = time.perf_counter()
         _ = robot.send_action(robot_action)
+        t_send_end = time.perf_counter()
         
         # Update last position after successful send
         last_ee_pos = current_ee_pos
 
         # Visualize
+        t_visualize_start = time.perf_counter()
         log_rerun_data(observation=phone_obs, action=robot_action)
+        t_visualize_end = time.perf_counter()
+
+        # Calculate and print timing information
+        total_time = time.perf_counter() - t0
+        robot_obs_time = t_robot_obs_end - t_robot_obs_start
+        phone_obs_time = t_phone_obs_end - t_phone_obs_start
+        process_time = t_process_end - t_process_start
+        convert_time = t_convert_end - t_convert_start
+        safety_time = t_safety_end - t_safety_start
+        send_time = t_send_end - t_send_start
+        visualize_time = t_visualize_end - t_visualize_start
+
+        logging.info(f"\nTiming breakdown (ms):")
+        logging.info(f"Total: {total_time*1000:.2f}")
+        logging.info(f"Robot observation: {robot_obs_time*1000:.2f}")
+        logging.info(f"Phone action: {phone_obs_time*1000:.2f}")
+        logging.info(f"Processing: {process_time*1000:.2f}")
+        logging.info(f"Conversion: {convert_time*1000:.2f}")
+        logging.info(f"Safety check: {safety_time*1000:.2f}")
+        logging.info(f"Send action: {send_time*1000:.2f}")
+        logging.info(f"Visualization: {visualize_time*1000:.2f}")
 
         precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+        
+        # Wait for user input before next iteration
+        input("Press Enter to continue to next iteration...")
 
 
 if __name__ == "__main__":
