@@ -413,6 +413,8 @@ class AuboI10Robot(Robot):
             motion: 运动控制接口
         """
         current_pose = self.robot_interface.getRobotState().getTcpPose()
+        logging.debug(f"当前位姿: [{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
+                     f"[{current_pose[3]:.3f}, {current_pose[4]:.3f}, {current_pose[5]:.3f}]rad")
 
         dx = float(action.get("ee.x", 0.0))
         dy = float(action.get("ee.y", 0.0))
