@@ -92,6 +92,7 @@ def main():
         # Get teleop action
         t_phone_obs_start = time.perf_counter()
         phone_obs = teleop_device.get_action()
+        logging.debug(f"Phone action: {phone_obs}")
         t_phone_obs_end = time.perf_counter()
 
         # Phone -> EE pose (no IK conversion needed)
