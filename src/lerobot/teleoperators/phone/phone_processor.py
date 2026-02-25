@@ -81,8 +81,8 @@ class MapPhoneActionToRobotAction(RobotActionProcessorStep):
         # action["target_x"] = -pos[1] if enabled else 0.0
         # action["target_y"] = pos[0] if enabled else 0.0
         # action["target_z"] = pos[2] if enabled else 0.0
-        action["target_x"] = pos[0] if enabled else 0.0
-        action["target_y"] = pos[1] if enabled else 0.0
+        action["target_x"] = pos[1] if enabled else 0.0
+        action["target_y"] = -pos[0] if enabled else 0.0
         action["target_z"] = pos[2] if enabled else 0.0
         action["target_wx"] = rotvec[1] if enabled else 0.0
         action["target_wy"] = rotvec[0] if enabled else 0.0

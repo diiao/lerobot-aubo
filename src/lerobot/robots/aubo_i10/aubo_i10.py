@@ -168,7 +168,6 @@ class AuboI10Robot(Robot):
             return False
 
     def get_observation(self) -> dict[str, Any]:
-        start = time.perf_counter()
         obs_dict = {}
         if self.is_connected and self.robot_interface:
             try:
@@ -218,8 +217,6 @@ class AuboI10Robot(Robot):
             dt_cam = (time.perf_counter() - start_cam) * 1e3
             logging.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
 
-        dt = (time.perf_counter() - start) * 1e3
-        logging.debug(f"get_observation 总耗时: {dt:.1f}ms")
         obs_dict["observation.image.handeye"] = obs_dict.pop("handeye", None)
         obs_dict["observation.image.fixed"]   = obs_dict.pop("fixed", None)
         return obs_dict
