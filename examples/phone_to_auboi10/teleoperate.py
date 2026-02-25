@@ -32,7 +32,7 @@ from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 from pathlib import Path
 from datetime import datetime
 
-FPS = 5
+FPS = 50
 from lerobot.utils.utils import (
     # get_safe_torch_device,
     init_logging,
@@ -77,12 +77,9 @@ def main():
     print("Starting teleop loop in end-effector mode. Move your phone to teleoperate the robot...")
     print("The robot will use Aubo's moveLine interface for direct end-effector control.")
     
-    # Safety: track last sent end-effector position for delta checking
-    last_ee_pos = None
-    max_ee_delta = 0.1  # Maximum allowed position change in meters
     
     while True:
-
+        t0 = time.perf_counter()
         # Get robot observation
         robot_obs = robot.get_observation()
 
@@ -117,6 +114,7 @@ def main():
                 robot_action[key] = float(robot_action[key])
 
         logging.debug(f"Robot action: {robot_action}")
+        logging.debug(f"==========================================")
         
         # Send action to robot
         # AuboI10Robot.send_action will detect ee.x/ee.y/ee.z/ee.wx/ee.wy/ee.wz
@@ -126,7 +124,7 @@ def main():
 
 
         # Visualize
-        log_rerun_data(observation=phone_obs, action=robot_action)
+        # log_rerun_data(observation=phone_obs, action=robot_action)
 
 
 
