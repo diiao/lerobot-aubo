@@ -32,7 +32,7 @@ from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 from pathlib import Path
 from datetime import datetime
 
-FPS = 30
+FPS = 5
 from lerobot.utils.utils import (
     # get_safe_torch_device,
     init_logging,
@@ -82,26 +82,18 @@ def main():
     max_ee_delta = 0.1  # Maximum allowed position change in meters
     
     while True:
-        t0 = time.perf_counter()
 
         # Get robot observation
-        t_robot_obs_start = time.perf_counter()
         robot_obs = robot.get_observation()
-        t_robot_obs_end = time.perf_counter()
 
         # Get teleop action
-        t_phone_obs_start = time.perf_counter()
         phone_obs = teleop_device.get_action()
         logging.debug(f"Phone action: {phone_obs}")
-        t_phone_obs_end = time.perf_counter()
 
         # Phone -> EE pose (no IK conversion needed)
-        t_process_start = time.perf_counter()
         robot_action = phone_to_robot_processor((phone_obs, robot_obs))
-        t_process_end = time.perf_counter()
 
         # Convert target_* to ee.* format expected by AuboI10Robot
-        t_convert_start = time.perf_counter()
         robot_action["ee.x"] = robot_action.pop("target_x", 0.0)
         robot_action["ee.y"] = robot_action.pop("target_y", 0.0)
         robot_action["ee.z"] = robot_action.pop("target_z", 0.0)
@@ -123,57 +115,20 @@ def main():
         for key in robot_action:
             if isinstance(robot_action[key], (np.floating, np.integer)):
                 robot_action[key] = float(robot_action[key])
-        t_convert_end = time.perf_counter()
 
         logging.debug(f"Robot action: {robot_action}")
-        
-        # Safety check: verify position delta doesn't exceed threshold
-        t_safety_start = time.perf_counter()
-        # current_ee_pos = [robot_action["ee.x"], robot_action["ee.y"], robot_action["ee.z"]]
-        # if last_ee_pos is not None:
-        #     # Calculate Euclidean distance between current and last position
-        #     delta = sum((c - l) ** 2 for c, l in zip(current_ee_pos, last_ee_pos)) ** 0.5
-        #     if delta > max_ee_delta:
-        #         logging.warning(f"Position delta {delta:.3f}m exceeds safety threshold {max_ee_delta}m, skipping this action")
-        #         precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
-        #         # Wait for user input before next iteration
-        #         input("Press Enter to continue to next iteration...")
-        #         continue
-        t_safety_end = time.perf_counter()
         
         # Send action to robot
         # AuboI10Robot.send_action will detect ee.x/ee.y/ee.z/ee.wx/ee.wy/ee.wz
         # and use moveLine for direct end-effector control
-        t_send_start = time.perf_counter()
+
         _ = robot.send_action(robot_action)
-        t_send_end = time.perf_counter()
-        
 
 
         # Visualize
-        t_visualize_start = time.perf_counter()
         log_rerun_data(observation=phone_obs, action=robot_action)
-        t_visualize_end = time.perf_counter()
 
-        # Calculate and print timing information
-        total_time = time.perf_counter() - t0
-        robot_obs_time = t_robot_obs_end - t_robot_obs_start
-        phone_obs_time = t_phone_obs_end - t_phone_obs_start
-        process_time = t_process_end - t_process_start
-        convert_time = t_convert_end - t_convert_start
-        safety_time = t_safety_end - t_safety_start
-        send_time = t_send_end - t_send_start
-        visualize_time = t_visualize_end - t_visualize_start
 
-        logging.debug(f"\nTiming breakdown (ms):")
-        logging.debug(f"Total: {total_time*1000:.2f}")
-        logging.debug(f"Robot observation: {robot_obs_time*1000:.2f}")
-        logging.debug(f"Phone action: {phone_obs_time*1000:.2f}")
-        logging.debug(f"Processing: {process_time*1000:.2f}")
-        logging.debug(f"Conversion: {convert_time*1000:.2f}")
-        logging.debug(f"Safety check: {safety_time*1000:.2f}")
-        logging.debug(f"Send action: {send_time*1000:.2f}")
-        logging.debug(f"Visualization: {visualize_time*1000:.2f}")
 
         precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
         
