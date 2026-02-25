@@ -147,8 +147,7 @@ def main():
         _ = robot.send_action(robot_action)
         t_send_end = time.perf_counter()
         
-        # Update last position after successful send
-        last_ee_pos = current_ee_pos
+
 
         # Visualize
         t_visualize_start = time.perf_counter()
