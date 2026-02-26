@@ -416,14 +416,17 @@ class AuboI10Robot(Robot):
         dx = float(action.get("ee.x", 0.0))
         dy = float(action.get("ee.y", 0.0))
         dz = float(action.get("ee.z", 0.0))
+        dwx = float(action.get("ee.wx", 0.0))
+        dry = float(action.get("ee.wy", 0.0))
+        drz = float(action.get("ee.wz", 0.0))
 
         target_pose = [
             current_pose[0] + dx,
             current_pose[1] + dy,
-            current_pose[2] + dz,
-            current_pose[3],
-            current_pose[4],
-            current_pose[5]
+            current_pose[2] + dz, 
+            current_pose[3] + dwx,
+            current_pose[4] + dry,
+            current_pose[5] + drz
         ]
 
         retry_count = 0
