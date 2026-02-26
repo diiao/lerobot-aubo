@@ -69,7 +69,7 @@ def main():
     teleop_device.connect()
 
     # Init rerun viewer
-    init_rerun(session_name="phone_auboi10_teleop")
+    # init_rerun(session_name="phone_auboi10_teleop")
 
     if not robot.is_connected or not teleop_device.is_connected:
         raise ValueError("Robot or teleop is not connected!")
