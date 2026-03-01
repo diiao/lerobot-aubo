@@ -50,8 +50,8 @@ LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 def main():
     camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS),
-        "fixed": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
+        "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
+        "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
     }
     robot_config = AuboI10Config(cameras=camera_config)
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
