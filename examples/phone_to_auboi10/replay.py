@@ -23,7 +23,7 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import log_say
 
 EPISODE_IDX = 0
-HF_REPO_ID = "<hf_username>/<dataset_repo_id>"
+LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
 
     robot = AuboI10Robot(robot_config)
 
-    dataset = LeRobotDataset(HF_REPO_ID, episodes=[EPISODE_IDX])
+    dataset = LeRobotDataset(LOCAL_DATASET_PATH, episodes=[EPISODE_IDX])
     episode_frames = dataset.hf_dataset.filter(lambda x: x["episode_index"] == EPISODE_IDX)
     actions = episode_frames.select_columns(ACTION)
 
