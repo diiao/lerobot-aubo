@@ -40,8 +40,8 @@ NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
 TASK_DESCRIPTION = "My task description"
-HF_MODEL_ID = "<hf_username>/<model_repo_id>"
-HF_DATASET_ID = "<hf_username>/<dataset_repo_id>"
+LOCAL_MODEL_PATH = "./models/phone_auboi10"
+LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 
 def main():
@@ -49,7 +49,7 @@ def main():
 
     robot = AuboI10Robot(robot_config)
 
-    policy = ACTPolicy.from_pretrained(HF_MODEL_ID)
+    policy = ACTPolicy.from_pretrained(LOCAL_MODEL_PATH)
 
     robot_joints_to_ee_pose_processor = RobotProcessorPipeline[RobotObservation, RobotObservation](
         steps=[],
@@ -58,7 +58,7 @@ def main():
     )
 
     dataset = LeRobotDataset.create(
-        repo_id=HF_DATASET_ID,
+        repo_id=LOCAL_DATASET_PATH,
         fps=FPS,
         features=combine_feature_dicts(
             aggregate_pipeline_dataset_features(
@@ -84,7 +84,7 @@ def main():
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy,
-        pretrained_path=HF_MODEL_ID,
+        pretrained_path=LOCAL_MODEL_PATH,
         dataset_stats=dataset.meta.stats,
         preprocessor_overrides={"device_processor": {"device": str(policy.config.device)}},
     )
@@ -150,7 +150,6 @@ def main():
         listener.stop()
 
         dataset.finalize()
-        dataset.push_to_hub()
 
 
 if __name__ == "__main__":

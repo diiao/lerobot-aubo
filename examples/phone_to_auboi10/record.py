@@ -38,7 +38,7 @@ FPS = 30
 EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "My task description"
-HF_REPO_ID = "<hf_username>/<dataset_repo_id>"
+LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 
 def main():
@@ -65,7 +65,7 @@ def main():
     )
 
     dataset = LeRobotDataset.create(
-        repo_id=HF_REPO_ID,
+        repo_id=LOCAL_DATASET_PATH,
         fps=FPS,
         features=combine_feature_dicts(
             aggregate_pipeline_dataset_features(
@@ -146,7 +146,6 @@ def main():
         listener.stop()
 
         dataset.finalize()
-        dataset.push_to_hub()
 
 
 if __name__ == "__main__":
