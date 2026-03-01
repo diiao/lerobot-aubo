@@ -17,7 +17,13 @@
 import time
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
+from lerobot.processor.converters import (
+    robot_action_observation_to_transition,
+    transition_to_robot_action,
+)
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
+from lerobot.robots.aubo_i10.robot_processor import AuboEEToEEDelta
 from lerobot.utils.constants import ACTION
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import log_say
@@ -30,6 +36,14 @@ def main():
     robot_config = AuboI10Config()
 
     robot = AuboI10Robot(robot_config)
+
+    ee_to_delta_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
+        steps=[
+            AuboEEToEEDelta(),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
 
     dataset = LeRobotDataset(LOCAL_DATASET_PATH, episodes=[EPISODE_IDX])
     episode_frames = dataset.hf_dataset.filter(lambda x: x["episode_index"] == EPISODE_IDX)
@@ -51,17 +65,11 @@ def main():
                 for i, name in enumerate(dataset.features[ACTION]["names"])
             }
 
-            robot_action = {
-                "ee.x": ee_action.get("ee.x", 0.0),
-                "ee.y": ee_action.get("ee.y", 0.0),
-                "ee.z": ee_action.get("ee.z", 0.0),
-                "ee.wx": ee_action.get("ee.wx", 0.0),
-                "ee.wy": ee_action.get("ee.wy", 0.0),
-                "ee.wz": ee_action.get("ee.wz", 0.0),
-                "gripper_pos": ee_action.get("ee.gripper_pos", ee_action.get("gripper_pos", 50.0)),
-            }
+            robot_obs = robot.get_observation()
 
-            _ = robot.send_action(robot_action)
+            delta_action = ee_to_delta_processor((ee_action, robot_obs))
+
+            _ = robot.send_action(delta_action)
 
             precise_sleep(max(1.0 / dataset.fps - (time.perf_counter() - t0), 0.0))
     finally:
