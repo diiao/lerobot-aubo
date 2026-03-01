@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
 from lerobot.datasets.utils import combine_feature_dicts
@@ -48,7 +49,11 @@ LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 
 def main():
-    robot_config = AuboI10Config()
+    camera_config = {
+        "handeye": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS),
+        "fixed": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
+    }
+    robot_config = AuboI10Config(cameras=camera_config)
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
 
     robot = AuboI10Robot(robot_config)
