@@ -25,6 +25,12 @@ from lerobot.processor.converters import (
     transition_to_robot_action,
 )
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
+from lerobot.robots.aubo_i10.robot_processor import (
+    AuboEEBoundsAndSafety,
+    AuboEEToEEDelta,
+    AuboGripperVelocityToPosition,
+    PhoneEEToAuboEE,
+)
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.teleoperators.phone.config_phone import PhoneConfig, PhoneOS
 from lerobot.teleoperators.phone.phone_processor import MapPhoneActionToRobotAction
@@ -53,12 +59,29 @@ def main():
     ](
         steps=[
             MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
+            PhoneEEToAuboEE(
+                end_effector_step_sizes={"x": 0.3, "y": 0.3, "z": 0.3},
+                use_latched_reference=True,
+            ),
+            AuboEEBoundsAndSafety(
+                end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [0.8, 0.0, 0.8]},
+                max_ee_step_m=0.05,
+            ),
+            AuboGripperVelocityToPosition(speed_factor=20.0),
         ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
 
-    robot_joints_to_ee_pose = RobotProcessorPipeline[RobotObservation, RobotObservation](
+    ee_to_delta_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
+        steps=[
+            AuboEEToEEDelta(),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
+
+    robot_observation_processor = RobotProcessorPipeline[RobotObservation, RobotObservation](
         steps=[],
         to_transition=observation_to_transition,
         to_output=transition_to_observation,
@@ -74,7 +97,7 @@ def main():
                 use_videos=True,
             ),
             aggregate_pipeline_dataset_features(
-                pipeline=robot_joints_to_ee_pose,
+                pipeline=robot_observation_processor,
                 initial_features=create_initial_features(observation=robot.observation_features),
                 use_videos=True,
             ),
@@ -109,8 +132,8 @@ def main():
                 single_task=TASK_DESCRIPTION,
                 display_data=True,
                 teleop_action_processor=phone_to_robot_ee_pose_processor,
-                robot_action_processor=None,
-                robot_observation_processor=robot_joints_to_ee_pose,
+                robot_action_processor=ee_to_delta_processor,
+                robot_observation_processor=robot_observation_processor,
             )
 
             if not events["stop_recording"] and (
@@ -126,8 +149,8 @@ def main():
                     single_task=TASK_DESCRIPTION,
                     display_data=True,
                     teleop_action_processor=phone_to_robot_ee_pose_processor,
-                    robot_action_processor=None,
-                    robot_observation_processor=robot_joints_to_ee_pose,
+                    robot_action_processor=ee_to_delta_processor,
+                    robot_observation_processor=robot_observation_processor,
                 )
 
             if events["rerecord_episode"]:

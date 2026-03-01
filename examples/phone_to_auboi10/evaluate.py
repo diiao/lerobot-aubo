@@ -28,9 +28,12 @@ from lerobot.processor import (
 )
 from lerobot.processor.converters import (
     observation_to_transition,
+    robot_action_observation_to_transition,
     transition_to_observation,
+    transition_to_robot_action,
 )
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
+from lerobot.robots.aubo_i10.robot_processor import AuboEEToEEDelta
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
@@ -51,7 +54,15 @@ def main():
 
     policy = ACTPolicy.from_pretrained(LOCAL_MODEL_PATH)
 
-    robot_joints_to_ee_pose_processor = RobotProcessorPipeline[RobotObservation, RobotObservation](
+    ee_to_delta_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
+        steps=[
+            AuboEEToEEDelta(),
+        ],
+        to_transition=robot_action_observation_to_transition,
+        to_output=transition_to_robot_action,
+    )
+
+    robot_observation_processor = RobotProcessorPipeline[RobotObservation, RobotObservation](
         steps=[],
         to_transition=observation_to_transition,
         to_output=transition_to_observation,
@@ -62,7 +73,7 @@ def main():
         fps=FPS,
         features=combine_feature_dicts(
             aggregate_pipeline_dataset_features(
-                pipeline=robot_joints_to_ee_pose_processor,
+                pipeline=robot_observation_processor,
                 initial_features=create_initial_features(observation=robot.observation_features),
                 use_videos=True,
             ),
@@ -115,8 +126,8 @@ def main():
                 single_task=TASK_DESCRIPTION,
                 display_data=True,
                 teleop_action_processor=make_default_teleop_action_processor(),
-                robot_action_processor=None,
-                robot_observation_processor=robot_joints_to_ee_pose_processor,
+                robot_action_processor=ee_to_delta_processor,
+                robot_observation_processor=robot_observation_processor,
             )
 
             if not events["stop_recording"] and (
@@ -131,8 +142,8 @@ def main():
                     single_task=TASK_DESCRIPTION,
                     display_data=True,
                     teleop_action_processor=make_default_teleop_action_processor(),
-                    robot_action_processor=None,
-                    robot_observation_processor=robot_joints_to_ee_pose_processor,
+                    robot_action_processor=ee_to_delta_processor,
+                    robot_observation_processor=robot_observation_processor,
                 )
 
             if events["rerecord_episode"]:

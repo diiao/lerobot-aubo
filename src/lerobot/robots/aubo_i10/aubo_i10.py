@@ -171,10 +171,9 @@ class AuboI10Robot(Robot):
         obs_dict = {}
         if self.is_connected and self.robot_interface:
             try:
-                # 获取当前关节位置（弧度）
                 robot_state = self.robot_interface.getRobotState()
-                joints_rad = robot_state.getJointPositions()  # 返回 list[float]，6个值
-                # 转成度数（更直观）
+                
+                joints_rad = robot_state.getJointPositions()
                 joints_deg = [math.degrees(rad) for rad in joints_rad]
                 obs_dict["J1"]  = joints_deg[0]   
                 obs_dict["J2"]  = joints_deg[1]   
@@ -183,8 +182,14 @@ class AuboI10Robot(Robot):
                 obs_dict["J5"]  = joints_deg[4]
                 obs_dict["J6"]  = joints_deg[5]
 
-                # 获取夹爪状态
-                # 0.0 = 关闭，100.0 = 打开，50.0 = 中间状态
+                tcp_pose = robot_state.getTcpPose()
+                obs_dict["ee.x"] = float(tcp_pose[0])
+                obs_dict["ee.y"] = float(tcp_pose[1])
+                obs_dict["ee.z"] = float(tcp_pose[2])
+                obs_dict["ee.wx"] = float(tcp_pose[3])
+                obs_dict["ee.wy"] = float(tcp_pose[4])
+                obs_dict["ee.wz"] = float(tcp_pose[5])
+
                 if self.is_softpaws_open:
                     obs_dict["gripper_pos"] = 100.0
                 elif self.is_softpaws_close:
@@ -560,7 +565,7 @@ class AuboI10Robot(Robot):
     @property
     def observation_features(self) -> dict[str, type | tuple]:
         """
-        机器人产生的观测数据的格式，包括关节和相机
+        机器人产生的观测数据的格式，包括关节、末端位姿和相机
         """
         return {
             "J1": float,
@@ -569,6 +574,12 @@ class AuboI10Robot(Robot):
             "J4": float,
             "J5": float,
             "J6": float,
+            "ee.x": float,
+            "ee.y": float,
+            "ee.z": float,
+            "ee.wx": float,
+            "ee.wy": float,
+            "ee.wz": float,
             "gripper_pos": float,
             "observation.image.handeye": (480, 640, 3),  
             "observation.image.fixed":   (480, 640, 3),
@@ -577,14 +588,14 @@ class AuboI10Robot(Robot):
     @property
     def action_features(self) -> dict[str, type | tuple]:
         """
-        机器人可以执行的动作的格式，包括关节和夹爪
+        机器人可以执行的动作的格式，末端位姿控制模式
         """
         return {
-            "J1": float,     
-            "J2": float,     
-            "J3": float,  
-            "J4": float,     
-            "J5": float,     
-            "J6": float,     
-            "gripper_pos": float,          
+            "ee.x": float,
+            "ee.y": float,
+            "ee.z": float,
+            "ee.wx": float,
+            "ee.wy": float,
+            "ee.wz": float,
+            "ee.gripper_pos": float,
         }
