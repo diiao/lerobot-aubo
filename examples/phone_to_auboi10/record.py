@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# !/usr/bin/env python
 
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
@@ -14,34 +14,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time
-
-from lerobot.datasets.lerobot_dataset_writer import LeRobotDatasetWriter
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
+from lerobot.datasets.utils import combine_feature_dicts
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
 from lerobot.processor.converters import (
+    observation_to_transition,
     robot_action_observation_to_transition,
+    transition_to_observation,
     transition_to_robot_action,
 )
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
+from lerobot.scripts.lerobot_record import record_loop
 from lerobot.teleoperators.phone.config_phone import PhoneConfig, PhoneOS
 from lerobot.teleoperators.phone.phone_processor import MapPhoneActionToRobotAction
 from lerobot.teleoperators.phone.teleop_phone import Phone
-from lerobot.utils.robot_utils import precise_sleep
-from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+from lerobot.utils.control_utils import init_keyboard_listener
+from lerobot.utils.utils import log_say
+from lerobot.utils.visualization_utils import init_rerun
 
+NUM_EPISODES = 3
 FPS = 30
+EPISODE_TIME_SEC = 60
+RESET_TIME_SEC = 30
+TASK_DESCRIPTION = "My task description"
+HF_REPO_ID = "<hf_username>/<dataset_repo_id>"
+
 
 def main():
-    # Initialize the robot and teleoperator
     robot_config = AuboI10Config()
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
 
-    # Initialize the robot and teleoperator
     robot = AuboI10Robot(robot_config)
-    teleop_device = Phone(teleop_config)
+    phone = Phone(teleop_config)
 
-    # Build pipeline to convert phone action to robot joint action
-    phone_to_robot_joints_processor = RobotProcessorPipeline[
+    phone_to_robot_ee_pose_processor = RobotProcessorPipeline[
         tuple[RobotAction, RobotObservation], RobotAction
     ](
         steps=[
@@ -51,66 +58,95 @@ def main():
         to_output=transition_to_robot_action,
     )
 
-    # Connect to the robot and teleoperator
-    robot.connect()
-    teleop_device.connect()
-
-    if not robot.is_connected or not teleop_device.is_connected:
-        raise ValueError("Robot or teleop is not connected!")
-
-    # Initialize dataset writer
-    dataset_writer = LeRobotDatasetWriter(
-        output_dir="./datasets/phone_auboi10",
-        robot_name=robot.name,
-        observation_features=robot.observation_features,
-        action_features=robot.action_features,
-        fps=FPS,
+    robot_joints_to_ee_pose = RobotProcessorPipeline[RobotObservation, RobotObservation](
+        steps=[],
+        to_transition=observation_to_transition,
+        to_output=transition_to_observation,
     )
 
-    # Init rerun viewer
+    dataset = LeRobotDataset.create(
+        repo_id=HF_REPO_ID,
+        fps=FPS,
+        features=combine_feature_dicts(
+            aggregate_pipeline_dataset_features(
+                pipeline=phone_to_robot_ee_pose_processor,
+                initial_features=create_initial_features(action=phone.action_features),
+                use_videos=True,
+            ),
+            aggregate_pipeline_dataset_features(
+                pipeline=robot_joints_to_ee_pose,
+                initial_features=create_initial_features(observation=robot.observation_features),
+                use_videos=True,
+            ),
+        ),
+        robot_type=robot.name,
+        use_videos=True,
+        image_writer_threads=4,
+    )
+
+    robot.connect()
+    phone.connect()
+
+    listener, events = init_keyboard_listener()
     init_rerun(session_name="phone_auboi10_record")
 
-    print("Starting recording loop. Move your phone to teleoperate the robot...")
-    print("Press Ctrl+C to stop recording.")
-
     try:
-        while True:
-            t0 = time.perf_counter()
+        if not robot.is_connected or not phone.is_connected:
+            raise ValueError("Robot or teleop is not connected!")
 
-            # Get robot observation
-            robot_obs = robot.get_observation()
+        print("Starting record loop. Move your phone to teleoperate the robot...")
+        episode_idx = 0
+        while episode_idx < NUM_EPISODES and not events["stop_recording"]:
+            log_say(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}")
 
-            # Get teleop action
-            phone_obs = teleop_device.get_action()
+            record_loop(
+                robot=robot,
+                events=events,
+                fps=FPS,
+                teleop=phone,
+                dataset=dataset,
+                control_time_s=EPISODE_TIME_SEC,
+                single_task=TASK_DESCRIPTION,
+                display_data=True,
+                teleop_action_processor=phone_to_robot_ee_pose_processor,
+                robot_action_processor=None,
+                robot_observation_processor=robot_joints_to_ee_pose,
+            )
 
-            # Phone -> Robot action
-            robot_action = phone_to_robot_joints_processor((phone_obs, robot_obs))
+            if not events["stop_recording"] and (
+                episode_idx < NUM_EPISODES - 1 or events["rerecord_episode"]
+            ):
+                log_say("Reset the environment")
+                record_loop(
+                    robot=robot,
+                    events=events,
+                    fps=FPS,
+                    teleop=phone,
+                    control_time_s=RESET_TIME_SEC,
+                    single_task=TASK_DESCRIPTION,
+                    display_data=True,
+                    teleop_action_processor=phone_to_robot_ee_pose_processor,
+                    robot_action_processor=None,
+                    robot_observation_processor=robot_joints_to_ee_pose,
+                )
 
-            # Convert phone action to Aubo joint commands
-            joint_action = {
-                "J1": robot_action.get("ee.x", 0.0) * 10.0,
-                "J2": robot_action.get("ee.y", 0.0) * 10.0,
-                "J3": robot_action.get("ee.z", 0.0) * 10.0,
-                "J4": robot_action.get("ee.roll", 0.0) * 5.0,
-                "J5": robot.fixed_axis5_deg,
-                "J6": robot_action.get("ee.yaw", 0.0) * 5.0,
-                "gripper_pos": robot_action.get("gripper", 0.0) * 100.0,
-            }
+            if events["rerecord_episode"]:
+                log_say("Re-recording episode")
+                events["rerecord_episode"] = False
+                events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
 
-            # Send action to robot
-            _ = robot.send_action(joint_action)
+            dataset.save_episode()
+            episode_idx += 1
+    finally:
+        log_say("Stop recording")
+        robot.disconnect()
+        phone.disconnect()
+        listener.stop()
 
-            # Write to dataset
-            dataset_writer.write(robot_obs, joint_action)
-
-            # Visualize
-            log_rerun_data(observation=phone_obs, action=joint_action)
-
-            precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
-    except KeyboardInterrupt:
-        print("Stopping recording...")
-        dataset_writer.finish()
-        print("Recording finished.")
+        dataset.finalize()
+        dataset.push_to_hub()
 
 
 if __name__ == "__main__":
