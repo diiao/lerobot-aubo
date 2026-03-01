@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# !/usr/bin/env python
 
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
@@ -15,50 +15,57 @@
 # limitations under the License.
 
 import time
+
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
+from lerobot.utils.constants import ACTION
 from lerobot.utils.robot_utils import precise_sleep
-from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+from lerobot.utils.utils import log_say
 
-FPS = 30
+EPISODE_IDX = 0
+HF_REPO_ID = "<hf_username>/<dataset_repo_id>"
+
 
 def main():
-    # Initialize the robot
     robot_config = AuboI10Config()
+
     robot = AuboI10Robot(robot_config)
 
-    # Connect to the robot
+    dataset = LeRobotDataset(HF_REPO_ID, episodes=[EPISODE_IDX])
+    episode_frames = dataset.hf_dataset.filter(lambda x: x["episode_index"] == EPISODE_IDX)
+    actions = episode_frames.select_columns(ACTION)
+
     robot.connect()
 
-    if not robot.is_connected:
-        raise ValueError("Robot is not connected!")
-
-    # Load dataset
-    dataset = LeRobotDataset("./datasets/phone_auboi10")
-
-    # Init rerun viewer
-    init_rerun(session_name="phone_auboi10_replay")
-
-    print("Starting replay loop...")
-    print("Press Ctrl+C to stop replay.")
-
     try:
-        for i, sample in enumerate(dataset):
+        if not robot.is_connected:
+            raise ValueError("Robot is not connected!")
+
+        print("Starting replay loop...")
+        log_say(f"Replaying episode {EPISODE_IDX}")
+        for idx in range(len(episode_frames)):
             t0 = time.perf_counter()
 
-            # Get action from dataset
-            action = sample["action"]
+            ee_action = {
+                name: float(actions[idx][ACTION][i])
+                for i, name in enumerate(dataset.features[ACTION]["names"])
+            }
 
-            # Send action to robot
-            _ = robot.send_action(action)
+            robot_action = {
+                "ee.x": ee_action.get("ee.x", 0.0),
+                "ee.y": ee_action.get("ee.y", 0.0),
+                "ee.z": ee_action.get("ee.z", 0.0),
+                "ee.wx": ee_action.get("ee.wx", 0.0),
+                "ee.wy": ee_action.get("ee.wy", 0.0),
+                "ee.wz": ee_action.get("ee.wz", 0.0),
+                "gripper_pos": ee_action.get("ee.gripper_pos", ee_action.get("gripper_pos", 50.0)),
+            }
 
-            # Visualize
-            log_rerun_data(observation=sample["observation"], action=action)
+            _ = robot.send_action(robot_action)
 
-            print(f"Replayed step {i}/{len(dataset)}")
-            precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
-    except KeyboardInterrupt:
-        print("Stopping replay...")
+            precise_sleep(max(1.0 / dataset.fps - (time.perf_counter() - t0), 0.0))
+    finally:
+        robot.disconnect()
 
 
 if __name__ == "__main__":
