@@ -74,7 +74,7 @@ class AuboI10Robot(Robot):
         # connect cameras
         for cam_name, cam in self.cameras.items():
             try:
-                cam.connect()
+                cam.connect(warmup=False)
                 logging.info(f"{cam_name} connect success")
             except Exception as e:
                 logging.error(f"{cam_name} connect fail: {e}")
