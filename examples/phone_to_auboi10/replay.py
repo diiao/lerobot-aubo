@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import time
+from pathlib import Path
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
@@ -26,13 +27,19 @@ from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
 from lerobot.robots.aubo_i10.robot_processor import AuboEEToEEDelta
 from lerobot.utils.constants import ACTION
 from lerobot.utils.robot_utils import precise_sleep
-from lerobot.utils.utils import log_say
+from lerobot.utils.utils import log_say, init_logging
 
 EPISODE_IDX = 0
 LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 
 def main():
+    # Initialize logging
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_file_path = log_dir / "replay.log"
+    init_logging(log_file=log_file_path)
+
     robot_config = AuboI10Config()
 
     robot = AuboI10Robot(robot_config)
