@@ -202,28 +202,22 @@ class AuboI10Robot(Robot):
         else:
             logging.warning("机器人未连接，无法读取关节状态")
 
-        import os
-        save_dir = "debug_camera_images"
-        os.makedirs(save_dir, exist_ok=True)  # 提前创建目录，避免每次循环都创建
-
         for cam_key, cam in self.cameras.items():
             start_cam = time.perf_counter()
             try:
-                img = cam.async_read()   # 假设返回 numpy array (h,w,c) 或 PIL Image
-                if img is not None:
-                    obs_dict[cam_key] = img
-                else:
-                    obs_dict[cam_key] = None
-                    logging.warning(f"相机 {cam_key} 本次无图像")
-            except Exception as e:
-                logging.error(f"读取相机 {cam_key} 失败: {e}")
-                obs_dict[cam_key] = None
-
+                img = cam.read_latest()
+            except Exception:
+                # read_latest 失败时回退到 async_read（阻塞等待新帧）
+                try:
+                    img = cam.async_read(timeout_ms=200)
+                except Exception as e:
+                    # 所有读取方式均失败，使用黑色占位图像避免下游 None 崩溃
+                    logging.warning(f"相机 {cam_key} 读取失败，使用占位图像: {e}")
+                    img = np.zeros((480, 640, 3), dtype=np.uint8)
+            obs_dict[cam_key] = img
             dt_cam = (time.perf_counter() - start_cam) * 1e3
             logging.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
 
-        obs_dict["observation.image.handeye"] = obs_dict.pop("handeye", None)
-        obs_dict["observation.image.fixed"]   = obs_dict.pop("fixed", None)
         return obs_dict
 
     def send_action(self, action: dict) -> dict:
@@ -243,8 +237,11 @@ class AuboI10Robot(Robot):
             motion = self.robot_interface.getMotionControl()
             motion.setSpeedFraction(0.25)
 
-            # 如果伺服模式未开启，则开启
-            if not self.is_servo_mode_enabled:
+            # 检查伺服模式状态：同时验证本地标志和机器人实际状态
+            # 机器人伺服模式可能因超时自动失效（等待按键期间无命令发送），
+            # 此时本地 is_servo_mode_enabled 仍为 True，需同步修正
+            if not self.is_servo_mode_enabled or not motion.isServoModeEnabled():
+                self.is_servo_mode_enabled = False  # 与机器人实际状态同步
                 if not self.enable_servo_mode():
                     logging.error("无法开启伺服模式，退出")
                     return action
@@ -415,8 +412,6 @@ class AuboI10Robot(Robot):
             motion: 运动控制接口
         """
         current_pose = self.robot_interface.getRobotState().getTcpPose()
-        logging.debug(f"当前位姿: [{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
-                     f"[{current_pose[3]:.3f}, {current_pose[4]:.3f}, {current_pose[5]:.3f}]rad")
 
         dx = float(action.get("ee.x", 0.0))
         dy = float(action.get("ee.y", 0.0))
@@ -453,11 +448,9 @@ class AuboI10Robot(Robot):
             else:
                 break
 
-        logging.debug(f"笛卡尔伺服运动(仅位置): delta=[{dx:.3f}, {dy:.3f}, {dz:.3f}]m")
-        logging.debug(f"当前位姿: [{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
-                     f"[{current_pose[3]:.3f}, {current_pose[4]:.3f}, {current_pose[5]:.3f}]rad")
-        logging.debug(f"目标位姿: [{target_pose[0]:.3f}, {target_pose[1]:.3f}, {target_pose[2]:.3f}]m, "
-                     f"[{target_pose[3]:.3f}, {target_pose[4]:.3f}, {target_pose[5]:.3f}]rad (姿态保持不变)")
+        logging.debug(f"笛卡尔伺服运动(仅位置): delta=[{dx:.3f}, {dy:.3f}, {dz:.3f}]m, "
+                     f"当前=[{current_pose[0]:.3f}, {current_pose[1]:.3f}, {current_pose[2]:.3f}]m, "
+                     f"目标=[{target_pose[0]:.3f}, {target_pose[1]:.3f}, {target_pose[2]:.3f}]m")
 
     def _control_softpaws_based_on_gripper(self, gripper_pos: float):
         try:
@@ -581,8 +574,8 @@ class AuboI10Robot(Robot):
             "ee.wy": float,
             "ee.wz": float,
             "gripper_pos": float,
-            "observation.image.handeye": (480, 640, 3),  
-            "observation.image.fixed":   (480, 640, 3),
+            "handeye": (480, 640, 3),
+            "fixed": (480, 640, 3),
         }
 
     @property

@@ -153,34 +153,47 @@ class PhoneEEToAuboEE(RobotActionProcessorStep):
 class AuboGripperVelocityToPosition(RobotActionProcessorStep):
     """
     Converts gripper velocity command to gripper position for AuboI10.
-    
-    Integrates the velocity command over time to produce a position command,
-    using the current gripper position from observation as starting point.
-    
+
+    Uses threshold-based three-state switching (matching teleoperate.py):
+    - gripper_vel > 0.5  → fully open (100.0)  — A button pressed
+    - gripper_vel < -0.5 → fully closed (0.0)   — B button pressed
+    - else               → neutral (50.0)       — no button pressed
+
     Attributes:
-        speed_factor: Scaling factor for velocity to position conversion.
+        open_threshold: Velocity threshold to open gripper.
+        close_threshold: Velocity threshold to close gripper.
         clip_min: Minimum gripper position (closed).
         clip_max: Maximum gripper position (open).
+        neutral_pos: Gripper position when neither open nor close is commanded.
     """
-    
-    speed_factor: float = 20.0
+
+    open_threshold: float = 0.5
+    close_threshold: float = -0.5
     clip_min: float = 0.0
     clip_max: float = 100.0
+    neutral_pos: float = 50.0
 
     def action(self, action: RobotAction) -> RobotAction:
         observation = self.transition.get(TransitionKey.OBSERVATION)
-        
+
         if observation is None:
             raise ValueError("Observation is required for gripper position computation")
-        
+
         gripper_vel = action.pop("ee.gripper_vel")
-        current_gripper_pos = float(observation.get("gripper_pos", 50.0))
-        
-        delta = gripper_vel * self.speed_factor
-        gripper_pos = float(np.clip(current_gripper_pos + delta, self.clip_min, self.clip_max))
-        
+
+        # Three-state gripper control matching teleoperate.py logic:
+        # A pressed (vel > threshold)  → open  (100.0)
+        # B pressed (vel < -threshold) → close (0.0)
+        # Neither pressed              → neutral / hold (50.0)
+        if gripper_vel > self.open_threshold:
+            gripper_pos = self.clip_max      # Open
+        elif gripper_vel < self.close_threshold:
+            gripper_pos = self.clip_min      # Close
+        else:
+            gripper_pos = self.neutral_pos   # Neutral: neither open nor close
+
         action["ee.gripper_pos"] = gripper_pos
-        
+
         return action
 
     def transform_features(
