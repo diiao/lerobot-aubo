@@ -14,10 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
-from lerobot.datasets.utils import combine_feature_dicts
+import time
+from pathlib import Path
+
+from lerobot.cameras.configs import OpenCVCameraConfig
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.processor import (
@@ -36,28 +37,62 @@ from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
 from lerobot.robots.aubo_i10.robot_processor import AuboEEToEEDelta
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.utils.control_utils import init_keyboard_listener
-from lerobot.utils.utils import log_say
-from lerobot.utils.visualization_utils import init_rerun
+from lerobot.utils.utils import log_say, init_logging
 
 NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
-TASK_DESCRIPTION = "My task description"
+TASK_DESCRIPTION = "Place the ball in the bucket"
 LOCAL_MODEL_PATH = "./models/phone_auboi10"
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
+TRAINING_DATASET_PATH = "./datasets/phone_auboi10"
+LOCAL_EVAL_DATASET_PATH = "./datasets/phone_auboi10_eval"
+
+
+def wait_for_key(events: dict, prompt: str = "按 → (右箭头键) 继续") -> bool:
+    """等待用户按下右箭头键继续，或按 Esc 退出。"""
+    events["exit_early"] = False
+    print("\n" + "=" * 50)
+    print(prompt)
+    print("按 Esc 终止")
+    print("=" * 50)
+    while not events["exit_early"] and not events["stop_recording"]:
+        time.sleep(0.05)
+    if events["stop_recording"]:
+        return False
+    events["exit_early"] = False
+    return True
 
 
 def main():
-    robot_config = AuboI10Config()
+    # ------------------------------------------------------------------
+    # 0. 日志
+    # ------------------------------------------------------------------
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    init_logging(log_file=str(log_dir / "evaluate.log"))
 
+    # ------------------------------------------------------------------
+    # 1. 配置机器人（必须包含相机，策略需要图像输入）
+    # ------------------------------------------------------------------
+    camera_config = {
+        "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
+        "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
+    }
+    robot_config = AuboI10Config(cameras=camera_config)
     robot = AuboI10Robot(robot_config)
 
+    # ------------------------------------------------------------------
+    # 2. 加载训练好的 ACT 策略
+    # ------------------------------------------------------------------
     policy = ACTPolicy.from_pretrained(LOCAL_MODEL_PATH)
+    policy.eval()
+    print(f"模型已加载: {LOCAL_MODEL_PATH}, device={policy.config.device}")
 
+    # ------------------------------------------------------------------
+    # 3. 构建处理器管线
+    # ------------------------------------------------------------------
     ee_to_delta_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
-        steps=[
-            AuboEEToEEDelta(),
-        ],
+        steps=[AuboEEToEEDelta()],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
@@ -68,51 +103,58 @@ def main():
         to_output=transition_to_observation,
     )
 
+    # ------------------------------------------------------------------
+    # 4. 使用训练数据集的统计量 + 模型配置创建预/后处理器
+    # ------------------------------------------------------------------
+    training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy_cfg=policy.config,
+        pretrained_path=LOCAL_MODEL_PATH,
+        dataset_stats=training_metadata.stats,
+        preprocessor_overrides={"device_processor": {"device": str(policy.config.device)}},
+    )
+
+    # ------------------------------------------------------------------
+    # 5. 创建评估数据集（复用训练数据集的 features 定义）
+    # ------------------------------------------------------------------
     dataset = LeRobotDataset.create(
-        repo_id=LOCAL_DATASET_PATH,
+        repo_id=LOCAL_EVAL_DATASET_PATH,
         fps=FPS,
-        features=combine_feature_dicts(
-            aggregate_pipeline_dataset_features(
-                pipeline=robot_observation_processor,
-                initial_features=create_initial_features(observation=robot.observation_features),
-                use_videos=True,
-            ),
-            aggregate_pipeline_dataset_features(
-                pipeline=make_default_teleop_action_processor(),
-                initial_features=create_initial_features(
-                    action={
-                        f"ee.{k}": PolicyFeature(type=FeatureType.ACTION, shape=(1,))
-                        for k in ["x", "y", "z", "wx", "wy", "wz", "gripper_pos"]
-                    }
-                ),
-                use_videos=True,
-            ),
-        ),
+        features=training_metadata.features,
         robot_type=robot.name,
         use_videos=True,
         image_writer_threads=4,
     )
 
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=policy,
-        pretrained_path=LOCAL_MODEL_PATH,
-        dataset_stats=dataset.meta.stats,
-        preprocessor_overrides={"device_processor": {"device": str(policy.config.device)}},
-    )
-
+    # ------------------------------------------------------------------
+    # 6. 连接机器人并执行推理
+    # ------------------------------------------------------------------
     robot.connect()
-
     listener, events = init_keyboard_listener()
-    init_rerun(session_name="phone_auboi10_evaluate")
 
     try:
         if not robot.is_connected:
             raise ValueError("Robot is not connected!")
 
-        print("Starting evaluate loop...")
+        print("\n" + "=" * 50)
+        print("评估操作指南:")
+        print("  → (右箭头): 开始/结束当前 episode")
+        print("  ← (左箭头): 结束并重录当前 episode")
+        print("  Esc:        终止整个评估")
+        print("=" * 50)
+
         episode_idx = 0
-        for episode_idx in range(NUM_EPISODES):
-            log_say(f"Running inference, recording eval episode {episode_idx + 1} of {NUM_EPISODES}")
+        while episode_idx < NUM_EPISODES and not events["stop_recording"]:
+            # --- 等待用户按键开始 ---
+            log_say(f"准备执行 episode {episode_idx + 1} / {NUM_EPISODES}")
+            if not wait_for_key(events, f"按 → 开始执行 episode {episode_idx + 1} / {NUM_EPISODES}"):
+                break
+
+            # 重置处理器状态
+            ee_to_delta_processor.reset()
+
+            log_say(f"开始推理 episode {episode_idx + 1} / {NUM_EPISODES}")
+            print("推理中... 按 → 结束本轮, 按 ← 重录, 按 Esc 终止")
 
             record_loop(
                 robot=robot,
@@ -124,43 +166,44 @@ def main():
                 dataset=dataset,
                 control_time_s=EPISODE_TIME_SEC,
                 single_task=TASK_DESCRIPTION,
-                display_data=True,
+                display_data=False,
                 teleop_action_processor=make_default_teleop_action_processor(),
                 robot_action_processor=ee_to_delta_processor,
                 robot_observation_processor=robot_observation_processor,
             )
 
-            if not events["stop_recording"] and (
-                (episode_idx < NUM_EPISODES - 1) or events["rerecord_episode"]
-            ):
-                log_say("Reset the environment")
-                record_loop(
-                    robot=robot,
-                    events=events,
-                    fps=FPS,
-                    control_time_s=EPISODE_TIME_SEC,
-                    single_task=TASK_DESCRIPTION,
-                    display_data=True,
-                    teleop_action_processor=make_default_teleop_action_processor(),
-                    robot_action_processor=ee_to_delta_processor,
-                    robot_observation_processor=robot_observation_processor,
-                )
-
+            # --- 处理重录 ---
             if events["rerecord_episode"]:
-                log_say("Re-record episode")
+                log_say("重新执行本轮 episode")
                 events["rerecord_episode"] = False
                 events["exit_early"] = False
                 dataset.clear_episode_buffer()
                 continue
 
+            # --- 保存 episode ---
             dataset.save_episode()
+            log_say(f"Episode {episode_idx + 1} 已保存")
             episode_idx += 1
+
+            # 最后一轮不需要重置环境
+            if episode_idx >= NUM_EPISODES or events["stop_recording"]:
+                break
+
+            # --- 重置环境阶段 ---
+            robot.disable_servo_mode()
+            log_say("请重置环境（可使用示教器移动机器人）")
+            if not wait_for_key(events, "重置环境完成后，按 → 开始下一轮推理"):
+                break
+
     finally:
-        log_say("Stop recording")
+        log_say("评估结束")
         robot.disconnect()
-        listener.stop()
+        if listener:
+            listener.stop()
 
         dataset.finalize()
+        print(f"\n评估数据已保存至: {LOCAL_EVAL_DATASET_PATH}")
+        print(f"共执行 {episode_idx} 个 episodes")
 
 
 if __name__ == "__main__":
