@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
+from pathlib import Path
+
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
@@ -37,24 +40,48 @@ from lerobot.teleoperators.phone.config_phone import PhoneConfig, PhoneOS
 from lerobot.teleoperators.phone.phone_processor import MapPhoneActionToRobotAction
 from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.control_utils import init_keyboard_listener
-from lerobot.utils.utils import log_say
-from lerobot.utils.visualization_utils import init_rerun
+from lerobot.utils.utils import log_say, init_logging
 
 NUM_EPISODES = 3
 FPS = 30
 EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
-TASK_DESCRIPTION = "My task description"
+TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
 LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
 
 
+def wait_for_key(events: dict, prompt: str = "按 → (右箭头键) 继续") -> bool:
+    """
+    等待用户按下右箭头键继续，或按 Esc 退出。
+    返回 True 表示可以继续，False 表示用户按了 Esc 终止。
+    """
+    events["exit_early"] = False
+    print("\n" + "=" * 50)
+    print(prompt)
+    print("按 Esc 终止整个录制")
+    print("=" * 50)
+    while not events["exit_early"] and not events["stop_recording"]:
+        time.sleep(0.05)
+    if events["stop_recording"]:
+        return False
+    events["exit_early"] = False
+    return True
+
+
 def main():
+    # Initialize logging: 控制台 INFO，文件 DEBUG
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_file_path = log_dir / "record.log"
+    init_logging(log_file=log_file_path, console_level="INFO", file_level="DEBUG")
+
     camera_config = {
         "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
         "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
     }
     robot_config = AuboI10Config(cameras=camera_config)
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
+    
 
     robot = AuboI10Robot(robot_config)
     phone = Phone(teleop_config)
@@ -65,14 +92,14 @@ def main():
         steps=[
             MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
             PhoneEEToAuboEE(
-                end_effector_step_sizes={"x": 0.3, "y": 0.3, "z": 0.3},
-                use_latched_reference=True,
+                end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
+                use_latched_reference=False,
             ),
             AuboEEBoundsAndSafety(
                 end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [0.8, 0.0, 0.8]},
                 max_ee_step_m=0.05,
             ),
-            AuboGripperVelocityToPosition(speed_factor=20.0),
+            AuboGripperVelocityToPosition(),
         ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
@@ -116,16 +143,31 @@ def main():
     phone.connect()
 
     listener, events = init_keyboard_listener()
-    init_rerun(session_name="phone_auboi10_record")
 
     try:
         if not robot.is_connected or not phone.is_connected:
             raise ValueError("Robot or teleop is not connected!")
 
-        print("Starting record loop. Move your phone to teleoperate the robot...")
+        print("\n" + "=" * 50)
+        print("录制操作指南:")
+        print("  → (右箭头): 开始/结束当前 episode")
+        print("  ← (左箭头): 结束并重录当前 episode")
+        print("  Esc:        终止整个录制")
+        print("=" * 50)
+
         episode_idx = 0
         while episode_idx < NUM_EPISODES and not events["stop_recording"]:
-            log_say(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}")
+            # --- 等待用户按键开始录制 ---
+            log_say(f"准备录制 episode {episode_idx + 1} / {NUM_EPISODES}")
+            if not wait_for_key(events, f"按 → 开始录制 episode {episode_idx + 1} / {NUM_EPISODES}"):
+                break
+
+            # 每轮开始前重置处理器状态（清除上一轮的累积状态）
+            phone_to_robot_ee_pose_processor.reset()
+            ee_to_delta_processor.reset()
+
+            log_say(f"开始录制 episode {episode_idx + 1} / {NUM_EPISODES}")
+            print("录制中... 按 → 结束本轮, 按 ← 重录, 按 Esc 终止")
 
             record_loop(
                 robot=robot,
@@ -135,45 +177,46 @@ def main():
                 dataset=dataset,
                 control_time_s=EPISODE_TIME_SEC,
                 single_task=TASK_DESCRIPTION,
-                display_data=True,
+                display_data=False,
                 teleop_action_processor=phone_to_robot_ee_pose_processor,
                 robot_action_processor=ee_to_delta_processor,
                 robot_observation_processor=robot_observation_processor,
             )
 
-            if not events["stop_recording"] and (
-                episode_idx < NUM_EPISODES - 1 or events["rerecord_episode"]
-            ):
-                log_say("Reset the environment")
-                record_loop(
-                    robot=robot,
-                    events=events,
-                    fps=FPS,
-                    teleop=phone,
-                    control_time_s=RESET_TIME_SEC,
-                    single_task=TASK_DESCRIPTION,
-                    display_data=True,
-                    teleop_action_processor=phone_to_robot_ee_pose_processor,
-                    robot_action_processor=ee_to_delta_processor,
-                    robot_observation_processor=robot_observation_processor,
-                )
-
+            # --- 处理重录 ---
             if events["rerecord_episode"]:
-                log_say("Re-recording episode")
+                log_say("重新录制本轮 episode")
                 events["rerecord_episode"] = False
                 events["exit_early"] = False
                 dataset.clear_episode_buffer()
                 continue
 
+            # --- 保存 episode ---
             dataset.save_episode()
+            log_say(f"Episode {episode_idx + 1} 已保存")
             episode_idx += 1
+
+            # 最后一轮不需要重置环境
+            if episode_idx >= NUM_EPISODES or events["stop_recording"]:
+                break
+
+            # --- 重置环境阶段 ---
+            # 关闭伺服模式，让示教器可以自由控制机器人
+            robot.disable_servo_mode()
+            log_say("请重置环境（可使用示教器移动机器人）")
+            if not wait_for_key(events, "重置环境完成后，按 → 开始下一轮录制"):
+                break
+
     finally:
-        log_say("Stop recording")
+        log_say("录制结束")
         robot.disconnect()
         phone.disconnect()
-        listener.stop()
+        if listener:
+            listener.stop()
 
         dataset.finalize()
+        print(f"\n数据集已保存至: {LOCAL_DATASET_PATH}")
+        print(f"共录制 {episode_idx} 个 episodes")
 
 
 if __name__ == "__main__":
