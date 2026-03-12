@@ -30,7 +30,6 @@ from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 from pathlib import Path
-from datetime import datetime
 
 FPS = 50
 from lerobot.utils.utils import (
@@ -42,8 +41,7 @@ from lerobot.utils.utils import (
 def main():
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file_path = log_dir / f"record_{timestamp_str}.log"
+    log_file_path = log_dir / "teleoperate.log"
     init_logging(log_file=log_file_path)
     # Initialize robot and teleoperator
     robot_config = AuboI10Config()
