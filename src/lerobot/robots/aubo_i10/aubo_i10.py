@@ -58,15 +58,15 @@ class AuboI10Robot(Robot):
         self.robot_rpc_client.setRequestTimeout(1000)
         self.robot_rpc_client.connect(self.robot_ip, self.robot_port)
         ########################################################
-        # print("[DEBUG] AuboI10Robot 开始连接 cameras...")
+        print(f"[CAMERA DIAG] 注册的相机数量: {len(self.cameras)}, keys: {list(self.cameras.keys())}")
         for cam_name, cam in self.cameras.items():##
-            # print(f"  → 正在 connect {cam_name} (index_or_path={cam.index_or_path})")
+            print(f"  → 正在连接相机 {cam_name} ...")
             try:
                 cam.connect()
                 print(f"  → {cam_name} connect 后 is_connected = {cam.is_connected}")
             except Exception as e:
-                print(f"  → {cam_name} connect 失败: {e}")##
-        # print("[DEBUG] 所有 cameras 连接尝试结束")##
+                print(f"  → ❌ {cam_name} connect 失败: {e}")##
+        print(f"[CAMERA DIAG] 相机连接完成")##
         if self.robot_rpc_client.hasConnected():
             # print("RPC客户端连接成功!")
             self.robot_rpc_client.login("aubo", "123456")
@@ -124,22 +124,11 @@ class AuboI10Robot(Robot):
                 img = cam.async_read()   # 假设返回 numpy array (h,w,c) 或 PIL Image
                 if img is not None:
                     obs_dict[cam_key] = img
-
-                    # 保存图像用于调试（只在开发阶段启用，正式运行可注释掉）
-                    # timestamp = int(time.time() * 1000)
-                    # path = f"{save_dir}/{cam_key}_{timestamp}.jpg"
-
-                    # if len(img.shape) == 3 and img.shape[2] == 3:
-                    #     cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-                    #     print(f"已保存调试图像: {path}")
-                    # else:
-                    #     print(f"警告: {cam_key} 图像格式异常,shape={getattr(img, 'shape', '未知')}")
-
                 else:
                     obs_dict[cam_key] = None
-                    logging.debug(f"相机 {cam_key} 本次无图像")
+                    print(f"⚠️ 相机 {cam_key} 返回 None — 图像未正常采集!")
             except Exception as e:
-                logging.error(f"读取相机 {cam_key} 失败: {e}")
+                print(f"❌ 读取相机 {cam_key} 失败: {e}")
                 obs_dict[cam_key] = None
 
             dt_cam = (time.perf_counter() - start_cam) * 1e3

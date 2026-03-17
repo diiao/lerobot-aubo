@@ -315,6 +315,7 @@ def record_loop(
         postprocessor.reset()
 
     timestamp = 0
+    _debug_frame_count = 0  # Debug counter for diagnostic output
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
@@ -332,6 +333,43 @@ def record_loop(
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
+        # === 诊断调试输出 (仅前3帧) ===
+        if policy is not None and _debug_frame_count < 3:
+            import numpy as _np
+            print(f"\n{'='*60}")
+            print(f"[DEBUG] Frame #{_debug_frame_count} 数据流诊断")
+            print(f"{'='*60}")
+            print(f"[DEBUG] robot.get_observation() 返回的 keys:")
+            for k, v in obs.items():
+                if hasattr(v, 'shape'):
+                    print(f"  {k}: shape={v.shape}, dtype={v.dtype}, range=[{v.min():.4f}, {v.max():.4f}]")
+                elif v is None:
+                    print(f"  {k}: ❌ None (相机可能未正常工作!)")
+                else:
+                    print(f"  {k}: {v}")
+            print(f"[DEBUG] build_dataset_frame() 返回的 keys (传给策略):")
+            for k, v in observation_frame.items():
+                if hasattr(v, 'shape'):
+                    print(f"  {k}: shape={v.shape}, dtype={v.dtype}, range=[{v.min():.4f}, {v.max():.4f}]")
+                elif v is None:
+                    print(f"  {k}: ❌ None!")
+                else:
+                    print(f"  {k}: {v}")
+            # 检查策略期望的 image keys 是否在 observation_frame 中
+            if hasattr(policy, 'config') and hasattr(policy.config, 'image_features'):
+                expected_keys = list(policy.config.image_features.keys())
+                print(f"[DEBUG] 策略期望的图像 keys: {expected_keys}")
+                for ek in expected_keys:
+                    if ek in observation_frame:
+                        v = observation_frame[ek]
+                        if v is not None:
+                            print(f"  ✅ '{ek}' 存在: shape={v.shape}")
+                        else:
+                            print(f"  ❌ '{ek}' 为 None! 相机图像未被传入!")
+                    else:
+                        print(f"  ❌ '{ek}' 不存在! Key不匹配!")
+                        print(f"     观察字典中可用的 keys: {list(observation_frame.keys())}")
+
         # Get action from either policy or teleop
         if policy is not None and preprocessor is not None and postprocessor is not None:
             action_values = predict_action(
@@ -346,6 +384,14 @@ def record_loop(
             )
 
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
+
+            # === 诊断调试: 打印 action 输出 ===
+            if _debug_frame_count < 3:
+                print(f"[DEBUG] 策略输出 action:")
+                for k, v in act_processed_policy.items():
+                    print(f"  {k}: {v:.4f}")
+                print(f"{'='*60}\n")
+            _debug_frame_count += 1
 
         elif policy is None and isinstance(teleop, Teleoperator):
             act = teleop.get_action()
