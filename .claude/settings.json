@@ -1,0 +1,16 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "4eb0f95f-69a9-41ee-9c37-7504ee50649d", 
+    "ANTHROPIC_BASE_URL": "https://ark.cn-beijing.volces.com/api/coding",
+    "ANTHROPIC_MODEL": "glm-4.7",
+    "ANTHROPIC_SMALL_FAST_MODEL": "glm-4.7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-4.7",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-4.7",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "30000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+  },
+  "permissions": {
+    "allow": [],
+    "deny": []
+  }
+}

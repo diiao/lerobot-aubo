@@ -10,7 +10,7 @@ import threading
 import time
 import logging
 
-FPS = 6
+FPS = 30  # 30Hz 的发送频率（可以根据需要调整）
 
 def main():
     init_logging()
@@ -61,32 +61,28 @@ def main():
     # init_rerun(session_name="so101_aubo_joint_teleop_v02")
 
     stop_event = threading.Event()                # 停止信号
-    new_action_event = threading.Event()          # 新动作到来信号
     lock = threading.Lock()                       # 保护 latest_action
     latest_action = None                          # 最新的动作（dict）
+    send_frequency = 30                           # 发送频率 30Hz
 
     def send_thread():
-        last_send_time = 0.0
-        min_interval = 0.08  # 至少 80ms 发一次，防止洪水
-        
+        interval = 1.0 / send_frequency
+
         while not stop_event.is_set():
-            # 等待新动作信号，最多等 150ms
-            if new_action_event.wait(timeout=0.15):
-                with lock:
-                    if latest_action is None:
-                            continue
-                    action_to_send = leader_action.copy()
-                    now = time.perf_counter()
-                    if now - last_send_time < min_interval:
-                            continue
-            try:
-                t_send = time.perf_counter()
-                follower.send_action(action_to_send)
-                dt_send = (time.perf_counter() - t_send) * 1000
-                print(f"[Send] {dt_send:.1f}ms | 示例: {list(action_to_send.values())[:3]}...")  # 调试
-                last_send_time = now
-            except Exception as e:
-                print(f"send_action 失败: {e}")
+            with lock:
+                if latest_action is not None:
+                    action_to_send = latest_action.copy()
+
+                    try:
+                        t_send = time.perf_counter()
+                        follower.send_action(action_to_send)
+                        dt_send = (time.perf_counter() - t_send) * 1000
+                        print(f"[Send] {dt_send:.1f}ms | 示例: {list(action_to_send.values())[:3]}...")  # 调试
+                    except Exception as e:
+                        print(f"send_action 失败: {e}")
+
+            # 固定频率轮询
+            precise_sleep(interval, 0.0)
 
     # 启动发送线程
     send_thread_obj = threading.Thread(target=send_thread, daemon=True)
@@ -111,7 +107,6 @@ def main():
                 if latest_action is None:
                     # 第一次直接更新
                     latest_action = leader_action.copy()
-                    new_action_event.set()
                 else:
                     # 计算最大变化（忽略 gripper 如果有）
                     max_delta = max(
@@ -119,9 +114,8 @@ def main():
                         for k in leader_action
                         if k != 'gripper.pos' and k in latest_action
                     )
-                    if max_delta > 3.0:  # 调这个阈值：1.0~3.0，根据 leader 抖动
+                    if max_delta > 1.0:  # 调这个阈值：1.0~3.0，根据 leader 抖动
                         latest_action = leader_action.copy()
-                        new_action_event.set()
 
             dt_total = (time.perf_counter() - t0) * 1000
             frame_count += 1

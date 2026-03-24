@@ -49,7 +49,6 @@ class AuboI10Robot(Robot):
         # 建议值：0.0（默认）、90.0、-90.0、180.0 等，根据工具朝向调整
         self.fixed_axis5_deg = 90.0   # ← 你可以随时修改这个值
         ############################################################
-        # print("[DEBUG] AuboI10Robot __init__ 完成，cameras keys:", list(self.cameras.keys()) if hasattr(self, 'cameras') else "无 cameras 属性")
     @property
     def is_connected(self) -> bool:
         return self.robot_rpc_client.hasConnected()
@@ -80,6 +79,11 @@ class AuboI10Robot(Robot):
 
                 self.io_control = self.robot_interface.getIoControl()
                 # print(f"软爪控制初始化完成 - 打开引脚: {self.softpaws_open_pin}, 关闭引脚: {self.softpaws_close_pin}")
+
+                # 开启伺服模式（用于遥操作）
+                motion = self.robot_interface.getMotionControl()
+                motion.setServoMode(pyaubo_sdk.RobotControlModeType.Servo.value)
+                print(f"[Servo Mode] 已开启关节伺服模式")
 
     @property
     def is_calibrated(self) -> bool:
@@ -151,7 +155,7 @@ class AuboI10Robot(Robot):
             return action
 
         motion = self.robot_interface.getMotionControl()
-        motion.setSpeedFraction(1)  
+        motion.setSpeedFraction(0.1)  # 设置整体速度比例（0.0 - 1.0），可以根据需要调整
 
         # leader 常见的关节名称（如果实际不同，请在这里修改）
         leader_joint_keys = [
@@ -197,8 +201,11 @@ class AuboI10Robot(Robot):
         # 转换为弧度
         aubo_joints_rad = [math.radians(deg) for deg in aubo_joints_deg]
 
-        # 发送关节运动指令
-        motion.moveJoint(aubo_joints_rad, 0.8, 0.8, 0.0, 0.0)  
+        # 发送关节伺服指令（遥操作专用，实时响应）
+        # servoJoint(joint_positions, speed, acc, r0, r1, r2)
+        # speed/acc: 速度和加速度百分比
+        # r0, r1, r2: 圆滑过渡参数（伺服模式通常设为0）
+        motion.servoJoint(aubo_joints_rad, 0.3, 0.3, 1.0, 0.0, 0.0)  
 
         # 处理夹爪
         gripper_pos = action.get('gripper.pos', action.get('ee.gripper_pos', 0))
@@ -297,27 +304,6 @@ class AuboI10Robot(Robot):
             self.robot_rpc_client.logout()
         self.robot_rpc_client.disconnect()
 
-
-##############################
-#开启阻塞，会导致遥操时真机卡顿
-    # def wait_arrival(self, robot_interface):
-    #     max_retry_count = 5
-    #     cnt = 0
-
-    #     motion = robot_interface.getMotionControl()
-    #     exec_id = motion.getExecId()
-
-    #     while exec_id == -1:
-    #         if cnt > max_retry_count:
-    #             return -1
-    #         time.sleep(0.001)
-    #         cnt += 1
-    #         exec_id = motion.getExecId()
-
-    #     while motion.getExecId() != -1:
-    #         time.sleep(0.001)
-
-    #     return 0
 
     def get_robot_status(self):
         if not self.robot_interface:
