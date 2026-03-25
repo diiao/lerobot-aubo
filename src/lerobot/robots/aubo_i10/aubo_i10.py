@@ -205,7 +205,7 @@ class AuboI10Robot(Robot):
         # servoJoint(joint_positions, speed, acc, r0, r1, r2)
         # speed/acc: 速度和加速度百分比
         # r0, r1, r2: 圆滑过渡参数（伺服模式通常设为0）
-        motion.servoJoint(aubo_joints_rad, 0.3, 0.3, 1.0, 0.0, 0.0)  
+        motion.servoJoint(aubo_joints_rad, 0.3, 0.3, 0.9, 0.0, 0.0)  
 
         # 处理夹爪
         gripper_pos = action.get('gripper.pos', action.get('ee.gripper_pos', 0))

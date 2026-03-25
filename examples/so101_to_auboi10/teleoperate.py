@@ -14,7 +14,7 @@ FPS = 30  # 30Hz 的发送频率（可以根据需要调整）
 
 def main():
     init_logging()
-    logging.getLogger().setLevel(logging.WARNING)
+    logging.getLogger().setLevel(logging.DEBUG)
 
     leader_config = SO101LeaderConfig(
         port="/dev/ttyACM0",
