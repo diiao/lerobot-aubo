@@ -104,6 +104,7 @@ def main():
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
+    
 
     # 机器人观测处理器
     robot_observation_processor = RobotProcessorPipeline[RobotObservation, RobotObservation](

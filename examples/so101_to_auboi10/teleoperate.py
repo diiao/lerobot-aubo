@@ -14,7 +14,7 @@ FPS = 30  # 30Hz 的发送频率（可以根据需要调整）
 
 def main():
     init_logging()
-    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.WARNING)  # 设置全局日志级别为 WARNING，减少不必要的日志输出
 
     leader_config = SO101LeaderConfig(
         port="/dev/ttyACM0",
@@ -101,21 +101,30 @@ def main():
             leader_action = leader.get_action()
             dt_get = (time.perf_counter() - t1) * 1000  # 修正 t1 - t0 → time.perf_counter() - t1
 
+            # 每60帧打印一次 leader_action 的值
+            if frame_count % 60 == 0:
+                print(f"[Leader] 获取的值: {[(k, f'{v:.2f}') for k, v in leader_action.items()]}")
+
 
             # 只更新 latest_action + 死区滤波
             with lock:
                 if latest_action is None:
                     # 第一次直接更新
                     latest_action = leader_action.copy()
+                    print(f"[Init] 首次 leader_action: {list(leader_action.values())[:3]}...")
                 else:
                     # 计算最大变化（忽略 gripper 如果有）
-                    max_delta = max(
-                        abs(leader_action[k] - latest_action[k])
-                        for k in leader_action
-                        if k != 'gripper.pos' and k in latest_action
-                    )
-                    if max_delta > 1.0:  # 调这个阈值：1.0~3.0，根据 leader 抖动
+                    deltas = {k: abs(leader_action[k] - latest_action[k])
+                               for k in leader_action
+                               if k != 'gripper.pos' and k in latest_action}
+                    max_delta = max(deltas.values()) if deltas else 0
+                    if max_delta > 0.05:  # 阈值改为0.1度，让微小移动也能响应
                         latest_action = leader_action.copy()
+                    else:
+                        # 打印被过滤的小变化（每60帧一次）
+                        if frame_count % 60 == 0:
+                            print(f"[Filtered] max_delta={max_delta:.3f} (阈值0.1), 动作未更新")
+                            print(f"  deltas: {[(k, f'{v:.3f}') for k, v in deltas.items()]}")
 
             dt_total = (time.perf_counter() - t0) * 1000
             frame_count += 1

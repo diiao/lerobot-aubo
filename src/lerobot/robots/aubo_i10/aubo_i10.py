@@ -48,6 +48,7 @@ class AuboI10Robot(Robot):
         # 固定 Aubo 的第五轴角度（单位：度）
         # 建议值：0.0（默认）、90.0、-90.0、180.0 等，根据工具朝向调整
         self.fixed_axis5_deg = 90.0   # ← 你可以随时修改这个值
+        self.fixed_axis6_deg = -65.0   # 你可以随时修改这个值
         ############################################################
     @property
     def is_connected(self) -> bool:
@@ -195,7 +196,8 @@ class AuboI10Robot(Robot):
             corrected[2],              # J3
             corrected[3],              # J4
             self.fixed_axis5_deg,      # J5 固定
-            corrected[4],              # J6
+            self.fixed_axis6_deg
+            # corrected[4],              # J6
         ]
 
         # 转换为弧度
