@@ -1,9 +1,0 @@
-{
-    "env": {
-      "ANTHROPIC_BASE_URL": "https://api.v3.cm",
-      "ANTHROPIC_AUTH_TOKEN": "sk-0PVlQWGhJFrWPqr2Fa6371F6760d4bEfB8Af4b01AfD7476b",
-      "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
-      "ANTHROPIC_SMALL_FAST_MODEL": "claude-haiku-4-5-20251001",
-      "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":1
-    }
-}

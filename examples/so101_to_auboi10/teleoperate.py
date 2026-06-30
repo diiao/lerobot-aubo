@@ -68,17 +68,22 @@ def main():
     def send_thread():
         last_send_time = 0.0
         min_interval = 0.08  # 至少 80ms 发一次，防止洪水
-        
+        action_to_send = None
+
         while not stop_event.is_set():
             # 等待新动作信号，最多等 150ms
-            if new_action_event.wait(timeout=0.15):
-                with lock:
-                    if latest_action is None:
-                            continue
-                    action_to_send = leader_action.copy()
-                    now = time.perf_counter()
-                    if now - last_send_time < min_interval:
-                            continue
+            new_action_event.wait(timeout=0.15)
+            new_action_event.clear()
+
+            with lock:
+                if latest_action is None:
+                    continue
+                now = time.perf_counter()
+                if now - last_send_time < min_interval:
+                    continue
+                # 在锁内拷贝最新动作，避免读到主线程正在覆写的 dict
+                action_to_send = latest_action.copy()
+
             try:
                 t_send = time.perf_counter()
                 follower.send_action(action_to_send)
