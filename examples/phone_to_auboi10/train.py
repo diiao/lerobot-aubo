@@ -108,13 +108,15 @@ def main():
     # ------------------------------------------------------------------
     # ACT needs action_delta_indices frames of future actions for chunking,
     # and observation_delta_indices for multi-step obs (None → current frame only).
+    # ACT's observation_delta_indices is None, so per resolve_delta_timestamps
+    # only `action` gets delta timestamps (the future action chunk). Observation
+    # state and images are read as single current-frame values — do NOT add
+    # `observation.state: [0.0]` or image timestamps, that inserts a spurious
+    # time dimension (e.g. state becomes (B,1,D)) and breaks the VAE encoder's
+    # tensor concat with a mismatched-ndim error.
     delta_timestamps: dict[str, list[float]] = {
         "action": [i / dataset_metadata.fps for i in cfg.action_delta_indices],
-        "observation.state": [0.0],
     }
-    # Add timestamps for each image observation key
-    for key in cfg.image_features:
-        delta_timestamps[key] = [0.0]  # single-frame observation
 
     dataset = LeRobotDataset(LOCAL_DATASET_PATH, delta_timestamps=delta_timestamps)
 
