@@ -41,14 +41,14 @@ LOCAL_MODEL_PATH = "./models/phone_auboi10"
 
 # --- Training hyperparameters ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE = 8
-TRAINING_STEPS = 50_000
+BATCH_SIZE = 16
+TRAINING_STEPS = 20_000
 LOG_FREQ = 200
 SAVE_FREQ = 5_000
 
-# ACT hyperparameters (tuned for 30fps Aubo data)
-CHUNK_SIZE = 50       # 50 steps @ 30fps ≈ 1.67s action horizon
-N_ACTION_STEPS = 50   # Execute all predicted actions before re-querying
+# ACT hyperparameters (tuned for 30fps Aubo data, small dataset)
+CHUNK_SIZE = 10       # 10 steps @ 30fps ≈ 0.33s action horizon
+N_ACTION_STEPS = 10   # Execute all predicted actions before re-querying
 
 
 def main():

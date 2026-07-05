@@ -42,9 +42,9 @@ from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
-NUM_EPISODES = 3
+NUM_EPISODES = 30
 FPS = 30
-EPISODE_TIME_SEC = 60
+EPISODE_TIME_SEC = 40
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
 LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
