@@ -8,6 +8,7 @@
 - `record.py` - 记录数据集脚本
 - `replay.py` - 回放已记录数据脚本
 - `evaluate.py` - 评估训练好的策略脚本
+- `REMOTE_TRAINING.md` - 远程训练流程（本地采集 → GPU 机训练）
 
 ## 使用流程
 
