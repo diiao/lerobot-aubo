@@ -17,7 +17,7 @@
 import time
 from pathlib import Path
 
-from lerobot.cameras.configs import OpenCVCameraConfig
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
