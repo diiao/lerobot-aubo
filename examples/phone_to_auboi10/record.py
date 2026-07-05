@@ -31,8 +31,8 @@ from lerobot.processor.converters import (
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
 from lerobot.robots.aubo_i10.robot_processor import (
     AuboEEBoundsAndSafety,
-    AuboEEToEEDelta,
     AuboGripperVelocityToPosition,
+    AuboLockVerticalYaw,
     PhoneEEToAuboEE,
 )
 from lerobot.scripts.lerobot_record import record_loop
@@ -91,12 +91,17 @@ def main():
     ](
         steps=[
             MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
+            AuboLockVerticalYaw(
+                yaw_gain=-1.0,       # 负号修正方向
+                yaw_smoothing=0.0,
+            ),
             PhoneEEToAuboEE(
-                end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
-                use_latched_reference=False,
+                velocity_mode=True,
+                end_effector_step_sizes={"x": 0.05, "y": 0.05, "z": 0.05},
+                position_acceleration=4.0,
             ),
             AuboEEBoundsAndSafety(
-                end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [0.8, 0.0, 0.8]},
+                end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [1.0, 0.0, 0.8]},
                 max_ee_step_m=0.05,
             ),
             AuboGripperVelocityToPosition(),
@@ -105,10 +110,9 @@ def main():
         to_output=transition_to_robot_action,
     )
 
+    # robot_action_processor：phone_to_robot_ee_pose_processor 已输出绝对位姿，此处为空通路
     ee_to_delta_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
-        steps=[
-            AuboEEToEEDelta(),
-        ],
+        steps=[],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
