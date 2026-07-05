@@ -19,6 +19,7 @@
 # teleop: https://github.com/SpesRobotics/teleop
 
 import logging
+import os
 import threading
 import time
 
@@ -227,7 +228,11 @@ class AndroidPhone(BasePhone, Teleoperator):
     @check_if_already_connected
     def connect(self) -> None:
         logger.info("Starting teleop stream for Android...")
-        self._teleop = Teleop()
+        # 用本地 patch 过的前端:原版 setMessage 只 console.log,WebXR 启动失败时
+        # 手机屏幕上看不到原因(表现为"点 Start 没反应")。patch 版把状态/错误显示到
+        # 屏幕上的 #log 区,便于排查(如 ARCore 缺失、WebXR 不支持等)。
+        frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+        self._teleop = Teleop(frontend_dir=frontend_dir)
         self._teleop.subscribe(self._android_callback)
         self._teleop_thread = threading.Thread(target=self._teleop.run, daemon=True)
         self._teleop_thread.start()
