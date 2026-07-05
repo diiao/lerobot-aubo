@@ -654,3 +654,32 @@ class AuboEEToEEDelta(RobotActionProcessorStep):
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         return features
+
+
+@ProcessorStepRegistry.register("aubo_set_ee_mode")
+@dataclass
+class AuboSetEEMode(RobotActionProcessorStep):
+    """Inject ``ee_mode`` into the action dict at inference time.
+
+    The policy output vector only carries float action features (ee.x/y/z/wx/wy/wz,
+    ee.gripper_pos, ee.j6_target). ``ee_mode`` is a string and is never written to the
+    dataset, so it is absent from the action reconstructed by ``make_robot_action`` at
+    eval time. This step restores it so ``send_action`` dispatches to the same control
+    mode the episode was recorded in (e.g. ``abs_j6yaw`` for the phone-teleop pipeline).
+
+    Pair with the recording pipeline's mode: record.py uses abs_j6yaw, so eval should too.
+    """
+
+    ee_mode: str = "abs_j6yaw"
+
+    def action(self, action: RobotAction) -> RobotAction:
+        action["ee_mode"] = self.ee_mode
+        return action
+
+    def reset(self):
+        pass
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features

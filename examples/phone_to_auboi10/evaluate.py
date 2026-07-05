@@ -34,7 +34,7 @@ from lerobot.processor.converters import (
     transition_to_robot_action,
 )
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
-from lerobot.robots.aubo_i10.robot_processor import AuboEEToEEDelta
+from lerobot.robots.aubo_i10.robot_processor import AuboSetEEMode
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
@@ -42,7 +42,7 @@ from lerobot.utils.utils import log_say, init_logging
 NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
-TASK_DESCRIPTION = "Place the ball in the bucket"
+TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
 LOCAL_MODEL_PATH = "./models/phone_auboi10"
 TRAINING_DATASET_PATH = "./datasets/phone_auboi10"
 LOCAL_EVAL_DATASET_PATH = "./datasets/phone_auboi10_eval"
@@ -74,6 +74,10 @@ def main():
     # ------------------------------------------------------------------
     # 1. 配置机器人（必须包含相机，策略需要图像输入）
     # ------------------------------------------------------------------
+    # 注意：评估在 GPU 机上运行时，相机经 usbip 从本地转发过来，/dev/videoN 节点号
+    # 不一定还是 0/2。attach 后用 `v4l2-ctl --list-devices` 确认 "GENERAL WEBCAM"
+    # (handeye) 和 "USB2.0_CAM1" (fixed) 各自落到哪个节点，按实际改 index_or_path。
+    # handeye/fixed 必须与训练时对应同一物理相机，否则图像特征对错位。
     camera_config = {
         "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
         "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
@@ -91,8 +95,12 @@ def main():
     # ------------------------------------------------------------------
     # 3. 构建处理器管线
     # ------------------------------------------------------------------
-    ee_to_delta_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
-        steps=[AuboEEToEEDelta()],
+    # 训练时 record.py 用 abs_j6yaw 管线保存绝对 EE 位姿（含 ee.j6_target）。
+    # 评估时策略输出同样的绝对位姿向量，直接下发即可，不需要转 delta；
+    # 但策略输出向量不含 ee_mode（字符串不入数据集），用 AuboSetEEMode 补回去，
+    # 让 send_action 走 _send_position_j6yaw（与训练一致）。
+    ee_mode_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
+        steps=[AuboSetEEMode(ee_mode="abs_j6yaw")],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
@@ -151,7 +159,7 @@ def main():
                 break
 
             # 重置处理器状态
-            ee_to_delta_processor.reset()
+            ee_mode_processor.reset()
 
             log_say(f"开始推理 episode {episode_idx + 1} / {NUM_EPISODES}")
             print("推理中... 按 → 结束本轮, 按 ← 重录, 按 Esc 终止")
@@ -168,7 +176,7 @@ def main():
                 single_task=TASK_DESCRIPTION,
                 display_data=False,
                 teleop_action_processor=make_default_teleop_action_processor(),
-                robot_action_processor=ee_to_delta_processor,
+                robot_action_processor=ee_mode_processor,
                 robot_observation_processor=robot_observation_processor,
             )
 
