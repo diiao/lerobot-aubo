@@ -38,6 +38,9 @@ eggs/
 .eggs/
 parts/
 var/
+
+# Stray apt/downloaded packages
+*.deb
 pip-wheel-metadata/
 share/python-wheels/
 develop-eggs/
