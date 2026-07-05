@@ -124,8 +124,11 @@ def main():
         steps=[
             MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
             AuboLockVerticalYaw(
-                yaw_gain=-1.0,       # 负号修正方向（手机右转=J6正转）
-                yaw_smoothing=0.0,   # 无滤波，yaw即时响应
+                yaw_velocity_mode=True,     # 操纵杆速度模式: 拨出去持续转, 回正停
+                yaw_vel_gain=-0.035,        # 负号同旧 yaw_gain=-1.0 方向; 偏30°≈28°/s
+                max_yaw_vel_deg_per_s=60.0, # J6 最高 60°/s
+                yaw_deadzone_deg=3.0,       # 3° 死区, IMU 噪声不漂移
+                yaw_smoothing=0.0,          # 无滤波, 即时响应
             ),
             PhoneEEToAuboEE(
                 velocity_mode=True,                          # 速度/操纵杆模式

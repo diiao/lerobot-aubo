@@ -92,7 +92,10 @@ def main():
         steps=[
             MapPhoneActionToRobotAction(platform=teleop_config.phone_os),
             AuboLockVerticalYaw(
-                yaw_gain=-1.0,       # 负号修正方向
+                yaw_velocity_mode=True,     # 操纵杆速度模式: 拨出去持续转, 回正停
+                yaw_vel_gain=-0.035,        # 负号同旧 yaw_gain=-1.0 方向
+                max_yaw_vel_deg_per_s=60.0,
+                yaw_deadzone_deg=3.0,
                 yaw_smoothing=0.0,
             ),
             PhoneEEToAuboEE(
