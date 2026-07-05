@@ -124,9 +124,10 @@ def main():
         dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         pin_memory=(device.type == "cuda"),
         drop_last=True,
+        persistent_workers=True,  # 避免每个 epoch 重启 worker + 重解视频的 ~100s 停顿
     )
 
     # ------------------------------------------------------------------
