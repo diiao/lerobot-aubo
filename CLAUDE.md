@@ -139,3 +139,16 @@ Recent commits (on branch `rt`) have focused on:
 - Camera configuration and debugging
 - Robot processor improvements
 - Policy evaluation on Aubo I10
+
+## 摄像头调试约定
+
+调试摄像头/视频时,不要用 Read 工具去查看抓取到的图片或视频帧文件。改用以下纯文本手段判断是否正常出帧:
+- `ffprobe` 的文本输出(分辨率、帧率、编码、帧数)
+- `ffmpeg` / 抓帧命令的退出码(`$?`)
+- 保存下来的帧文件大小(`ls -l` 的字节数,非零即说明有数据)
+
+如果确实需要根据图像内容来做判断(比如确认画面方向、花屏、曝光),不要自己 Read,而是把图保存到一个固定路径(例如 `/tmp/cam_check_<cam>.png`)并明确告诉我路径,让我自己打开看。只告诉我路径和判断要点,不要把图像内容读进上下文。
+
+## 当前模型限制
+
+当前 Claude Code 接入的模型**只支持文字输入,不支持图片输入**。如果向模型传入图片(例如用 Read 工具读取图片文件、粘贴图片到对话、附截图等),会卡住或报错。所有涉及图像的工作必须走上面的纯文本/保存路径流程,由用户自行查看图像内容。
