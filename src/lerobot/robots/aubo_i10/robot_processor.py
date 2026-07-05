@@ -377,11 +377,18 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
     位置跟随 + J6 直控偏航：把手机的左右旋转映射为 Aubo 最后一个轴(J6)的转动，
     末端位置跟手机移动，pitch/roll 锁死（末端保持按下瞬间的竖直向下姿态）。
 
+    两种偏航控制律（yaw_velocity_mode 切换）：
+    - True（默认，操纵杆/速度模式）：手机相对按下瞬间的偏航偏移 → J6 角速度 → 积分。
+      拨出去就一直朝该方向转，手机回正（偏移落入死区）则停止。类比游戏手柄摇杆，
+      与位置一路的 velocity_mode UX 一致。
+    - False（1:1 位置跟随，旧逻辑）：手机航向连续累计 → J6 跟到对应角度，停下即停。
+      手机转 30° → J6 转 30°*yaw_gain。
+
     机制（配合机器人端 _send_position_j6yaw）：
     - 按下 hold-to-move 瞬间锁存参考姿态 R_ref（=当前 TCP 姿态，用户已摆成竖直向下）
-      和参考 J6（=当前实际 J6）。
+      和参考 J6（=当前实际 J6）；速度模式下同时锁存航向中性点 _heading_neutral。
     - 每帧输出：固定姿态 ee.wx/ee.wy/ee.wz = R_ref（供 IK 保持竖直，pitch/roll 不动），
-      以及 J6 绝对目标 ee.j6_target（=参考 J6 + 手机左右旋转累计，弧度），置 ee_mode="abs_j6yaw"。
+      以及 J6 绝对目标 ee.j6_target（=参考 J6 + 偏航累计/积分，弧度），置 ee_mode="abs_j6yaw"。
     - 机器人端对 (位置 + R_ref) 做逆解得 J1..J5，再把 J6 设为 ee.j6_target。
       → 末端只绕法兰轴（工具竖直时即竖直方向）旋转，绝不俯仰/翻滚。
 
@@ -389,8 +396,10 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
     姿态伺服里 IK 会把偏航分配到 J4/J5，表现为绕基座 Y 俯仰（实测现象）。直控 J6
     彻底规避该问题，也无 rotvec 奇异点烦恼。
 
-    偏航信号：从手机旋转矩阵提取绕 yaw_up_axis 轴的航向角(heading)，逐帧增量累加
-    （对手机同时倾斜鲁棒）。方向反了改 yaw_gain 符号；幅度不够调大 yaw_gain。
+    偏航信号：从手机旋转矩阵提取绕 yaw_up_axis 轴的航向角(heading)。
+    - 速度模式：offset = heading - 中性点，经死区/限速/低通后作为角速度积分。
+    - 1:1 模式：逐帧增量累加（对手机同时倾斜鲁棒）。
+    方向反了改对应 gain 符号；幅度不够调绝对值。
 
     本步骤须放在 MapPhoneActionToRobotAction 之后、PhoneEEToAuboEE 之前：
     - 消费 target_wx/target_wy/target_wz（手机旋转命令），阻止下游处理旋转。
@@ -398,16 +407,30 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
     - 位置 (target_x/y/z) 不动，留给 PhoneEEToAuboEE 处理成绝对位置。
 
     Attributes:
-        yaw_gain: 手机航向 → J6 偏航的系数；正负决定旋转方向，绝对值决定幅度。
-        yaw_smoothing: 偏航一阶低通系数 [0,1)，0=关闭；越大越丝滑但越滞后。
+        yaw_velocity_mode: True=操纵杆速度模式(默认)，False=1:1 位置跟随(旧)。
+        yaw_gain: 1:1 模式下手机航向→J6 角度系数；正负定方向，绝对值定幅度。
+        yaw_vel_gain: 速度模式下手机偏移(rad)→J6 角速度(rad/帧)；负号同 yaw_gain=-1
+            的方向约定。约 -0.035 时，偏 30°≈28°/s，偏 60° 触顶 max_yaw_vel_deg_per_s。
+        max_yaw_vel_deg_per_s: 速度模式 J6 最大角速度(°/s)，安全限速。
+        yaw_deadzone_deg: 速度模式死区(°)，|偏移|<此值时速度=0，避免 IMU 噪声慢漂移。
+        control_fps: 控制帧率，用于 deg/s→rad/帧 换算（与 teleoperate FPS 一致）。
+        j6_min_rad / j6_max_rad: J6 绝对目标钳位范围（rad），持续旋转不撞硬限位。
+        yaw_smoothing: 一阶低通系数 [0,1)，0=关闭；速度模式低通角速度，1:1 模式低通角度。
         yaw_up_axis: 手机标定坐标系里"竖直方向"对应的轴 "x"/"y"/"z"（默认 "z"）。
             手机绕该轴的转动被提取为偏航。若绕竖直转手机末端不转/转错，看日志
             [yaw] 里 hx/hy/hz 哪个随手势变化最大，就把本参数设成对应轴。
-        debug_log: 是否每帧输出 yaw 诊断日志（三个候选航向 + 当前偏航角）。
+        debug_log: 是否每帧输出 yaw 诊断日志。
         max_wz_step / correct_gain / max_correct_step: 兼容旧调用签名，现已不使用。
     """
 
-    yaw_gain: float = 1.0
+    yaw_velocity_mode: bool = True
+    yaw_gain: float = 1.0  # 1:1 模式: 手机航向→J6 角度系数
+    yaw_vel_gain: float = -0.035  # 速度模式: 手机偏移(rad)→J6 角速度(rad/帧)
+    max_yaw_vel_deg_per_s: float = 60.0
+    yaw_deadzone_deg: float = 3.0
+    control_fps: float = 30.0
+    j6_min_rad: float = -math.radians(350.0)
+    j6_max_rad: float = math.radians(350.0)
     yaw_smoothing: float = 0.0
     yaw_up_axis: str = "z"
     debug_log: bool = False
@@ -418,6 +441,7 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
     # 运行时状态(非 init)：
     _enabled_prev: bool = field(default=False, init=False, repr=False)
     _heading_prev: float | None = field(default=None, init=False, repr=False)
+    _heading_neutral: float | None = field(default=None, init=False, repr=False)
     _yaw_accum: float = field(default=0.0, init=False, repr=False)
     _ref_orient: np.ndarray | None = field(default=None, init=False, repr=False)
     _ref_j6: float | None = field(default=None, init=False, repr=False)
@@ -463,9 +487,11 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
 
         enabled = bool(action.get("enabled", False))
         # 按下 hold-to-move 上升沿：锁存该瞬间的固定参考姿态与参考 J6(当前实际 J6)，
-        # 偏航从 0 开始累计。这样松手→再次按下时以当前 J6 为新原点，不会回弹/跳变。
+        # 偏航从 0 开始累计/积分。速度模式同时锁存航向中性点(_heading_neutral)作为摇杆中位。
+        # 松手→再次按下时以当前 J6 为新原点，不会回弹/跳变。
         if enabled and not self._enabled_prev:
             self._heading_prev = heading
+            self._heading_neutral = heading
             self._yaw_accum = 0.0
             self._ref_orient = cur_rotvec.copy()
             self._ref_j6 = math.radians(float(observation.get("J6", 0.0)))
@@ -478,34 +504,84 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
         if self._ref_j6 is None:
             self._ref_j6 = math.radians(float(observation.get("J6", 0.0)))
 
-        if enabled:
-            # 手机航向连续累计：heading 经 atan2 会在 ±π 处跳变。逐帧对增量做 [-π,π]
-            # 环绕再累加，得到连续无跳变的偏航，允许超过 180° 旋转且边界不反转 360°。
-            if self._heading_prev is None:
-                self._heading_prev = heading
-            d = (heading - self._heading_prev + math.pi) % (2 * math.pi) - math.pi
-            self._yaw_accum += d
-            self._heading_prev = heading
-            phi = self._yaw_accum * self.yaw_gain
-            # 一阶低通丝滑（可选）
-            a = float(np.clip(self.yaw_smoothing, 0.0, 0.99))
-            self._yaw_filt = a * self._yaw_filt + (1.0 - a) * phi
-        # 未按下：保持上一次偏航角（松手不乱转），self._yaw_filt 不变
-        phi_use = self._yaw_filt
+        # 速度模式的偏移量（也用于日志）；1:1 模式不用
+        if self._heading_neutral is not None:
+            offset = (heading - self._heading_neutral + math.pi) % (2.0 * math.pi) - math.pi
+        else:
+            offset = 0.0
 
-        # J6 绝对目标 = 按下瞬间的 J6 + 手机偏航累计（弧度）。以固定 ref_j6 为基准，
-        # 分支稳定、无 ±180° 跳变，再次按下也从当前 J6 平滑续转。
+        if enabled:
+            if self.yaw_velocity_mode:
+                # ── 速度/操纵杆模式 ──────────────────────────────────────────
+                # 手机相对中性点的偏航偏移 → J6 角速度(rad/帧) → 积分成 J6 绝对目标。
+                # 拨出去持续转，回正(偏移落入死区)停转；松手保持已积分位置。
+                dz = math.radians(self.yaw_deadzone_deg)
+                if abs(offset) < dz:
+                    vel = 0.0
+                else:
+                    # 减去死区宽度，使刚出死区时速度从 0 平滑起跳
+                    signed = offset - math.copysign(dz, offset)
+                    vel = signed * self.yaw_vel_gain
+                # 限速：deg/s → rad/帧
+                max_vel = math.radians(self.max_yaw_vel_deg_per_s) / max(self.control_fps, 1.0)
+                vel = float(np.clip(vel, -max_vel, max_vel))
+                # 一阶低通丝滑（可选）：低通角速度
+                a = float(np.clip(self.yaw_smoothing, 0.0, 0.99))
+                self._yaw_filt = a * self._yaw_filt + (1.0 - a) * vel
+                # 积分成 J6 增量（rad）
+                self._yaw_accum += self._yaw_filt
+                phi_use = self._yaw_accum
+            else:
+                # ── 1:1 位置跟随模式（原逻辑）──────────────────────────────
+                # 手机航向连续累计：heading 经 atan2 会在 ±π 处跳变。逐帧对增量做 [-π,π]
+                # 环绕再累加，得到连续无跳变的偏航，允许超过 180° 旋转且边界不反转 360°。
+                if self._heading_prev is None:
+                    self._heading_prev = heading
+                d = (heading - self._heading_prev + math.pi) % (2.0 * math.pi) - math.pi
+                self._yaw_accum += d
+                self._heading_prev = heading
+                phi = self._yaw_accum * self.yaw_gain
+                # 一阶低通丝滑（可选）：低通角度
+                a = float(np.clip(self.yaw_smoothing, 0.0, 0.99))
+                self._yaw_filt = a * self._yaw_filt + (1.0 - a) * phi
+                phi_use = self._yaw_filt
+        else:
+            # 未按下：保持上一次偏航角（松手不乱转）
+            phi_use = self._yaw_accum if self.yaw_velocity_mode else self._yaw_filt
+
+        # J6 限位钳位 + 抗积分饱和（速度模式必须：持续旋转会撞硬限位，需防 windup）。
+        # 以 ref_j6 为基准把增量钳到 [j6_min-ref_j6, j6_max-ref_j6]，速度模式同步钳积分器。
+        delta_min = self.j6_min_rad - self._ref_j6
+        delta_max = self.j6_max_rad - self._ref_j6
+        phi_use = float(np.clip(phi_use, delta_min, delta_max))
+        if self.yaw_velocity_mode:
+            self._yaw_accum = float(np.clip(self._yaw_accum, delta_min, delta_max))
+
+        # J6 绝对目标 = 按下瞬间的 J6 + 偏航累计/积分（弧度）。
         j6_target = self._ref_j6 + phi_use
 
         # yaw 诊断日志：手机绕竖直转手机时，看 hx/hy/hz 哪个变化最大 → 设 yaw_up_axis。
         if self.debug_log:
             import logging as _logging
-            _logging.getLogger(__name__).debug(
-                "[yaw] enabled=%d up=%s hx=%.1f hy=%.1f hz=%.1f | yaw=%.1f J6_target=%.1f (deg)",
-                int(enabled), self.yaw_up_axis,
-                math.degrees(hx), math.degrees(hy), math.degrees(hz),
-                math.degrees(phi_use), math.degrees(j6_target),
-            )
+            if self.yaw_velocity_mode:
+                vel_deg_s = (
+                    math.degrees(self._yaw_filt) * self.control_fps if enabled else 0.0
+                )
+                _logging.getLogger(__name__).debug(
+                    "[yaw] enabled=%d up=%s hx=%.1f hy=%.1f hz=%.1f | "
+                    "offset=%.1f vel=%.1f°/s accum=%.1f J6_target=%.1f (deg)",
+                    int(enabled), self.yaw_up_axis,
+                    math.degrees(hx), math.degrees(hy), math.degrees(hz),
+                    math.degrees(offset), vel_deg_s,
+                    math.degrees(self._yaw_accum), math.degrees(j6_target),
+                )
+            else:
+                _logging.getLogger(__name__).debug(
+                    "[yaw] enabled=%d up=%s hx=%.1f hy=%.1f hz=%.1f | yaw=%.1f J6_target=%.1f (deg)",
+                    int(enabled), self.yaw_up_axis,
+                    math.degrees(hx), math.degrees(hy), math.degrees(hz),
+                    math.degrees(phi_use), math.degrees(j6_target),
+                )
 
         # 输出：固定参考姿态 (供 IK 保持竖直/pitch/roll 锁死) + J6 绝对目标，置 abs_j6yaw 模式
         action["ee.wx"] = float(self._ref_orient[0])
@@ -518,6 +594,7 @@ class AuboLockVerticalYaw(RobotActionProcessorStep):
     def reset(self):
         self._enabled_prev = False
         self._heading_prev = None
+        self._heading_neutral = None
         self._yaw_accum = 0.0
         self._ref_orient = None
         self._ref_j6 = None
