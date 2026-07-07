@@ -6,6 +6,7 @@
 倒计时自动开始，跑 DURATION_S 秒后退出，不保存数据集。
 """
 
+import shutil
 import time
 from pathlib import Path
 
@@ -35,8 +36,8 @@ DURATION_S = 30        # 单次推理时长
 COUNTDOWN_S = 5        # 倒计时秒数
 TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
 
-# checkpoint（试跑用 5000 步那个）
-LOCAL_MODEL_PATH = "./models/phone_auboi10/checkpoint_5000"
+# 最终模型（训练循环后 save_pretrained 到根目录；checkpoint_5000/10000/15000 是中间快照）
+LOCAL_MODEL_PATH = "./models/phone_auboi10"
 TRAINING_DATASET_PATH = "./datasets/phone_auboi10"
 
 # GPU 机上 usbip attach 后的相机节点（v4l2-ctl --list-devices 确认）：
@@ -47,10 +48,15 @@ FIXED_DEV = "/dev/video2"
 
 
 def main():
-    init_logging()
+    init_logging(console_level="INFO")
+    # 清掉上轮残留的临时数据集目录（LeRobotDataset.create 不允许目录已存在）
+    eval_trial_cache = Path.home() / ".cache/huggingface/lerobot/datasets/phone_auboi10_eval_trial"
+    if eval_trial_cache.exists():
+        shutil.rmtree(eval_trial_cache)
+        print(f"已清理旧目录: {eval_trial_cache}")
     camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path=HANDEYE_DEV, width=640, height=480, fps=FPS),
-        "fixed": OpenCVCameraConfig(index_or_path=FIXED_DEV, width=640, height=480, fps=FPS),
+        "handeye": OpenCVCameraConfig(index_or_path=HANDEYE_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
+        "fixed": OpenCVCameraConfig(index_or_path=FIXED_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
     }
     robot_config = AuboI10Config(cameras=camera_config)
     robot = AuboI10Robot(robot_config)
