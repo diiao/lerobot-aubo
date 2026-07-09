@@ -36,8 +36,8 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.utils import init_logging
 
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10_full"
-LOCAL_MODEL_PATH = "./models/phone_auboi10"
+LOCAL_DATASET_PATH = "./datasets/phone_auboi10_full_latched"
+LOCAL_MODEL_PATH = "./models/phone_auboi10_latched"
 
 # --- Training hyperparameters ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -90,8 +90,9 @@ def main():
         # Backbone: pretrained ResNet18 (lighter, faster to train on small datasets)
         vision_backbone="resnet18",
         pretrained_backbone_weights="ResNet18_Weights.IMAGENET1K_V1",
-        # VAE is enabled by default; helps with action multi-modality
-        use_vae=True,
+        # VAE 关闭：单任务 + 夹爪闭合是稀有脉冲，VAE(z=0 推理)会把稀有事件回归到均值；
+        # 关掉 VAE 强制策略基于观测做确定性预测，改善伸手精度和阶段切换。
+        use_vae=False,
         device=DEVICE,
     )
 
