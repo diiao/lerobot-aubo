@@ -16,6 +16,7 @@ obs 字段：observation.state (np), observation.images.* (JPEG bytes), task, ro
 """
 
 import logging
+import os
 import pickle
 import socket
 import struct
@@ -31,7 +32,7 @@ from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.utils.utils import init_logging
 
-MODEL_PATH = "./models/phone_auboi10"
+MODEL_PATH = os.environ.get("MODEL_PATH", "./models/phone_auboi10")
 TRAINING_DATASET_PATH = "./datasets/phone_auboi10_full"  # 取 stats
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
 PORT = 5555
@@ -65,7 +66,7 @@ def recv_exactly(sock, n):
 
 class InferenceServer:
     def __init__(self):
-        logging.info("加载策略与处理器...")
+        logging.info(f"加载策略与处理器: {MODEL_PATH}")
         self.policy = ACTPolicy.from_pretrained(MODEL_PATH)
         self.policy.eval()
         self.device = torch.device(self.policy.config.device)
