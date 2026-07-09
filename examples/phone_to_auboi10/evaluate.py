@@ -79,8 +79,8 @@ def main():
     # (handeye) 和 "USB2.0_CAM1" (fixed) 各自落到哪个节点，按实际改 index_or_path。
     # handeye/fixed 必须与训练时对应同一物理相机，否则图像特征对错位。
     camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
-        "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
+        "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS, fourcc="MJPG"),
+        "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS, fourcc="MJPG"),
     }
     robot_config = AuboI10Config(cameras=camera_config)
     robot = AuboI10Robot(robot_config)
