@@ -42,12 +42,18 @@ from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
-NUM_EPISODES = 30
+NUM_EPISODES = 10
 FPS = 30
 EPISODE_TIME_SEC = 40
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10"
+LOCAL_DATASET_PATH = "./datasets/phone_auboi10_s3"
+
+# 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。
+# handeye = GENERAL WEBCAM（机械臂末端），fixed = USB2.0_CAM1（固定机位）。
+# fourcc="MJPG" 必须，否则 USB2.0_CAM1(05a3:9230) 在 OpenCV 里读线程起不来 → 占位图。
+HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
+FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
 
 
 def wait_for_key(events: dict, prompt: str = "按 → (右箭头键) 继续") -> bool:
@@ -76,8 +82,8 @@ def main():
     init_logging(log_file=log_file_path, console_level="INFO", file_level="DEBUG")
 
     camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
-        "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
+        "handeye": OpenCVCameraConfig(index_or_path=HANDEYE_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
+        "fixed": OpenCVCameraConfig(index_or_path=FIXED_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
     }
     robot_config = AuboI10Config(cameras=camera_config)
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
