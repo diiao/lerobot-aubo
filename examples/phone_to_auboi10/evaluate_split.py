@@ -206,6 +206,13 @@ def main():
 
     # 3. 训练数据集 features（建评估数据集 + make_robot_action 用）
     training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
+    # 自动清掉上次没干净退出留下的评估数据集外壳，避免 FileExistsError
+    import shutil
+    from lerobot.utils.constants import HF_LEROBOT_HOME
+    eval_root = HF_LEROBOT_HOME / LOCAL_EVAL_DATASET_PATH
+    if eval_root.exists():
+        print(f"清掉旧的评估数据集外壳: {eval_root}")
+        shutil.rmtree(eval_root)
     dataset = LeRobotDataset.create(
         repo_id=LOCAL_EVAL_DATASET_PATH,
         fps=FPS,
