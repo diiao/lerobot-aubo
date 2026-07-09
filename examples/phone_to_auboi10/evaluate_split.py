@@ -155,9 +155,9 @@ def run_episode(
         robot_action = ee_mode_processor((act, obs))
         robot.send_action(robot_action)
 
-        # 4. 写评估数据集（obs + action，便于回放）
+        # 4. 写评估数据集（obs + action + task，便于回放）
         action_frame = build_dataset_frame(dataset.features, act, prefix=ACTION)
-        dataset.add_frame({**observation_frame, **action_frame})
+        dataset.add_frame({**observation_frame, **action_frame, "task": single_task})
 
         # 5. 维持帧率
         timestamp = time.perf_counter() - start_episode_t
