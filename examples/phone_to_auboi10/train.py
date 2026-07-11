@@ -36,8 +36,8 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.utils import init_logging
 
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10_full_latched"
-LOCAL_MODEL_PATH = "./models/phone_auboi10_latched"
+LOCAL_DATASET_PATH = "./datasets/phone_auboi10_full_shift"
+LOCAL_MODEL_PATH = "./models/phone_auboi10_shift"
 
 # --- Training hyperparameters ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
