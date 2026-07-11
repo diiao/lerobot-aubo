@@ -79,10 +79,27 @@ class InferenceServer:
             preprocessor_overrides={"device_processor": {"device": str(self.device)}},
         )
         self.n_action_steps = self.policy.config.n_action_steps
+
+        # Temporal ensembling: 推理时启用（不用重训）。coeff!=None 时 select_action 走 ensemble
+        # 路径：每帧推理 + 在线 ensemble，返回 1 个平滑动作（解决 chunk 边界跳变）。
+        # 设了 TEMPORAL_ENSEMBLE_COEFF (默认 0.01) 就开；留空则走原 queue 模式。
+        coeff = os.environ.get("TEMPORAL_ENSEMBLE_COEFF", "0.01").strip()
+        if coeff:
+            from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
+            c = float(coeff)
+            self.policy.config.temporal_ensemble_coeff = c
+            self.policy.config.n_action_steps = 1  # ensemble 要求 n_action_steps=1
+            self.policy.temporal_ensembler = ACTTemporalEnsembler(c, self.policy.config.chunk_size)
+            self.policy.reset()
+            self.ensemble = True
+            logging.info(f"temporal ensembling 开启: coeff={c}")
+        else:
+            self.ensemble = False
+
         self.task = "抓取苹果到蓝色的盒子里"
         self.robot_type = "aubo_i10"
         logging.info(
-            f"就绪: device={self.device}, n_action_steps={self.n_action_steps}"
+            f"就绪: device={self.device}, n_action_steps={self.n_action_steps}, ensemble={self.ensemble}"
         )
 
     def reset(self):
@@ -112,14 +129,12 @@ class InferenceServer:
                 obs_np, self.device, task, robot_type
             )
             batch = self.preprocessor(batch)
-            # 走 policy.select_action 的队列逻辑，连调 n_action_steps 次取回一整块
-            # （第一次触发 predict_action_chunk 推理并填队列，后续从队列 pop；只推理一次）
-            actions = []
-            for _ in range(self.n_action_steps):
-                a = self.policy.select_action(batch)
-                a = self.postprocessor(a)
-                actions.append(a.squeeze(0).cpu().numpy())  # (action_dim,)
-        return np.stack(actions, axis=0)  # (n_action_steps, action_dim)
+            # select_action 一次返回 1 个动作：
+            # - ensemble 模式：每帧推理 + 在线 ensemble，返回平滑动作
+            # - queue 模式：首次推理填队列后 pop，每 10 帧推理一次（队列在 policy 内部管理）
+            a = self.policy.select_action(batch)
+            a = self.postprocessor(a)
+        return a.squeeze(0).cpu().numpy()  # (action_dim,)
 
     def handle_client(self, conn):
         with conn:

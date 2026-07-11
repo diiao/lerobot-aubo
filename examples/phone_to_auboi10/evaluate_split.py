@@ -118,7 +118,7 @@ def run_episode(
     ee_mode_processor,
     robot_observation_processor,
 ):
-    action_queue = deque()
+    action_queue = deque()  # 兼容 queue 模式：服务器返回多动作时缓存
     dt = 1.0 / fps
     timestamp = 0.0
     start_episode_t = time.perf_counter()
@@ -135,7 +135,7 @@ def run_episode(
         obs_processed = robot_observation_processor(obs)
         observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
-        # 2. 队列空 -> 向服务器请求一整块动作
+        # 2. 队列空 -> 向服务器请求动作（ensemble 模式返回 1 个，queue 模式返回多个）
         if len(action_queue) == 0:
             msg = {
                 "cmd": "predict",
@@ -145,8 +145,8 @@ def run_episode(
             resp = recv_msg(sock)
             if resp is None or "error" in resp:
                 raise RuntimeError(f"服务器返回错误: {resp}")
-            chunk = np.asarray(resp["actions"], dtype=np.float32)  # (n, action_dim)
-            for row in chunk:
+            actions = np.atleast_2d(np.asarray(resp["actions"], dtype=np.float32))
+            for row in actions:
                 act_tensor = torch.from_numpy(row).unsqueeze(0)  # (1, action_dim)
                 action_queue.append(make_robot_action(act_tensor, dataset.features))
 
