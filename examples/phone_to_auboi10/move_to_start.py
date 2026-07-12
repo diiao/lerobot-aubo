@@ -71,9 +71,18 @@ def main():
     err = max(abs(math.degrees(c) - t) for c, t in zip(cur, TARGET_DEG))
     print(f"到位误差: {err:.2f}°")
 
+    # 松开吸盘（防止上一轮评估吸合后未释放，回起点时拖动物料导致下轮场景偏离）
+    try:
+        io = iface.getIoControl()
+        io.setStandardDigitalOutput(2, False)  # 端口2(吸)拉低
+        io.setStandardDigitalOutput(3, True)   # 端口3(放)拉高
+        print("吸盘已释放（端口2=OFF, 端口3=ON）")
+    except Exception as e:
+        print(f"吸盘释放失败: {e}")
+
     rpc.logout()
     rpc.disconnect()
-    print("完成，可以跑 eval_trial.py 了")
+    print("完成，可以跑 evaluate_split.py 了")
 
 
 if __name__ == "__main__":
