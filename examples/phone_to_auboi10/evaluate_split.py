@@ -50,7 +50,7 @@ from lerobot.utils.utils import init_logging, log_say
 NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
-TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
+TASK_DESCRIPTION = "抓取竹条"
 TRAINING_DATASET_PATH = "./datasets/phone_auboi10_full"  # 取 features（本地）
 LOCAL_EVAL_DATASET_PATH = "./datasets/phone_auboi10_split_eval"
 

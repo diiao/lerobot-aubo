@@ -42,7 +42,7 @@ from lerobot.utils.utils import log_say, init_logging
 NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
-TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
+TASK_DESCRIPTION = "抓取竹条"
 LOCAL_MODEL_PATH = "./models/phone_auboi10"
 TRAINING_DATASET_PATH = "./datasets/phone_auboi10"
 LOCAL_EVAL_DATASET_PATH = "./datasets/phone_auboi10_eval"

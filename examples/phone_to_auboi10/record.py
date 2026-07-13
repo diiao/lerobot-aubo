@@ -46,7 +46,7 @@ NUM_EPISODES = 10
 FPS = 30
 EPISODE_TIME_SEC = 40
 RESET_TIME_SEC = 30
-TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
+TASK_DESCRIPTION = "抓取竹条"
 LOCAL_DATASET_PATH = "./datasets/phone_auboi10_s3"
 
 # 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。

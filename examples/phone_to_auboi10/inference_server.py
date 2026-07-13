@@ -96,7 +96,7 @@ class InferenceServer:
         else:
             self.ensemble = False
 
-        self.task = "抓取苹果到蓝色的盒子里"
+        self.task = "抓取竹条"
         self.robot_type = "aubo_i10"
         logging.info(
             f"就绪: device={self.device}, n_action_steps={self.n_action_steps}, ensemble={self.ensemble}"
