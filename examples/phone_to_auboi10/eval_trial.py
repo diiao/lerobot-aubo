@@ -34,7 +34,7 @@ from lerobot.utils.utils import init_logging
 FPS = 30
 DURATION_S = 30        # 单次推理时长
 COUNTDOWN_S = 5        # 倒计时秒数
-TASK_DESCRIPTION = "抓取苹果到蓝色的盒子里"
+TASK_DESCRIPTION = "抓取竹条"
 
 # 最终模型（训练循环后 save_pretrained 到根目录；checkpoint_5000/10000/15000 是中间快照）
 LOCAL_MODEL_PATH = "./models/phone_auboi10"
