@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import time
 from pathlib import Path
 
@@ -54,6 +55,42 @@ LOCAL_DATASET_PATH = "./datasets/phone_auboi10_s3"
 # fourcc="MJPG" 必须，否则 USB2.0_CAM1(05a3:9230) 在 OpenCV 里读线程起不来 → 占位图。
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
+
+# 起始关节角（度），与 move_to_start.py 一致。录完每条后按 r 自动归位到此。
+START_JOINT_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
+
+
+def return_to_start(robot):
+    """关伺服后用 moveJoint 回到起始关节位 + 松吸盘。在重置阶段手动触发（按 r）。"""
+    import logging
+    logging.info("归位：moveJoint 到起始位...")
+    motion = robot.robot_interface.getMotionControl()
+    # 确保伺服关闭（moveJoint 需要在非伺服模式）
+    if motion.isServoModeEnabled():
+        motion.setServoMode(False)
+        time.sleep(0.5)
+    target_rad = [math.radians(d) for d in START_JOINT_DEG]
+    motion.setSpeedFraction(0.5)  # 50% 速度，安全
+    motion.moveJoint(target_rad, 80 * (math.pi / 180), 60 * (math.pi / 180), 0, 0)
+    # 等待到位
+    exec_id = motion.getExecId()
+    cnt = 0
+    while exec_id == -1:  # 等运动开始
+        if cnt > 100:
+            break
+        time.sleep(0.05)
+        cnt += 1
+        exec_id = motion.getExecId()
+    while motion.getExecId() != -1:  # 等运动完成
+        time.sleep(0.05)
+    # 松吸盘（端口2=OFF, 端口3=ON）
+    try:
+        io = robot.robot_interface.getIoControl()
+        io.setStandardDigitalOutput(2, False)  # 吸
+        io.setStandardDigitalOutput(3, True)   # 放
+        logging.info("归位完成，吸盘已释放")
+    except Exception as e:
+        logging.error(f"吸盘释放失败: {e}")
 
 
 def wait_for_key(events: dict, prompt: str = "按 → (右箭头键) 继续") -> bool:
@@ -214,11 +251,25 @@ def main():
                 break
 
             # --- 重置环境阶段 ---
-            # 关闭伺服模式，让示教器可以自由控制机器人
+            # 关闭伺服模式，按 r 可自动归位到起始位
             robot.disable_servo_mode()
-            log_say("请重置环境（可使用示教器移动机器人）")
-            if not wait_for_key(events, "重置环境完成后，按 → 开始下一轮录制"):
+            log_say("重置环境：按 r 归位，按 -> 开始下一轮")
+            print("\n" + "=" * 50)
+            print("  r  -> 归位到起始位置（moveJoint + 松吸盘）")
+            print("  -> -> 开始下一轮录制")
+            print("  Esc -> 终止录制")
+            print("=" * 50)
+            events["exit_early"] = False
+            events["return_to_start"] = False
+            while not events["exit_early"] and not events["stop_recording"]:
+                if events.get("return_to_start"):
+                    events["return_to_start"] = False
+                    return_to_start(robot)
+                    print("已归位，摆好竹条后按 -> 开始")
+                time.sleep(0.05)
+            if events["stop_recording"]:
                 break
+            events["exit_early"] = False
 
     finally:
         log_say("录制结束")
