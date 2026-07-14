@@ -45,10 +45,10 @@ from lerobot.utils.utils import log_say, init_logging
 
 NUM_EPISODES = 10
 FPS = 30
-EPISODE_TIME_SEC = 40
+EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取竹条"
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10_s3"
+LOCAL_DATASET_PATH = "./datasets/bamboo_s1"
 
 # 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。
 # handeye = GENERAL WEBCAM（机械臂末端），fixed = USB2.0_CAM1（固定机位）。
@@ -207,10 +207,25 @@ def main():
 
         episode_idx = 0
         while episode_idx < NUM_EPISODES and not events["stop_recording"]:
-            # --- 等待用户按键开始录制 ---
+            # --- 等待用户按键开始录制（支持 r 归位）---
             log_say(f"准备录制 episode {episode_idx + 1} / {NUM_EPISODES}")
-            if not wait_for_key(events, f"按 → 开始录制 episode {episode_idx + 1} / {NUM_EPISODES}"):
+            robot.disable_servo_mode()  # 关伺服，让 r 归位能用 moveJoint
+            print("\n" + "=" * 50)
+            print(f"  按 -> 开始录制 episode {episode_idx + 1} / {NUM_EPISODES}")
+            print("  按 r 归位到起始位置")
+            print("  按 Esc 终止")
+            print("=" * 50)
+            events["exit_early"] = False
+            events["return_to_start"] = False
+            while not events["exit_early"] and not events["stop_recording"]:
+                if events.get("return_to_start"):
+                    events["return_to_start"] = False
+                    return_to_start(robot)
+                    print("已归位，按 -> 开始录制")
+                time.sleep(0.05)
+            if events["stop_recording"]:
                 break
+            events["exit_early"] = False
 
             # 每轮开始前重置处理器状态（清除上一轮的累积状态）
             phone_to_robot_ee_pose_processor.reset()
