@@ -14,6 +14,7 @@
 """
 
 import logging
+import math
 import pickle
 import socket
 import struct
@@ -61,6 +62,38 @@ SERVER_PORT = 5555
 # 相机用稳定的 by-id 路径 + MJPG（本机直连相机，同 record.py）
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
+
+# 起始关节角（度），与 record.py 一致。每轮推理完后可按 r 自动归位到此 + 松吸盘。
+START_JOINT_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
+
+
+def return_to_start(robot):
+    """关伺服后用 moveJoint 回到起始关节位 + 松吸盘。重置阶段按 r 触发。"""
+    logging.info("归位：moveJoint 到起始位...")
+    motion = robot.robot_interface.getMotionControl()
+    if motion.isServoModeEnabled():
+        motion.setServoMode(False)
+        time.sleep(0.5)
+    target_rad = [math.radians(d) for d in START_JOINT_DEG]
+    motion.setSpeedFraction(0.5)
+    motion.moveJoint(target_rad, 80 * (math.pi / 180), 60 * (math.pi / 180), 0, 0)
+    exec_id = motion.getExecId()
+    cnt = 0
+    while exec_id == -1:
+        if cnt > 100:
+            break
+        time.sleep(0.05)
+        cnt += 1
+        exec_id = motion.getExecId()
+    while motion.getExecId() != -1:
+        time.sleep(0.05)
+    try:
+        io = robot.robot_interface.getIoControl()
+        io.setStandardDigitalOutput(2, False)  # 吸
+        io.setStandardDigitalOutput(3, True)   # 放
+        logging.info("归位完成，吸盘已释放")
+    except Exception as e:
+        logging.error(f"吸盘释放失败: {e}")
 
 
 # ----------------------------- 网络协议（与服务端一致）-----------------------------
@@ -180,6 +213,28 @@ def wait_for_key(events: dict, prompt: str = "按 -> (右箭头键) 继续") -> 
     return True
 
 
+def wait_for_key_with_return(events: dict, robot, prompt: str) -> bool:
+    """等待按键继续；期间按 r 可触发 return_to_start(robot)。返回 True=继续，False=Esc 终止。"""
+    events["exit_early"] = False
+    events["return_to_start"] = False
+    print("\n" + "=" * 50)
+    print(prompt)
+    print("  r  -> 归位到起始位置（moveJoint + 松吸盘）")
+    print("  -> -> 继续（开始下一轮 / 重置结束）")
+    print("  Esc -> 终止整个评估")
+    print("=" * 50)
+    while not events["exit_early"] and not events["stop_recording"]:
+        if events.get("return_to_start"):
+            events["return_to_start"] = False
+            return_to_start(robot)
+            print("已归位，按 -> 继续")
+        time.sleep(0.05)
+    if events["stop_recording"]:
+        return False
+    events["exit_early"] = False
+    return True
+
+
 def main():
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -240,12 +295,16 @@ def main():
         print("拆分式评估操作指南:")
         print("  -> (右箭头): 开始/结束当前 episode")
         print("  ← (左箭键): 结束并重录当前 episode")
+        print("  r:          归位到起始位置（在等待阶段）")
         print("  Esc:        终止整个评估")
         print("=" * 50)
 
         while episode_idx < NUM_EPISODES and not events["stop_recording"]:
             log_say(f"准备执行 episode {episode_idx + 1} / {NUM_EPISODES}")
-            if not wait_for_key(events, f"按 -> 开始执行 episode {episode_idx + 1} / {NUM_EPISODES}"):
+            robot.disable_servo_mode()  # 关伺服，让 r 归位能用 moveJoint
+            if not wait_for_key_with_return(
+                events, robot, f"按 -> 开始执行 episode {episode_idx + 1} / {NUM_EPISODES}"
+            ):
                 break
 
             # 每轮开始：重置服务器策略队列 + 本地处理器
@@ -285,8 +344,8 @@ def main():
                 break
 
             robot.disable_servo_mode()
-            log_say("请重置环境（可使用示教器移动机器人）")
-            if not wait_for_key(events, "重置环境完成后，按 -> 开始下一轮推理"):
+            log_say("请重置环境（可使用示教器移动机器人，或按 r 自动归位）")
+            if not wait_for_key_with_return(events, robot, "重置环境完成后，按 -> 开始下一轮推理"):
                 break
 
     finally:

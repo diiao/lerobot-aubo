@@ -23,8 +23,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
-SRC_REPO = "./datasets/phone_auboi10_full_latched"
-DST_REPO = "./datasets/phone_auboi10_full_shift"
+SRC_REPO = "./datasets/bamboo_full_latched"
+DST_REPO = "./datasets/bamboo_full_shift"
 GRIPPER_IDX = 7
 SHIFT = 60  # 吸合前移帧数（2秒@30fps）
 

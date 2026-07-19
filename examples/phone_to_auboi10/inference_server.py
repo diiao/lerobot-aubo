@@ -33,7 +33,7 @@ from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.utils.utils import init_logging
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "./models/phone_auboi10")
-TRAINING_DATASET_PATH = "./datasets/phone_auboi10_full"  # 取 stats
+TRAINING_DATASET_PATH = "./datasets/bamboo_full_shift"  # 取 stats
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
 PORT = 5555
 
