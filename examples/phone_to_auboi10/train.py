@@ -36,13 +36,13 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.utils import init_logging
 
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10_full_shift"
-LOCAL_MODEL_PATH = "./models/phone_auboi10_aug"
+LOCAL_DATASET_PATH = "./datasets/bamboo_full_shift"
+LOCAL_MODEL_PATH = "./models/bamboo_shift"
 
 # --- Training hyperparameters ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 16
-TRAINING_STEPS = 40_000
+TRAINING_STEPS = 30_000
 LOG_FREQ = 200
 SAVE_FREQ = 5_000
 
@@ -119,21 +119,7 @@ def main():
         "action": [i / dataset_metadata.fps for i in cfg.action_delta_indices],
     }
 
-    # 图像增强：训练时对相机图像随机抖动亮度/对比度/饱和度/色调 + 小幅裁剪平移，
-    # 让模型对光照变化和物体位置微调鲁棒（评估时画面的轻微差异不再导致预测漂移）。
-    # 只在训练 dataset 生效；评估走 inference_server 不经过这里，保持确定性。
-    from torchvision.transforms import v2
-
-    image_transforms = v2.Compose([
-        v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
-        v2.RandomResizedCrop(size=(480, 640), scale=(0.95, 1.0), ratio=(0.97, 1.03), antialias=True),
-    ])
-
-    dataset = LeRobotDataset(
-        LOCAL_DATASET_PATH,
-        delta_timestamps=delta_timestamps,
-        image_transforms=image_transforms,
-    )
+    dataset = LeRobotDataset(LOCAL_DATASET_PATH, delta_timestamps=delta_timestamps)
 
     dataloader = torch.utils.data.DataLoader(
         dataset,

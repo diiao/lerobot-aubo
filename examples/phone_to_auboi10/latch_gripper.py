@@ -21,8 +21,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
-SRC_REPO = "./datasets/phone_auboi10_full"
-DST_REPO = "./datasets/phone_auboi10_full_latched"
+SRC_REPO = "./datasets/bamboo_full"
+DST_REPO = "./datasets/bamboo_full_latched"
 GRIPPER_IDX = 7  # action: [ee.j6_target, ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz, ee.gripper_pos]
 
 

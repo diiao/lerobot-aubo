@@ -27,11 +27,11 @@ from lerobot.utils.constants import HF_LEROBOT_HOME
 # repo_id 必须带 "./datasets/" 前缀，和 record.py / train.py 的 LOCAL_DATASET_PATH 一致，
 # 否则路径对不上（HF_LEROBOT_HOME 是 ~/.cache/huggingface/lerobot，数据在其 datasets/ 子目录下）。
 SRC = [
-    "./datasets/phone_auboi10",
-    "./datasets/phone_auboi10_s2",
-    "./datasets/phone_auboi10_s3",
+    "./datasets/bamboo_s1",
+    "./datasets/bamboo_s2",
+    "./datasets/bamboo_s3",
 ]
-DST = "./datasets/phone_auboi10_full"
+DST = "./datasets/bamboo_full"
 
 
 def main():
