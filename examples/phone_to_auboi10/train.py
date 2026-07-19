@@ -36,8 +36,8 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.utils import init_logging
 
-LOCAL_DATASET_PATH = "./datasets/bamboo_full_shift"
-LOCAL_MODEL_PATH = "./models/bamboo_shift"
+LOCAL_DATASET_PATH = "./datasets/bamboo_full_shift_aug"
+LOCAL_MODEL_PATH = "./models/bamboo_shift_aug"
 
 # --- Training hyperparameters ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
