@@ -81,6 +81,22 @@ def test_get_feature_stats_images():
     assert stats["min"].shape == stats["max"].shape == stats["mean"].shape == stats["std"].shape
 
 
+def test_get_feature_stats_uint8_images_does_not_overflow():
+    data = np.array(
+        [
+            [[[0, 255]], [[32, 224]], [[64, 192]]],
+            [[[255, 0]], [[224, 32]], [[192, 64]]],
+        ],
+        dtype=np.uint8,
+    )
+
+    stats = get_feature_stats(data, axis=(0, 2, 3), keepdims=True)
+    expected = np.std(data.astype(np.float64), axis=(0, 2, 3), keepdims=True)
+
+    np.testing.assert_allclose(stats["std"], expected)
+    assert np.all(stats["std"] > 0)
+
+
 def test_get_feature_stats_axis_0_keepdims(sample_array):
     expected = {
         "min": np.array([[1, 2, 3]]),

@@ -2,19 +2,20 @@
 """拆分式推理的客户端，跑在本地工作站。
 
 机器人 + 相机都在本地；策略推理在 GPU 机上（inference_server.py），经 Tailscale 连接。
-本脚本：取观测 -> 队列空时把观测发给服务器拿回一块 n_action_steps 个动作 ->
-每帧从队列取一个动作 -> 加 ee_mode -> 下发给机器人 -> 写评估数据集。
+本脚本：取观测 -> 发给服务器取得当前纯 ACT 动作 ->
+经过通用安全边界和 ee_mode 处理 -> 下发给机器人 -> 写评估数据集。
 
 操作同 evaluate.py：-> 开始/结束 episode，← 重录，Esc 全停。
 
 前置：
   1. GPU 机上先启动 inference_server.py（见该文件头注释）。
   2. 本地机器人上电、相机就位（by-id + MJPG，同 record.py）。
-  3. 本地有聚合数据集 phone_auboi10_full（取 features；aggregate.py 产物）。
+  3. 本地有聚合数据集 bamboo_newview_full（取 features；aggregate.py 产物）。
 """
 
 import logging
 import math
+import os
 import pickle
 import socket
 import struct
@@ -42,7 +43,7 @@ from lerobot.processor.converters import (
     transition_to_robot_action,
 )
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Config, AuboI10Robot
-from lerobot.robots.aubo_i10.robot_processor import AuboSetEEMode
+from lerobot.robots.aubo_i10.robot_processor import AuboEEBoundsAndSafety, AuboSetEEMode
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.robot_utils import precise_sleep
@@ -52,14 +53,14 @@ NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
 TASK_DESCRIPTION = "抓取竹条"
-TRAINING_DATASET_PATH = "./datasets/phone_auboi10_full"  # 取 features（本地）
-LOCAL_EVAL_DATASET_PATH = "./datasets/phone_auboi10_split_eval"
+TRAINING_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")
+LOCAL_EVAL_DATASET_PATH = os.environ.get("EVAL_DATASET_PATH", "./datasets/bamboo_newview_eval")
 
 # GPU 机（Tailscale）
 SERVER_HOST = "100.88.143.45"
 SERVER_PORT = 5555
 
-# 相机用稳定的 by-id 路径 + MJPG（本机直连相机，同 record.py）
+# 相机用稳定的 by-id 路径 + MJPG（handeye 是当前眼在手外相机）
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
 
@@ -88,10 +89,10 @@ def return_to_start(robot):
     while motion.getExecId() != -1:
         time.sleep(0.05)
     try:
-        io = robot.robot_interface.getIoControl()
-        io.setStandardDigitalOutput(2, False)  # 吸
-        io.setStandardDigitalOutput(3, True)   # 放
-        logging.info("归位完成，吸盘已释放")
+        if not robot.suction_release():
+            logging.error("归位完成，但吸盘释放失败")
+        else:
+            logging.info("归位完成，吸盘已释放")
     except Exception as e:
         logging.error(f"吸盘释放失败: {e}")
 
@@ -151,7 +152,7 @@ def run_episode(
     ee_mode_processor,
     robot_observation_processor,
 ):
-    action_queue = deque()  # 兼容 queue 模式：服务器返回多动作时缓存
+    action_queue = deque()  # 保留协议兼容性；当前服务端每次返回一步动作
     dt = 1.0 / fps
     timestamp = 0.0
     start_episode_t = time.perf_counter()
@@ -197,6 +198,12 @@ def run_episode(
         elapsed = time.perf_counter() - start_loop_t
         if elapsed < dt:
             precise_sleep(dt - elapsed)
+        else:
+            logging.warning(
+                "推理控制循环低于目标频率: %.1f Hz（目标 %d Hz）",
+                1.0 / elapsed,
+                fps,
+            )
 
 
 def wait_for_key(events: dict, prompt: str = "按 -> (右箭头键) 继续") -> bool:
@@ -247,9 +254,15 @@ def main():
     }
     robot = AuboI10Robot(AuboI10Config(cameras=camera_config))
 
-    # 2. ee_mode 处理器（策略输出不含 ee_mode 字符串，补回去走 abs_j6yaw，同 evaluate.py）
+    # 2. 纯 ACT 动作只经过通用安全边界和控制模式注入，不包含任务位置启发式。
     ee_mode_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
-        steps=[AuboSetEEMode(ee_mode="abs_j6yaw")],
+        steps=[
+            AuboEEBoundsAndSafety(
+                end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [1.0, 0.0, 0.8]},
+                max_ee_step_m=0.05,
+            ),
+            AuboSetEEMode(ee_mode="abs_j6yaw"),
+        ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )

@@ -1,92 +1,93 @@
-# Phone to Aubo I10
+# Phone to Aubo I10 — pure ACT workflow
 
-这个目录包含用于通过手机遥操作 Aubo I10 机械臂、记录数据、回放数据和评估策略的脚本。
+本目录用于手机遥操作 AUBO I10、分批录制新视角数据、训练和拆分式纯 ACT 推理。
 
-## 文件说明
+## 相机约定
 
-- `teleoperate.py` - 基础手机遥操作脚本（已跑通）
-- `record.py` - 记录数据集脚本
-- `replay.py` - 回放已记录数据脚本
-- `evaluate.py` - 评估训练好的策略脚本
-- `REMOTE_TRAINING.md` - 远程训练流程（本地采集 → GPU 机训练）
+- `handeye`：当前重新调整的眼在手外相机。
+- `fixed`：另一视角相机。
+- 录制、训练、推理期间，两台物理相机与以上键名的对应关系必须保持不变。
 
-## 使用流程
+## 1. 录制前检查
 
-### 1. 遥操作测试
-首先确保 `teleoperate.py` 可以正常运行：
 ```bash
-python teleoperate.py
+python diag_preflight_cams.py
+python diag_cam_latency.py
 ```
 
-### 2. 记录数据集
-使用 `record.py` 记录演示数据：
+确认相机位置后，可用 `check_handeye_align.py` 对比参考图和现场图。
+
+## 2. 分批录制
+
+每批使用独立数据集名称，避免覆盖已有数据：
+
 ```bash
-python record.py
+DATASET_PATH=./datasets/bamboo_newview_s01 NUM_EPISODES=10 python record.py
+DATASET_PATH=./datasets/bamboo_newview_s02 NUM_EPISODES=10 python record.py
 ```
 
-该脚本会：
-- 连接手机和 Aubo I10 机械臂
-- 连接两个相机（handeye 和 fixed）
-- 记录 NUM_EPISODES 个 episode（默认 3 个）
-- 每个 episode 时长 EPISODE_TIME_SEC 秒（默认 60 秒）
-- 数据保存到 LOCAL_DATASET_PATH（默认 ./datasets/phone_auboi10）
+录制动作中的吸盘目标是持续的 `0/100` 状态，不需要再执行夹爪锁存或标签前移脚本。
 
-### 3. 回放数据
-使用 `replay.py` 回放已记录的数据：
+## 3. 聚合
+
+`aggregate.py`默认自动发现所有 `bamboo_newview_sXX`：
+
 ```bash
-python replay.py
+python aggregate.py
 ```
 
-该脚本会：
-- 加载记录的数据集
-- 回放指定的 episode（默认第 0 个）
-- 在 Aubo I10 上复现演示动作
+输出为 `./datasets/bamboo_newview_full`。也可以显式指定：
 
-### 4. 训练 ACT 策略
-记录数据后，可以参照 `examples/tutorial/act/act_training_example.py` 训练 ACT 策略。
-
-主要修改点：
-- 将 `dataset_id` 改为你记录的数据集路径
-- 确保 input_features 和 output_features 与 Aubo I10 的观测/动作空间匹配
-
-### 5. 评估策略
-训练好策略后，使用 `evaluate.py` 进行评估：
 ```bash
-python evaluate.py
+DATASET_SOURCES=./datasets/bamboo_newview_s01,./datasets/bamboo_newview_s02 \
+OUTPUT_DATASET_PATH=./datasets/bamboo_newview_full \
+python aggregate.py
 ```
 
-## 配置说明
+聚合后会检查图像标准差，并确认夹爪标签只有持续状态 `0/100` 且两种状态都存在；
+发现旧的 `50` 中立命令或异常统计时会拒绝进入训练。
 
-### 相机配置
-在 `record.py` 中修改相机配置：
-```python
-camera_config = {
-    "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS),
-    "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS),
-}
+## 4. 训练
+
+```bash
+python train.py
 ```
 
-### 机械臂 IP
-在 `src/lerobot/robots/aubo_i10/aubo_i10.py` 中修改：
-```python
-self.robot_ip = "192.168.31.200"
-self.robot_port = 30004
+默认设置：
+
+- 数据集：`bamboo_newview_full`
+- 模型：`models/bamboo_newview_act`
+- 从头训练，不加载旧视角 checkpoint
+- 按完整 episode 保留最后 20% 作为验证集
+- `chunk_size=30`，每次执行 5 步后重新规划
+- 首个基线不使用图像增强
+
+可通过环境变量覆盖数据集、模型路径和训练步数。
+
+## 5. 纯 ACT 推理
+
+GPU端：
+
+```bash
+MODEL_PATH=./models/bamboo_newview_act/best \
+python inference_server.py
 ```
 
-### 记录参数
-在 `record.py` 顶部修改：
-```python
-NUM_EPISODES = 3          # 记录的 episode 数量
-FPS = 30                   # 采样频率
-EPISODE_TIME_SEC = 60      # 每个 episode 的时长（秒）
-RESET_TIME_SEC = 30        # 重置环境的时长（秒）
-TASK_DESCRIPTION = "My task description"  # 任务描述
-LOCAL_DATASET_PATH = "./datasets/phone_auboi10"  # 数据集保存路径
+机器人端：
+
+```bash
+DATASET_PATH=./datasets/bamboo_newview_full \
+python evaluate_split.py
 ```
 
-## 数据格式
+服务端不会根据固定 xyz 阈值覆盖轨迹或夹爪；机器人端仅保留工作空间、单步位移限制和控制模式注入。
 
-记录的数据集使用 LeRobotDataset 格式，包含：
-- 观测数据：关节角度 (J1-J6)、末端位姿 (ee.x/y/z/wx/wy/wz)、夹爪位置、相机图像
-- 动作数据：末端位姿增量、夹爪位置
-- 视频文件：相机录制的 MP4 视频
+## 辅助工具
+
+- `teleoperate.py`：手动遥操作检查。
+- `move_to_start.py`：移动到统一起始姿态。
+- `read_pose.py`：只读当前 TCP 位姿。
+- `test_io.py`：确认吸盘 IO。
+- `test_servo.py`：诊断伺服接口。
+
+旧视角、启发式夹爪、脚本化下降/提起、不兼容当前绝对末端动作的旧回放脚本及旧数据专项诊断已从主流程移除；改造前版本保存在 Git 提交 `c4dfa2c`。

@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import time
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from lerobot.processor.converters import (
     transition_to_robot_action,
 )
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot, AuboI10Config
-from lerobot.robots.aubo_i10.robot_processor import AuboSetEEMode
+from lerobot.robots.aubo_i10.robot_processor import AuboEEBoundsAndSafety, AuboSetEEMode
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
@@ -43,9 +44,9 @@ NUM_EPISODES = 5
 FPS = 30
 EPISODE_TIME_SEC = 60
 TASK_DESCRIPTION = "抓取竹条"
-LOCAL_MODEL_PATH = "./models/phone_auboi10"
-TRAINING_DATASET_PATH = "./datasets/phone_auboi10"
-LOCAL_EVAL_DATASET_PATH = "./datasets/phone_auboi10_eval"
+LOCAL_MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
+TRAINING_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")
+LOCAL_EVAL_DATASET_PATH = os.environ.get("EVAL_DATASET_PATH", "./datasets/bamboo_newview_eval_direct")
 
 
 def wait_for_key(events: dict, prompt: str = "按 → (右箭头键) 继续") -> bool:
@@ -76,7 +77,7 @@ def main():
     # ------------------------------------------------------------------
     # 注意：评估在 GPU 机上运行时，相机经 usbip 从本地转发过来，/dev/videoN 节点号
     # 不一定还是 0/2。attach 后用 `v4l2-ctl --list-devices` 确认 "GENERAL WEBCAM"
-    # (handeye) 和 "USB2.0_CAM1" (fixed) 各自落到哪个节点，按实际改 index_or_path。
+    # (handeye，当前眼在手外相机) 和 "USB2.0_CAM1" (fixed) 各自落到哪个节点，按实际修改。
     # handeye/fixed 必须与训练时对应同一物理相机，否则图像特征对错位。
     camera_config = {
         "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS, fourcc="MJPG"),
@@ -100,7 +101,13 @@ def main():
     # 但策略输出向量不含 ee_mode（字符串不入数据集），用 AuboSetEEMode 补回去，
     # 让 send_action 走 _send_position_j6yaw（与训练一致）。
     ee_mode_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
-        steps=[AuboSetEEMode(ee_mode="abs_j6yaw")],
+        steps=[
+            AuboEEBoundsAndSafety(
+                end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [1.0, 0.0, 0.8]},
+                max_ee_step_m=0.05,
+            ),
+            AuboSetEEMode(ee_mode="abs_j6yaw"),
+        ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
@@ -118,7 +125,6 @@ def main():
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy.config,
         pretrained_path=LOCAL_MODEL_PATH,
-        dataset_stats=training_metadata.stats,
         preprocessor_overrides={"device_processor": {"device": str(policy.config.device)}},
     )
 

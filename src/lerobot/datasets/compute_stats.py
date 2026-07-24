@@ -51,7 +51,10 @@ class RunningQuantileStats:
         Args:
             batch: An array where all dimensions except the last are batch dimensions.
         """
-        batch = batch.reshape(-1, batch.shape[-1])
+        # Statistics must be accumulated in floating point. Image samples are
+        # intentionally loaded as uint8 to save memory; squaring uint8 directly
+        # wraps at 255 and can collapse the computed variance to zero.
+        batch = np.asarray(batch, dtype=np.float64).reshape(-1, batch.shape[-1])
         num_elements, vector_length = batch.shape
 
         if self._count == 0:
