@@ -48,7 +48,7 @@ FPS = 30
 EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取竹条"
-LOCAL_DATASET_PATH = "./datasets/bamboo_s3"
+LOCAL_DATASET_PATH = "./datasets/bamboo_newview"
 
 # 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。
 # handeye = GENERAL WEBCAM（机械臂末端），fixed = USB2.0_CAM1（固定机位）。
