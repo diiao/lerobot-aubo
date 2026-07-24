@@ -1,5 +1,8 @@
 # 远程训练流程：本地采集 → GPU 机训练
 
+> 录制和聚合步骤见 [README.md](README.md)。本文从
+> `bamboo_newview_full` 已在本地生成开始。
+
 本地工作站无 GPU，只负责采集（手机遥操 + 相机 + 机器人）。训练在 GPU 机 `192.168.31.9`（RTX 4090 D）上进行。本文档记录把本地数据集和代码搬到 GPU 机并启动训练的完整流程。
 
 ## 机器角色
@@ -12,27 +15,27 @@
 
 ## 0. 前置条件
 
-- 本地已用 `record.py` 采集数据集（默认 `./datasets/phone_auboi10`）。
+- 本地已用 `aggregate.py` 生成 `./datasets/bamboo_newview_full`。
 - GPU 机已装 `v4l-utils`、`uv`、`ffmpeg`（`sudo apt install -y v4l-utils ffmpeg`，uv 在 `~/.local/bin/uv` 或 `/snap/bin/uv`）。
 - 本地能 `ssh 192.168.31.9` 免密登录。
 
 ## 1. 找到本地数据集（重要坑点）
 
-`record.py` 里 `LeRobotDataset.create(repo_id="./datasets/phone_auboi10")` **不会**把数据写到这个相对路径目录——它把 `phone_auboi10` 当数据集名，存进了 HuggingFace 缓存：
+LeRobot 会把 `./datasets/bamboo_newview_full` 解析到 HuggingFace 缓存：
 
 ```
-~/.cache/huggingface/lerobot/datasets/phone_auboi10/
+~/.cache/huggingface/lerobot/datasets/bamboo_newview_full/
 ├── meta/info.json            # episodes 数 / frames / features 定义
 ├── data/chunk-000/*.parquet  # 数值数据
 └── videos/observation.images.{handeye,fixed}/chunk-000/*.mp4
 ```
 
-`train.py` 里 `LeRobotDatasetMetadata("./datasets/phone_auboi10")` 能解析到它，是因为 LeRobot 用 repo_id 去 HF 缓存里找。所以训练机也得让这个缓存目录存在。
+训练机也必须让这个缓存目录存在。
 
 确认本地数据集内容：
 
 ```bash
-cat ~/.cache/huggingface/lerobot/datasets/phone_auboi10/meta/info.json | head -40
+cat ~/.cache/huggingface/lerobot/datasets/bamboo_newview_full/meta/info.json | head -40
 ```
 
 ## 2. 同步数据集到 GPU 机
@@ -41,8 +44,8 @@ cat ~/.cache/huggingface/lerobot/datasets/phone_auboi10/meta/info.json | head -4
 
 ```bash
 ssh 192.168.31.9 'mkdir -p ~/.cache/huggingface/lerobot/datasets'
-rsync -av ~/.cache/huggingface/lerobot/datasets/phone_auboi10/ \
-  192.168.31.9:~/.cache/huggingface/lerobot/datasets/phone_auboi10/
+rsync -av ~/.cache/huggingface/lerobot/datasets/bamboo_newview_full/ \
+  192.168.31.9:~/.cache/huggingface/lerobot/datasets/bamboo_newview_full/
 ```
 
 验证 GPU 机能加载：
@@ -51,7 +54,7 @@ rsync -av ~/.cache/huggingface/lerobot/datasets/phone_auboi10/ \
 ssh 192.168.31.9 'cd ~/program/lerobot-aubo/examples/phone_to_auboi10 && \
   ../../.venv/bin/python -c "
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
-m = LeRobotDatasetMetadata(\"./datasets/phone_auboi10\")
+m = LeRobotDatasetMetadata(\"./datasets/bamboo_newview_full\")
 print(\"episodes\", m.total_episodes, \"frames\", m.total_frames, \"fps\", m.fps)
 print(\"features:\", list(m.features.keys()))
 "'
@@ -119,7 +122,7 @@ ssh 192.168.31.9 'cd ~/program/lerobot-aubo/examples/phone_to_auboi10 && \
 
 ```bash
 ssh 192.168.31.9 'tail -f ~/program/lerobot-aubo/examples/phone_to_auboi10/logs/train_trial.log' \
-  | grep --line-buffered -E "step +[0-9]+ \| loss|Traceback|Error|Saved checkpoint|Training complete|CUDA out of memory"
+  | grep --line-buffered -E "train_loss|val_loss|Traceback|Error|saved|Training complete|CUDA out of memory"
 ```
 
 或只看一眼最新 loss：
@@ -128,7 +131,8 @@ ssh 192.168.31.9 'tail -f ~/program/lerobot-aubo/examples/phone_to_auboi10/logs/
 ssh 192.168.31.9 'grep "step" ~/program/lerobot-aubo/examples/phone_to_auboi10/logs/train_trial.log | tail -5'
 ```
 
-checkpoint 每 5000 步落一个到 `examples/phone_to_auboi10/models/phone_auboi10/checkpoint_<step>/`，最终模型在同目录。
+checkpoint 每 5000 步保存到 `models/bamboo_newview_act/checkpoint_<step>/`；
+验证损失最低的模型保存在 `models/bamboo_newview_act/best/`。
 
 ## 7. 停止训练
 
@@ -143,12 +147,24 @@ ssh 192.168.31.9 'pkill -9 -f train.py; sleep 1; pgrep -af train.py | grep -v pg
 ```python
 # 正确
 delta_timestamps = {
-    "action": [i / dataset_metadata.fps for i in cfg.action_delta_indices],
+    "action": [i / metadata.fps for i in policy.config.action_delta_indices],
 }
 ```
 
 ACT 的 `observation_delta_indices = None`，标准流程 `resolve_delta_timestamps` 只给 action 加。若给观测加 `[0.0]`，会塞进一个多余的时间维（state 变 `(B,1,D)`），VAE encoder 里 `torch.cat` 会报 `Tensors must have same number of dimensions: got 3 and 4`。
 
-## 9. 推理（评估）走 usbip
+## 9. 拆分式纯 ACT 推理
 
-评估时相机经 usbip 从本地转发到 GPU 机，evaluate.py 整条跑在 GPU 机上。见仓库记忆 [[usbip-camera-forwarding]] 与 `evaluate.py` 顶部注释。
+GPU 机启动：
+
+```bash
+MODEL_PATH=./models/bamboo_newview_act/best python inference_server.py
+```
+
+本地工作站运行：
+
+```bash
+DATASET_PATH=./datasets/bamboo_newview_full python evaluate_split.py
+```
+
+相机和机器人留在本地，服务端只执行 ACT 前向推理。

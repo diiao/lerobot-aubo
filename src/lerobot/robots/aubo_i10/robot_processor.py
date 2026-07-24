@@ -261,12 +261,15 @@ class PhoneEEToAuboEE(RobotActionProcessorStep):
 @dataclass
 class AuboGripperVelocityToPosition(RobotActionProcessorStep):
     """
-    Converts gripper velocity command to gripper position for AuboI10.
+    Converts the phone gripper command to an Aubo suction target.
 
-    Uses threshold-based three-state switching (matching teleoperate.py):
-    - gripper_vel > 0.5  → fully open (100.0)  — A button pressed
-    - gripper_vel < -0.5 → fully closed (0.0)   — B button pressed
-    - else               → neutral (50.0)       — no button pressed
+    With ``latch=False`` this preserves the legacy three-state command:
+    100=activate suction, 0=release suction, 50=no command.
+
+    With ``latch=True`` it emits the persistent desired suction state:
+    100 remains active after the button is released and 0 remains released.
+    Persistent targets are preferable as behavior-cloning labels because the
+    policy does not have to learn a rare one-frame button pulse.
 
     Attributes:
         open_threshold: Velocity threshold to open gripper.
@@ -274,6 +277,7 @@ class AuboGripperVelocityToPosition(RobotActionProcessorStep):
         clip_min: Minimum gripper position (closed).
         clip_max: Maximum gripper position (open).
         neutral_pos: Gripper position when neither open nor close is commanded.
+        latch: Emit a persistent 0/100 target instead of the legacy neutral 50.
     """
 
     open_threshold: float = 0.5
@@ -281,6 +285,8 @@ class AuboGripperVelocityToPosition(RobotActionProcessorStep):
     clip_min: float = 0.0
     clip_max: float = 100.0
     neutral_pos: float = 50.0
+    latch: bool = False
+    _latched_pos: float | None = field(default=None, init=False, repr=False)
 
     def action(self, action: RobotAction) -> RobotAction:
         observation = self.transition.get(TransitionKey.OBSERVATION)
@@ -290,20 +296,25 @@ class AuboGripperVelocityToPosition(RobotActionProcessorStep):
 
         gripper_vel = action.pop("ee.gripper_vel")
 
-        # Three-state gripper control matching teleoperate.py logic:
-        # A pressed (vel > threshold)  → open  (100.0)
-        # B pressed (vel < -threshold) → close (0.0)
-        # Neither pressed              → neutral / hold (50.0)
+        if self._latched_pos is None:
+            observed_pos = float(observation.get("gripper_pos", self.clip_min))
+            self._latched_pos = self.clip_max if observed_pos > self.neutral_pos else self.clip_min
+
         if gripper_vel > self.open_threshold:
-            gripper_pos = self.clip_max      # Open
+            self._latched_pos = self.clip_max
+            gripper_pos = self.clip_max
         elif gripper_vel < self.close_threshold:
-            gripper_pos = self.clip_min      # Close
+            self._latched_pos = self.clip_min
+            gripper_pos = self.clip_min
         else:
-            gripper_pos = self.neutral_pos   # Neutral: neither open nor close
+            gripper_pos = self._latched_pos if self.latch else self.neutral_pos
 
         action["ee.gripper_pos"] = gripper_pos
 
         return action
+
+    def reset(self) -> None:
+        self._latched_pos = None
 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
@@ -647,6 +658,18 @@ class AuboEEBoundsAndSafety(RobotActionProcessorStep):
         twist = np.array([wx, wy, wz], dtype=float)
 
         pos = np.clip(pos, self.end_effector_bounds["min"], self.end_effector_bounds["max"])
+
+        # On the first policy step, anchor the limiter to the measured TCP pose
+        # instead of trusting an arbitrary first model target.
+        if self._last_pos is None:
+            observation = self.transition.get(TransitionKey.OBSERVATION)
+            if observation is not None and all(
+                key in observation for key in ("ee.x", "ee.y", "ee.z")
+            ):
+                self._last_pos = np.array(
+                    [observation["ee.x"], observation["ee.y"], observation["ee.z"]],
+                    dtype=float,
+                )
 
         if self._last_pos is not None:
             dpos = pos - self._last_pos

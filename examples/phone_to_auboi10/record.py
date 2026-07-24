@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import math
+import os
 import time
 from pathlib import Path
 
@@ -43,15 +44,16 @@ from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
-NUM_EPISODES = 10
+NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "10"))
 FPS = 30
 EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取竹条"
-LOCAL_DATASET_PATH = "./datasets/bamboo_newview"
+LOCAL_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_s01")
 
 # 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。
-# handeye = GENERAL WEBCAM（机械臂末端），fixed = USB2.0_CAM1（固定机位）。
+# handeye = GENERAL WEBCAM（眼在手外，当前重新调整的眼相机）。
+# fixed = USB2.0_CAM1（另一视角；录制/训练/推理期间必须始终保持相同键名映射）。
 # fourcc="MJPG" 必须，否则 USB2.0_CAM1(05a3:9230) 在 OpenCV 里读线程起不来 → 占位图。
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
@@ -83,12 +85,12 @@ def return_to_start(robot):
         exec_id = motion.getExecId()
     while motion.getExecId() != -1:  # 等运动完成
         time.sleep(0.05)
-    # 松吸盘（端口2=OFF, 端口3=ON）
+    # 通过机器人接口松吸盘，同时同步 is_suction_on 软件观测状态。
     try:
-        io = robot.robot_interface.getIoControl()
-        io.setStandardDigitalOutput(2, False)  # 吸
-        io.setStandardDigitalOutput(3, True)   # 放
-        logging.info("归位完成，吸盘已释放")
+        if not robot.suction_release():
+            logging.error("归位完成，但吸盘释放失败")
+        else:
+            logging.info("归位完成，吸盘已释放")
     except Exception as e:
         logging.error(f"吸盘释放失败: {e}")
 
@@ -150,7 +152,8 @@ def main():
                 end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [1.0, 0.0, 0.8]},
                 max_ee_step_m=0.05,
             ),
-            AuboGripperVelocityToPosition(),
+            # 直接录制持续的目标吸盘状态 0/100，避免训练稀疏的按键脉冲。
+            AuboGripperVelocityToPosition(latch=True),
         ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
