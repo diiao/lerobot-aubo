@@ -96,6 +96,7 @@ def main():
             height=480,
             fps=HANDEYE_CAPTURE_FPS,
             fourcc="MJPG",
+            warmup_s=3,
         ),
         "fixed": OpenCVCameraConfig(
             index_or_path="/dev/video2",
@@ -103,6 +104,7 @@ def main():
             height=480,
             fps=FIXED_CAPTURE_FPS,
             fourcc="MJPG",
+            warmup_s=3,
         ),
     }
     robot_config = AuboI10Config(cameras=camera_config, control_fps=control_fps)

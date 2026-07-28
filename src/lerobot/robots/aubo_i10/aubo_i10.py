@@ -99,7 +99,7 @@ class AuboI10Robot(Robot):
                     cam.connect(warmup=True)
                 except Exception as exc:
                     raise ConnectionError(
-                        f"Failed to connect configured camera '{cam_name}'"
+                        f"Failed to connect configured camera '{cam_name}': {exc}"
                     ) from exc
                 logging.info(f"{cam_name} connect success")
 
