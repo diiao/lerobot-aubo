@@ -50,7 +50,9 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging, log_say
 
 NUM_EPISODES = 5
-FPS = 30
+EXPECTED_CONTROL_FPS = 25
+HANDEYE_CAPTURE_FPS = 30
+FIXED_CAPTURE_FPS = 25
 EPISODE_TIME_SEC = 60
 TASK_DESCRIPTION = "抓取竹条"
 TRAINING_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")
@@ -247,14 +249,37 @@ def main():
     log_dir.mkdir(exist_ok=True)
     init_logging(log_file=str(log_dir / "evaluate_split.log"))
 
-    # 1. 相机 + 机器人（本地直连）
-    camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path=HANDEYE_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
-        "fixed": OpenCVCameraConfig(index_or_path=FIXED_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
-    }
-    robot = AuboI10Robot(AuboI10Config(cameras=camera_config))
+    # 1. 以训练数据集的 FPS 为唯一控制时间基准。
+    training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
+    control_fps = int(training_metadata.fps)
+    if control_fps != EXPECTED_CONTROL_FPS:
+        raise ValueError(
+            f"新视角纯 ACT 数据应为 {EXPECTED_CONTROL_FPS} FPS，"
+            f"但 {TRAINING_DATASET_PATH} 是 {control_fps} FPS"
+        )
 
-    # 2. 纯 ACT 动作只经过通用安全边界和控制模式注入，不包含任务位置启发式。
+    # 2. 相机 + 机器人（本地直连）
+    camera_config = {
+        "handeye": OpenCVCameraConfig(
+            index_or_path=HANDEYE_DEV,
+            width=640,
+            height=480,
+            fps=HANDEYE_CAPTURE_FPS,
+            fourcc="MJPG",
+        ),
+        "fixed": OpenCVCameraConfig(
+            index_or_path=FIXED_DEV,
+            width=640,
+            height=480,
+            fps=FIXED_CAPTURE_FPS,
+            fourcc="MJPG",
+        ),
+    }
+    robot = AuboI10Robot(
+        AuboI10Config(cameras=camera_config, control_fps=control_fps)
+    )
+
+    # 3. 纯 ACT 动作只经过通用安全边界和控制模式注入，不包含任务位置启发式。
     ee_mode_processor = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
         steps=[
             AuboEEBoundsAndSafety(
@@ -272,25 +297,25 @@ def main():
         to_output=transition_to_observation,
     )
 
-    # 3. 训练数据集 features（建评估数据集 + make_robot_action 用）
-    training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
-    # 自动清掉上次没干净退出留下的评估数据集外壳，避免 FileExistsError
-    import shutil
+    # 4. 用训练数据集 features 创建评估数据集。评估结果不得被静默覆盖；
+    # 已存在时要求调用者通过 EVAL_DATASET_PATH 选择一个新名称。
     from lerobot.utils.constants import HF_LEROBOT_HOME
+
     eval_root = HF_LEROBOT_HOME / LOCAL_EVAL_DATASET_PATH
     if eval_root.exists():
-        print(f"清掉旧的评估数据集外壳: {eval_root}")
-        shutil.rmtree(eval_root)
+        raise FileExistsError(
+            f"评估数据集已存在: {eval_root}；请设置新的 EVAL_DATASET_PATH"
+        )
     dataset = LeRobotDataset.create(
         repo_id=LOCAL_EVAL_DATASET_PATH,
-        fps=FPS,
+        fps=control_fps,
         features=training_metadata.features,
         robot_type=robot.name,
         use_videos=True,
         image_writer_threads=4,
     )
 
-    # 4. 连接机器人 + 服务器
+    # 5. 连接机器人 + 服务器
     robot.connect()
     listener, events = init_keyboard_listener()
 
@@ -333,7 +358,7 @@ def main():
             run_episode(
                 robot=robot,
                 events=events,
-                fps=FPS,
+                fps=control_fps,
                 sock=sock,
                 dataset=dataset,
                 control_time_s=EPISODE_TIME_SEC,

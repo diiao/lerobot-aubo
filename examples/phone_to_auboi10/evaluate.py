@@ -41,7 +41,9 @@ from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
 NUM_EPISODES = 5
-FPS = 30
+EXPECTED_CONTROL_FPS = 25
+HANDEYE_CAPTURE_FPS = 30
+FIXED_CAPTURE_FPS = 25
 EPISODE_TIME_SEC = 60
 TASK_DESCRIPTION = "抓取竹条"
 LOCAL_MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
@@ -72,6 +74,14 @@ def main():
     log_dir.mkdir(exist_ok=True)
     init_logging(log_file=str(log_dir / "evaluate.log"))
 
+    training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
+    control_fps = int(training_metadata.fps)
+    if control_fps != EXPECTED_CONTROL_FPS:
+        raise ValueError(
+            f"新视角纯 ACT 数据应为 {EXPECTED_CONTROL_FPS} FPS，"
+            f"但 {TRAINING_DATASET_PATH} 是 {control_fps} FPS"
+        )
+
     # ------------------------------------------------------------------
     # 1. 配置机器人（必须包含相机，策略需要图像输入）
     # ------------------------------------------------------------------
@@ -80,10 +90,22 @@ def main():
     # (handeye，当前眼在手外相机) 和 "USB2.0_CAM1" (fixed) 各自落到哪个节点，按实际修改。
     # handeye/fixed 必须与训练时对应同一物理相机，否则图像特征对错位。
     camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=FPS, fourcc="MJPG"),
-        "fixed": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=FPS, fourcc="MJPG"),
+        "handeye": OpenCVCameraConfig(
+            index_or_path="/dev/video0",
+            width=640,
+            height=480,
+            fps=HANDEYE_CAPTURE_FPS,
+            fourcc="MJPG",
+        ),
+        "fixed": OpenCVCameraConfig(
+            index_or_path="/dev/video2",
+            width=640,
+            height=480,
+            fps=FIXED_CAPTURE_FPS,
+            fourcc="MJPG",
+        ),
     }
-    robot_config = AuboI10Config(cameras=camera_config)
+    robot_config = AuboI10Config(cameras=camera_config, control_fps=control_fps)
     robot = AuboI10Robot(robot_config)
 
     # ------------------------------------------------------------------
@@ -121,7 +143,6 @@ def main():
     # ------------------------------------------------------------------
     # 4. 使用训练数据集的统计量 + 模型配置创建预/后处理器
     # ------------------------------------------------------------------
-    training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy.config,
         pretrained_path=LOCAL_MODEL_PATH,
@@ -133,7 +154,7 @@ def main():
     # ------------------------------------------------------------------
     dataset = LeRobotDataset.create(
         repo_id=LOCAL_EVAL_DATASET_PATH,
-        fps=FPS,
+        fps=control_fps,
         features=training_metadata.features,
         robot_type=robot.name,
         use_videos=True,
@@ -173,7 +194,7 @@ def main():
             record_loop(
                 robot=robot,
                 events=events,
-                fps=FPS,
+                fps=control_fps,
                 policy=policy,
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,

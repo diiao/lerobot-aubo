@@ -35,12 +35,6 @@ SAVE_FREQ = 5000
 MAX_VAL_BATCHES = 50
 VAL_FRACTION = 0.2
 
-# At 30 fps this predicts one second of future actions and replans every
-# five control frames. It is a safer starting point than executing a full
-# long chunk open-loop.
-CHUNK_SIZE = 30
-N_ACTION_STEPS = 5
-
 # Standard ACT CVAE objective is the baseline. Set USE_VAE=0 only for a
 # controlled comparison trained from scratch with the same episode split.
 USE_VAE = os.environ.get("USE_VAE", "1").strip().lower() not in ("", "0", "false", "no")
@@ -48,6 +42,11 @@ USE_VAE = os.environ.get("USE_VAE", "1").strip().lower() not in ("", "0", "false
 
 def validate_dataset_stats(metadata: LeRobotDatasetMetadata) -> None:
     """Fail early on statistics produced by the historical uint8 overflow bug."""
+    if int(metadata.fps) != 25:
+        raise RuntimeError(
+            f"新视角纯 ACT 数据必须是 25 FPS，当前数据集是 {metadata.fps} FPS"
+        )
+
     for key, feature in metadata.features.items():
         if feature["dtype"] not in ("video", "image"):
             continue
@@ -125,12 +124,23 @@ def main():
     init_logging(log_file=str(log_dir / "train.log"))
 
     output_dir = Path(LOCAL_MODEL_PATH)
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(
+            f"模型目录非空: {output_dir}；请为新实验设置新的 MODEL_PATH"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(DEVICE)
 
     metadata = LeRobotDatasetMetadata(LOCAL_DATASET_PATH)
     validate_dataset_stats(metadata)
     train_episodes, val_episodes = split_episodes(metadata.total_episodes)
+    # Express the ACT horizon in physical time, then convert using the dataset
+    # FPS. New 25 Hz recordings therefore use a 25-frame (~1 s) chunk and
+    # replan after 4 frames (~0.16 s).
+    chunk_size = int(os.environ.get("CHUNK_SIZE", str(round(metadata.fps * 1.0))))
+    n_action_steps = int(
+        os.environ.get("N_ACTION_STEPS", str(max(1, round(metadata.fps / 6))))
+    )
     print(f"Training on {device}")
     print(f"dataset={LOCAL_DATASET_PATH}")
     print(f"train episodes={train_episodes}")
@@ -143,8 +153,8 @@ def main():
     config = ACTConfig(
         input_features=input_features,
         output_features=output_features,
-        chunk_size=CHUNK_SIZE,
-        n_action_steps=N_ACTION_STEPS,
+        chunk_size=chunk_size,
+        n_action_steps=n_action_steps,
         vision_backbone="resnet18",
         pretrained_backbone_weights="ResNet18_Weights.IMAGENET1K_V1",
         use_vae=USE_VAE,
@@ -182,7 +192,7 @@ def main():
 
     print(
         f"Starting pure ACT training: steps={TRAINING_STEPS}, "
-        f"chunk={CHUNK_SIZE}, execute={N_ACTION_STEPS}, use_vae={USE_VAE}"
+        f"chunk={chunk_size}, execute={n_action_steps}, use_vae={USE_VAE}"
     )
     while step < TRAINING_STEPS:
         for batch in train_loader:
