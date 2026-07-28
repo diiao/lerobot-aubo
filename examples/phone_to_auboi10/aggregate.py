@@ -37,6 +37,31 @@ REQUIRED_CAMERAS = (
 )
 
 
+def action_array_to_numpy(actions) -> np.ndarray:
+    """将 Arrow 定长/变长 action 列统一转换为二维 NumPy 数组。
+
+    原始录制 parquet 使用 FixedSizeList；merge_datasets 写出的聚合 parquet 会使用
+    List。两者 action 宽度都必须一致，不能因 Arrow 存储类型变化跳过标签校验。
+    """
+    action_width = getattr(actions.type, "list_size", None)
+    if action_width is None:
+        try:
+            offsets = actions.offsets.to_numpy(zero_copy_only=False)
+        except AttributeError as exc:
+            raise RuntimeError(f"action 列不是 Arrow 列表类型: {actions.type}") from exc
+        lengths = np.diff(offsets)
+        if len(lengths) == 0:
+            return np.empty((0, 0), dtype=np.float32)
+        if not np.all(lengths == lengths[0]):
+            raise RuntimeError("action 列包含长度不一致的行")
+        action_width = int(lengths[0])
+
+    values = actions.values.to_numpy(zero_copy_only=False)
+    if values.size != len(actions) * action_width:
+        raise RuntimeError("action 列的元素数量与列表长度不一致")
+    return values.reshape(-1, action_width)
+
+
 def discover_sources() -> list[str]:
     configured = os.environ.get("DATASET_SOURCES", "").strip()
     if configured:
@@ -98,8 +123,7 @@ def validate_gripper_labels(dataset_root) -> None:
         parquet_file = pq.ParquetFile(parquet_path)
         for batch in parquet_file.iter_batches(columns=["action"], batch_size=65_536):
             actions = batch.column(0)
-            action_width = actions.type.list_size
-            values = actions.values.to_numpy(zero_copy_only=False).reshape(-1, action_width)
+            values = action_array_to_numpy(actions)
             gripper = values[:, gripper_index]
             seen_values.update(float(value) for value in np.unique(gripper))
             invalid = gripper[~(np.isclose(gripper, 0.0) | np.isclose(gripper, 100.0))]
@@ -135,8 +159,7 @@ def validate_episode_actions(dataset_root, info: dict) -> None:
             batch_size=65_536,
         ):
             actions = batch.column(0)
-            width = actions.type.list_size
-            values = actions.values.to_numpy(zero_copy_only=False).reshape(-1, width)
+            values = action_array_to_numpy(actions)
             episode_indices = batch.column(1).to_numpy(zero_copy_only=False)
             for episode_index in np.unique(episode_indices):
                 mask = episode_indices == episode_index
