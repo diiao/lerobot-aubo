@@ -3,7 +3,7 @@
 只测软件侧可量化部分:
   1) CAP_PROP_BUFFERSIZE 能否设成 1
   2) 后台线程的真实取帧节奏 (cadence)
-  3) 录制式 30fps 循环里,取到的帧有多"旧" (freshness)
+  3) 新数据 25fps 控制循环里,取到的帧有多"旧" (freshness)
 
 注意: age 只反映"后台线程拿到帧 -> 录制循环取帧"的时间差,
 **不包含**传感器曝光 + USB 传输的硬件固有延迟(那部分需要画面基准才能测)。
@@ -16,9 +16,17 @@ from lerobot.cameras.opencv import OpenCVCamera
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 
 DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
-FPS = 30
+CAPTURE_FPS = 30
+CONTROL_FPS = 25
 
-cfg = OpenCVCameraConfig(index_or_path=DEV, width=640, height=480, fps=FPS, fourcc="MJPG", warmup_s=8)
+cfg = OpenCVCameraConfig(
+    index_or_path=DEV,
+    width=640,
+    height=480,
+    fps=CAPTURE_FPS,
+    fourcc="MJPG",
+    warmup_s=8,
+)
 cam = OpenCVCamera(cfg)
 cam.connect(warmup=True)
 
@@ -38,19 +46,22 @@ while time.perf_counter() < end:
         caps.append(ct)
     time.sleep(0.001)
 intervals = [(caps[i + 1] - caps[i]) * 1000 for i in range(len(caps) - 1)]
-print(f"  2s 内拿到 {len(caps)} 帧 -> {len(caps)/2.0:.1f} fps (目标 {FPS})")
+print(
+    f"  2s 内拿到 {len(caps)} 帧 -> {len(caps)/2.0:.1f} fps "
+    f"(新数据控制目标 {CONTROL_FPS})"
+)
 if intervals:
     print(f"  帧间隔 ms: mean={statistics.mean(intervals):.1f} "
           f"min={min(intervals):.1f} max={max(intervals):.1f} "
           f"stdev={statistics.pstdev(intervals):.1f}")
 
-# --- Test2: 录制式 30fps 循环的帧新鲜度 ---
-print("\n[Test2] 录制式 30fps 循环, 帧新鲜度 (3s = 90 帧)...")
+# --- Test2: 录制式 25fps 循环的帧新鲜度 ---
+print("\n[Test2] 录制式 25fps 循环, 帧新鲜度 (3s = 75 帧)...")
 ages = []
-N = 90
+N = CONTROL_FPS * 3
 loop_start = time.perf_counter()
 for i in range(N):
-    target = loop_start + i / FPS
+    target = loop_start + i / CONTROL_FPS
     now = time.perf_counter()
     if now < target:
         time.sleep(target - now)

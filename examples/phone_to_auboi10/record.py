@@ -45,7 +45,9 @@ from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
 NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "10"))
-FPS = 30
+CONTROL_FPS = 25
+HANDEYE_CAPTURE_FPS = 30  # 驱动只接受 30；硬件实测约 25 FPS
+FIXED_CAPTURE_FPS = 25
 EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取竹条"
@@ -121,10 +123,22 @@ def main():
     init_logging(log_file=log_file_path, console_level="INFO", file_level="DEBUG")
 
     camera_config = {
-        "handeye": OpenCVCameraConfig(index_or_path=HANDEYE_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
-        "fixed": OpenCVCameraConfig(index_or_path=FIXED_DEV, width=640, height=480, fps=FPS, fourcc="MJPG"),
+        "handeye": OpenCVCameraConfig(
+            index_or_path=HANDEYE_DEV,
+            width=640,
+            height=480,
+            fps=HANDEYE_CAPTURE_FPS,
+            fourcc="MJPG",
+        ),
+        "fixed": OpenCVCameraConfig(
+            index_or_path=FIXED_DEV,
+            width=640,
+            height=480,
+            fps=FIXED_CAPTURE_FPS,
+            fourcc="MJPG",
+        ),
     }
-    robot_config = AuboI10Config(cameras=camera_config)
+    robot_config = AuboI10Config(cameras=camera_config, control_fps=CONTROL_FPS)
     teleop_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
     
 
@@ -172,32 +186,39 @@ def main():
         to_output=transition_to_observation,
     )
 
-    dataset = LeRobotDataset.create(
-        repo_id=LOCAL_DATASET_PATH,
-        fps=FPS,
-        features=combine_feature_dicts(
-            aggregate_pipeline_dataset_features(
-                pipeline=phone_to_robot_ee_pose_processor,
-                initial_features=create_initial_features(action=phone.action_features),
-                use_videos=True,
-            ),
-            aggregate_pipeline_dataset_features(
-                pipeline=robot_observation_processor,
-                initial_features=create_initial_features(observation=robot.observation_features),
-                use_videos=True,
-            ),
-        ),
-        robot_type=robot.name,
-        use_videos=True,
-        image_writer_threads=4,
-    )
-
-    robot.connect()
-    phone.connect()
-
-    listener, events = init_keyboard_listener()
-
+    dataset = None
+    listener = None
+    episode_idx = 0
     try:
+        # 把所有外部资源纳入 try/finally。任一连接或数据集创建步骤失败，
+        # 都会释放已经打开的相机、机器人和手机连接。
+        robot.connect()
+        phone.connect()
+
+        dataset = LeRobotDataset.create(
+            repo_id=LOCAL_DATASET_PATH,
+            fps=CONTROL_FPS,
+            features=combine_feature_dicts(
+                aggregate_pipeline_dataset_features(
+                    pipeline=phone_to_robot_ee_pose_processor,
+                    initial_features=create_initial_features(action=phone.action_features),
+                    use_videos=True,
+                ),
+                aggregate_pipeline_dataset_features(
+                    pipeline=robot_observation_processor,
+                    initial_features=create_initial_features(
+                        observation=robot.observation_features
+                    ),
+                    use_videos=True,
+                ),
+            ),
+            robot_type=robot.name,
+            use_videos=True,
+            image_writer_threads=4,
+        )
+
+        listener, events = init_keyboard_listener()
+
         if not robot.is_connected or not phone.is_connected:
             raise ValueError("Robot or teleop is not connected!")
 
@@ -208,7 +229,6 @@ def main():
         print("  Esc:        终止整个录制")
         print("=" * 50)
 
-        episode_idx = 0
         while episode_idx < NUM_EPISODES and not events["stop_recording"]:
             # --- 等待用户按键开始录制（支持 r 归位）---
             log_say(f"准备录制 episode {episode_idx + 1} / {NUM_EPISODES}")
@@ -240,7 +260,7 @@ def main():
             record_loop(
                 robot=robot,
                 events=events,
-                fps=FPS,
+                fps=CONTROL_FPS,
                 teleop=phone,
                 dataset=dataset,
                 control_time_s=EPISODE_TIME_SEC,
@@ -250,6 +270,12 @@ def main():
                 robot_action_processor=ee_to_delta_processor,
                 robot_observation_processor=robot_observation_processor,
             )
+
+            # Esc 会让 record_loop 提前返回；丢弃当前未完成片段，避免保存为训练 episode。
+            if events["stop_recording"]:
+                dataset.clear_episode_buffer()
+                log_say("已丢弃未完成的 episode")
+                break
 
             # --- 处理重录 ---
             if events["rerecord_episode"]:
@@ -291,14 +317,19 @@ def main():
 
     finally:
         log_say("录制结束")
-        robot.disconnect()
-        phone.disconnect()
         if listener:
             listener.stop()
+        if phone.is_connected:
+            phone.disconnect()
+        if robot.is_connected:
+            robot.disconnect()
 
-        dataset.finalize()
-        print(f"\n数据集已保存至: {LOCAL_DATASET_PATH}")
-        print(f"共录制 {episode_idx} 个 episodes")
+        if dataset is not None:
+            dataset.finalize()
+            print(f"\n数据集已保存至: {LOCAL_DATASET_PATH}")
+            print(f"共录制 {episode_idx} 个 episodes")
+        else:
+            print("\n录制未开始，没有创建数据集")
 
 
 if __name__ == "__main__":

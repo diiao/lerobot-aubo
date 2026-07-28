@@ -9,3 +9,9 @@ from ..config import RobotConfig
 @dataclass
 class AuboI10Config(RobotConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    control_fps: float = 30.0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.control_fps <= 0:
+            raise ValueError("control_fps must be greater than zero")

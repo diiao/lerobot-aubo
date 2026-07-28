@@ -70,11 +70,11 @@ class AuboI10Robot(Robot):
         # 伺服模式参数
         # 依据 SDK 文档(motion_control.h servoCartesian)："目前可用参数只有 pose 和 t"，
         # 即本版固件 servoCartesian 只有 pose 和 t 生效，lookahead_time/gain 暂被忽略。
-        #  - t(运行时间) 最优值 = 连续调用间隔 = 控制循环周期(30Hz → ~0.033s)。
+        #  - t(运行时间) 最优值 = 连续调用间隔 = 控制循环周期。
         # 原先 t=0.05 > 循环间隔 0.033，导致伺服队列持续积压 → 满(ret=2) → 重试 sleep
         #   → 运动一顿一顿且滞后。改成 0.033 让喂入≈消耗，队列稳定，运动连续顺滑。
-        # 注意：若把控制循环 FPS 改掉，需同步把 servo_time 设为 1/FPS。
-        self.servo_time = 0.033  # 伺服运行时间(s)，应 = 控制循环周期(1/FPS，30Hz→0.033)
+        # servo_time 从配置的控制频率计算，避免录制/推理 FPS 改动后忘记同步。
+        self.servo_time = 1.0 / config.control_fps
         self.servo_lookahead_time = 0.0  # 前瞻时间：本版固件忽略，保留待高版本固件启用[0.03,0.2]
         self.servo_gain = 0.0  # 比例增益：本版固件忽略，保留待高版本固件启用[100,200]
         self.servo_blend_radius = 0.0  # 混合半径(关节伺服用)
@@ -91,24 +91,42 @@ class AuboI10Robot(Robot):
         return self.robot_rpc_client.hasConnected()
 
     def connect(self, calibrate: bool = True) -> None:
-        # connect cameras
-        for cam_name, cam in self.cameras.items():
-            try:
-                cam.connect(warmup=False)
+        try:
+            # A configured learning camera is mandatory. Warmup verifies that the
+            # device can deliver a real frame before the robot is connected.
+            for cam_name, cam in self.cameras.items():
+                try:
+                    cam.connect(warmup=True)
+                except Exception as exc:
+                    raise ConnectionError(
+                        f"Failed to connect configured camera '{cam_name}'"
+                    ) from exc
                 logging.info(f"{cam_name} connect success")
-            except Exception as e:
-                logging.error(f"{cam_name} connect fail: {e}")
-        # connect robot
-        self.robot_rpc_client.setRequestTimeout(1000)
-        self.robot_rpc_client.connect(self.robot_ip, self.robot_port)
-        if self.robot_rpc_client.hasConnected():
+
+            self.robot_rpc_client.setRequestTimeout(1000)
+            self.robot_rpc_client.connect(self.robot_ip, self.robot_port)
+            if not self.robot_rpc_client.hasConnected():
+                raise ConnectionError(
+                    f"Failed to connect Aubo robot at {self.robot_ip}:{self.robot_port}"
+                )
+
             self.robot_rpc_client.login("aubo", "123456")
-            if self.robot_rpc_client.hasLogined():
-                self.robot_name = self.robot_rpc_client.getRobotNames()[0]
-                self.robot_interface = self.robot_rpc_client.getRobotInterface(self.robot_name)
-                self.get_robot_status()
-                self.io_control = self.robot_interface.getIoControl()
-                logging.info(f"Robot connect success: {self.robot_name}")
+            if not self.robot_rpc_client.hasLogined():
+                raise ConnectionError("Connected to Aubo RPC, but login failed")
+
+            self.robot_name = self.robot_rpc_client.getRobotNames()[0]
+            self.robot_interface = self.robot_rpc_client.getRobotInterface(self.robot_name)
+            self.get_robot_status()
+            self.io_control = self.robot_interface.getIoControl()
+            logging.info(f"Robot connect success: {self.robot_name}")
+        except Exception:
+            # Never leave camera handles or a partial RPC session alive after a
+            # failed startup. Most importantly, do not continue recording with a
+            # missing camera.
+            self._disconnect_cameras()
+            if self.robot_rpc_client.hasConnected():
+                self.robot_rpc_client.disconnect()
+            raise
                 
 
     @property
@@ -221,14 +239,20 @@ class AuboI10Robot(Robot):
             start_cam = time.perf_counter()
             try:
                 img = cam.read_latest()
-            except Exception:
+            except Exception as latest_error:
                 # read_latest 失败时回退到 async_read（阻塞等待新帧）
                 try:
                     img = cam.async_read(timeout_ms=200)
                 except Exception as e:
-                    # 所有读取方式均失败，使用黑色占位图像避免下游 None 崩溃
-                    logging.warning(f"相机 {cam_key} 读取失败，使用占位图像: {e}")
-                    img = np.zeros((480, 640, 3), dtype=np.uint8)
+                    raise RuntimeError(
+                        f"相机 {cam_key} 读取失败；为避免黑帧污染数据，已中止本轮"
+                    ) from e
+                else:
+                    logging.debug(
+                        "相机 %s 的最新帧不可用，已等待下一帧: %s",
+                        cam_key,
+                        latest_error,
+                    )
             obs_dict[cam_key] = img
             dt_cam = (time.perf_counter() - start_cam) * 1e3
             logging.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
@@ -759,12 +783,22 @@ class AuboI10Robot(Robot):
             logging.error(f"吸盘释放失败: {e}")
             return False
 
+    def _disconnect_cameras(self) -> None:
+        for cam_name, cam in self.cameras.items():
+            if not cam.is_connected:
+                continue
+            try:
+                cam.disconnect()
+            except Exception:
+                logging.exception("断开相机 %s 失败", cam_name)
+
     def disconnect(self) -> None:
         # 断开连接前关闭伺服模式
         if self.is_servo_mode_enabled:
             logging.info("断开连接前关闭伺服模式")
             self.disable_servo_mode()
 
+        self._disconnect_cameras()
         if self.robot_rpc_client.hasLogined():
             self.robot_rpc_client.logout()
         self.robot_rpc_client.disconnect()

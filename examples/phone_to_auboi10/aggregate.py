@@ -29,6 +29,12 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
 DST = os.environ.get("OUTPUT_DATASET_PATH", "./datasets/bamboo_newview_full")
+EXPECTED_FPS = 25
+EXPECTED_IMAGE_SHAPE = [480, 640, 3]
+REQUIRED_CAMERAS = (
+    "observation.images.handeye",
+    "observation.images.fixed",
+)
 
 
 def discover_sources() -> list[str]:
@@ -53,6 +59,27 @@ def validate_image_stats(dataset_root) -> None:
             raise RuntimeError(
                 f"{key} std={std} 异常偏小；请确认 uint8 图像统计修复已生效后再训练"
             )
+
+
+def validate_metadata(dataset_root) -> dict:
+    info = json.loads((dataset_root / "meta" / "info.json").read_text())
+    if int(info["fps"]) != EXPECTED_FPS:
+        raise RuntimeError(
+            f"{dataset_root.name} 是 {info['fps']} FPS；新视角数据必须是 {EXPECTED_FPS} FPS"
+        )
+    if int(info["total_episodes"]) < 1 or int(info["total_frames"]) < 1:
+        raise RuntimeError(f"{dataset_root.name} 没有已保存的 episode")
+
+    for key in REQUIRED_CAMERAS:
+        feature = info["features"].get(key)
+        if feature is None:
+            raise RuntimeError(f"{dataset_root.name} 缺少相机特征 {key}")
+        if feature["dtype"] != "video" or feature["shape"] != EXPECTED_IMAGE_SHAPE:
+            raise RuntimeError(
+                f"{key} 应为 video {EXPECTED_IMAGE_SHAPE}，实际为 "
+                f"{feature['dtype']} {feature['shape']}"
+            )
+    return info
 
 
 def validate_gripper_labels(dataset_root) -> None:
@@ -91,6 +118,76 @@ def validate_gripper_labels(dataset_root) -> None:
         )
 
 
+def validate_episode_actions(dataset_root, info: dict) -> None:
+    action_names = info["features"]["action"]["names"]
+    required_names = ("ee.x", "ee.y", "ee.z", "ee.gripper_pos")
+    try:
+        position_indices = [action_names.index(name) for name in required_names[:3]]
+        gripper_index = action_names.index(required_names[3])
+    except ValueError as exc:
+        raise RuntimeError(f"action features 缺少字段: {exc}") from exc
+
+    episode_actions: dict[int, list[np.ndarray]] = {}
+    for parquet_path in sorted((dataset_root / "data").rglob("*.parquet")):
+        parquet_file = pq.ParquetFile(parquet_path)
+        for batch in parquet_file.iter_batches(
+            columns=["action", "episode_index"],
+            batch_size=65_536,
+        ):
+            actions = batch.column(0)
+            width = actions.type.list_size
+            values = actions.values.to_numpy(zero_copy_only=False).reshape(-1, width)
+            episode_indices = batch.column(1).to_numpy(zero_copy_only=False)
+            for episode_index in np.unique(episode_indices):
+                mask = episode_indices == episode_index
+                episode_actions.setdefault(int(episode_index), []).append(values[mask])
+
+    expected_episodes = int(info["total_episodes"])
+    if len(episode_actions) != expected_episodes:
+        raise RuntimeError(
+            f"metadata 记录 {expected_episodes} episodes，action 中实际找到 "
+            f"{len(episode_actions)} 个"
+        )
+
+    fps = int(info["fps"])
+    for episode_index in sorted(episode_actions):
+        actions = np.concatenate(episode_actions[episode_index], axis=0)
+        if not np.isfinite(actions).all():
+            raise RuntimeError(f"episode {episode_index}: action 包含 NaN 或 Inf")
+
+        positions = actions[:, position_indices]
+        steps = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+        max_step = float(steps.max(initial=0.0))
+        if max_step > 0.055:
+            raise RuntimeError(
+                f"episode {episode_index}: 最大末端目标跳变 {max_step:.4f} m，"
+                "超过 0.05 m 安全限制"
+            )
+
+        gripper = actions[:, gripper_index]
+        release = np.isclose(gripper, 0.0)
+        suction = np.isclose(gripper, 100.0)
+        if not release.any() or not suction.any():
+            raise RuntimeError(
+                f"episode {episode_index}: 必须同时包含吸盘释放(0)和吸取(100)"
+            )
+        suction_seconds = float(suction.sum() / fps)
+        if suction_seconds < 0.3:
+            raise RuntimeError(
+                f"episode {episode_index}: 吸取状态仅 {suction_seconds:.2f}s，"
+                "疑似误触或标签异常"
+            )
+
+        moving_ratio = float(np.mean(steps > 0.001)) if len(steps) else 0.0
+        duration_seconds = len(actions) / fps
+        warning = "  ⚠ 停顿偏多" if moving_ratio < 0.25 else ""
+        print(
+            f"  episode {episode_index:02d}: {duration_seconds:.1f}s, "
+            f"moving={moving_ratio:.0%}, suction={suction_seconds:.1f}s, "
+            f"max_step={max_step:.3f}m{warning}"
+        )
+
+
 def main():
     sources = discover_sources()
     if not sources:
@@ -107,8 +204,10 @@ def main():
         if not source_root.is_dir():
             raise FileNotFoundError(f"源数据集不存在: {source_root}")
         print(f"检查源批次: {source}")
+        info = validate_metadata(source_root)
         validate_image_stats(source_root)
         validate_gripper_labels(source_root)
+        validate_episode_actions(source_root, info)
 
     # merge_datasets 内部用 create(exist_ok=False)，输出目录已存在会 FileExistsError，先删
     if dst_root.exists():
@@ -120,8 +219,10 @@ def main():
     merge_datasets(datasets, output_repo_id=DST)
 
     m = LeRobotDataset(repo_id=DST)
+    merged_info = validate_metadata(dst_root)
     validate_image_stats(dst_root)
     validate_gripper_labels(dst_root)
+    validate_episode_actions(dst_root, merged_info)
     print(f"合并完成: {m.meta.total_episodes} episodes, {m.meta.total_frames} frames")
     print(f"输出位置: {dst_root}")
 
