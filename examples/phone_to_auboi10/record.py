@@ -265,6 +265,7 @@ def main():
         print("录制操作指南:")
         print("  → (右箭头): 开始/结束当前 episode")
         print("  ← (左箭头): 结束并重录当前 episode")
+        print("  r:          在每条开始前归位到统一起始位置")
         print("  Esc:        终止整个录制")
         print("=" * 50)
 
@@ -357,30 +358,10 @@ def main():
             log_say(f"Episode {episode_idx + 1} 已保存")
             episode_idx += 1
 
-            # 最后一轮不需要重置环境
+            # 下一轮循环的“开始前等待”是唯一的归位/开始关口：按 r 归位、按右箭头开始。
+            # 不再在这里重复等待一次，避免归位后需要按两次右箭头才能开始下一条。
             if episode_idx >= NUM_EPISODES or events["stop_recording"]:
                 break
-
-            # --- 重置环境阶段 ---
-            # 关闭伺服模式，按 r 可自动归位到起始位
-            robot.disable_servo_mode()
-            log_say("重置环境：按 r 归位，按 -> 开始下一轮")
-            print("\n" + "=" * 50)
-            print("  r  -> 归位到起始位置（moveJoint + 松吸盘）")
-            print("  -> -> 开始下一轮录制")
-            print("  Esc -> 终止录制")
-            print("=" * 50)
-            events["exit_early"] = False
-            events["return_to_start"] = False
-            while not events["exit_early"] and not events["stop_recording"]:
-                if events.get("return_to_start"):
-                    events["return_to_start"] = False
-                    return_to_start(robot)
-                    print("已归位，摆好竹条后按 -> 开始")
-                time.sleep(0.05)
-            if events["stop_recording"]:
-                break
-            events["exit_early"] = False
 
     except Exception:
         # 未被上面处理的异常也不能把半条 episode 留在数据集目录中。
