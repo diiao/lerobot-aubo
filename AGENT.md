@@ -141,6 +141,7 @@ Android 手机
 | `examples/phone_to_auboi10/diag_preflight_cams.py` | 双相机录制前检查与预览 |
 | `examples/phone_to_auboi10/diag_cam_latency.py` | 双相机帧率和延迟检查 |
 | `examples/phone_to_auboi10/read_pose.py` | 机械臂只读连通检查 |
+| `examples/phone_to_auboi10/aubo_start_poses.py` | 正常与恢复录制共用的关节起点常量；不连接机器人 |
 | `examples/phone_to_auboi10/move_to_start.py` | 移动到统一起始关节位 |
 | `examples/phone_to_auboi10/move_to_recovery_start.py` | 固定恢复示教起点；缺省只读预览，`--confirm` 才低速运动 |
 | `examples/phone_to_auboi10/teleoperate.py` | 手机遥操作检查 |
@@ -349,10 +350,11 @@ trial02 的第 472 帧：关节角 `[-23.27, -5.91, 111.13, 28.57, 89.55, -162.2
 
 1. 现场操作者完成相机预检、`read_pose.py`、急停和工作区检查。先在无竹条、清空工位下完成
    一次 `move_to_recovery_start.py --confirm` 的低速演练；不得在无人看护时执行任何运动。
-2. 每条恢复示教前先正常归位，再运行 `move_to_recovery_start.py` 只读预览；确认关节路径安全后
-   才加 `--confirm` 移到恢复起点。脚本仅允许从正常起点 ±5° 内出发，以避免未知姿态的关节运动。
-3. 以新名称 `bamboo_newview_s05_recovery` 录约 20 条。`record.py` 等待开始时不要按 `r`，
-   以保留固定恢复初态；开始后停 0.5～1 秒再连续完成完整任务后半段。
+2. `move_to_recovery_start.py` 仅用于首次无竹条演练和独立预览；它不能与 `record.py` 同时运行，
+   以免两个程序连接同一台机器人。
+3. 以新名称 `bamboo_newview_s05_recovery` 且 `RECORD_START_MODE=recovery` 录约 20 条。每条
+   `record.py` 开始前必须按 `r`：程序先回正常起点，再以 20% 速度到固定恢复起点并释放吸盘；
+   只有成功后才允许右箭头开始。开始后停 0.5～1 秒再连续完成完整任务后半段。
 4. 逐条审核视频、吸盘标签和动作连续性。碰撞、抓空、相机断流、长时间犹豫的 episode 必须重录。
 5. 用 `DATASET_SOURCES` 显式聚合 `s01`～`s04` 加 `s05_recovery`，输出为新的
    `bamboo_newview_full_recovery_v1`；不要覆盖 `bamboo_newview_full`。后缀 `_recovery` 不符合
