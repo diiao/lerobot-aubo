@@ -142,6 +142,7 @@ Android 手机
 | `examples/phone_to_auboi10/diag_cam_latency.py` | 双相机帧率和延迟检查 |
 | `examples/phone_to_auboi10/read_pose.py` | 机械臂只读连通检查 |
 | `examples/phone_to_auboi10/move_to_start.py` | 移动到统一起始关节位 |
+| `examples/phone_to_auboi10/move_to_recovery_start.py` | 固定恢复示教起点；缺省只读预览，`--confirm` 才低速运动 |
 | `examples/phone_to_auboi10/teleoperate.py` | 手机遥操作检查 |
 | `examples/phone_to_auboi10/record.py` | 分批录制数据 |
 | `examples/phone_to_auboi10/aggregate.py` | 校验并聚合 `bamboo_newview_sXX` |
@@ -158,7 +159,8 @@ Android 手机
 - 数据可以分批录制，审核通过后再聚合训练。
 - 未确认机械臂已上电、急停可用、工作区清空和人员处于安全位置前，不得执行运动命令。
 - 优先运行相机预检和只读 `read_pose.py`；诊断问题时不要随机执行运动脚本。
-- `move_to_start.py`、回放和推理都会造成真实机械臂运动，必须由操作者明确启动并现场监护。
+- `move_to_start.py`、`move_to_recovery_start.py`、回放和推理都会造成真实机械臂运动，必须由
+  操作者明确启动并现场监护。
 - 不得删除安全边界、最大单步位移限制或控制模式处理来“改善推理效果”。
 - 相机断流时必须停止当前 episode、清空本轮缓存并完整重录，不能在同一 episode 中途续接。
 - 不要自动删除或覆盖数据集、模型、评估结果和 GPU 机上的未提交文件。
@@ -340,19 +342,24 @@ Android 手机
 
 ### 下一阶段：恢复示教与独立重训
 
-目标不是在推理 episode 中把手机动作混入模型输出，而是建立独立恢复示教：从“吸盘释放、末端
-悬在竹条上方约 6～10 cm”的偏离状态出发，手机连续完成下降、吸取、抬升、搬运、放置、释放。
+目标不是在推理 episode 中把手机动作混入模型输出，而是建立独立恢复示教：从固定的、吸盘释放的
+闭环失败状态出发，手机连续完成下降、吸取、抬升、搬运、放置、释放。固定起点取自 run05
+trial02 的第 472 帧：关节角 `[-23.27, -5.91, 111.13, 28.57, 89.55, -162.21]°`，对应 TCP
+约 `(0.5749, -0.4706, 0.1716) m`。不再要求操作者凭目测保持“竹条上方 6～10 cm”。
 
-1. 现场操作者完成相机预检、`read_pose.py`、急停和工作区检查。不要在无人看护时执行任何运动。
-2. 以新名称 `bamboo_newview_s05_recovery` 录约 20 条。`record.py` 等待开始时不要按 `r`，
-   以保留悬停恢复初态；开始后停 0.5～1 秒再连续完成完整任务后半段。
-3. 逐条审核视频、吸盘标签和动作连续性。碰撞、抓空、相机断流、长时间犹豫的 episode 必须重录。
-4. 用 `DATASET_SOURCES` 显式聚合 `s01`～`s04` 加 `s05_recovery`，输出为新的
+1. 现场操作者完成相机预检、`read_pose.py`、急停和工作区检查。先在无竹条、清空工位下完成
+   一次 `move_to_recovery_start.py --confirm` 的低速演练；不得在无人看护时执行任何运动。
+2. 每条恢复示教前先正常归位，再运行 `move_to_recovery_start.py` 只读预览；确认关节路径安全后
+   才加 `--confirm` 移到恢复起点。脚本仅允许从正常起点 ±5° 内出发，以避免未知姿态的关节运动。
+3. 以新名称 `bamboo_newview_s05_recovery` 录约 20 条。`record.py` 等待开始时不要按 `r`，
+   以保留固定恢复初态；开始后停 0.5～1 秒再连续完成完整任务后半段。
+4. 逐条审核视频、吸盘标签和动作连续性。碰撞、抓空、相机断流、长时间犹豫的 episode 必须重录。
+5. 用 `DATASET_SOURCES` 显式聚合 `s01`～`s04` 加 `s05_recovery`，输出为新的
    `bamboo_newview_full_recovery_v1`；不要覆盖 `bamboo_newview_full`。后缀 `_recovery` 不符合
    自动发现的 `sNN` 命名规则。
-5. 在 GPU 隔离工作树将新数据同步后，从头训练新目录
+6. 在 GPU 隔离工作树将新数据同步后，从头训练新目录
    `bamboo_newview_act_run06_recovery`，保留 `run05` 用于对照。
-6. 训练完成先运行 `audit_act_offline.py`，以吸盘首次开启、抓取高度、单帧跳变和恢复初态表现
+7. 训练完成先运行 `audit_act_offline.py`，以吸盘首次开启、抓取高度、单帧跳变和恢复初态表现
    作为准入项；通过后再由现场操作者进行一次低风险真实推理测试。
 
 具体命令、恢复录制逐步操作和聚合命令维护在
