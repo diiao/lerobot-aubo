@@ -190,17 +190,22 @@ GPU 机 `510`：
 ```bash
 cd /home/rentao/program/lerobot-aubo-pure-act/examples/phone_to_auboi10
 export PYTHONPATH=/home/rentao/program/lerobot-aubo-pure-act/src
-MODEL_PATH=./models/bamboo_newview_act_run01/best \
+MODEL_PATH=./models/bamboo_newview_act_run06_recovery/best \
 /home/rentao/program/lerobot-aubo/.venv/bin/python inference_server.py
 ```
 
 机器人端：
 
 ```bash
-DATASET_PATH=./datasets/bamboo_newview_full \
-EVAL_DATASET_PATH=./datasets/bamboo_newview_eval_run01 \
+DATASET_PATH=./datasets/bamboo_newview_full_recovery_v1 \
+EVAL_DATASET_PATH=./datasets/bamboo_newview_eval_run06_trialNN \
 ../../.venv/bin/python evaluate_split.py
 ```
+
+`run06_recovery/best` 是当前已通过离线验收、并完成一次真实端到端成功验证的模型；`run05/best`
+保留为历史对照。每次评估都要将 `trialNN` 改为新的未使用编号。客户端出现等待提示后，先按
+`r` 回到常规起点 `[-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]°` 并确认吸盘释放，再按
+右箭头开始；恢复示教起点不会被常规推理自动使用。
 
 服务端不会根据固定 xyz 阈值覆盖轨迹或夹爪；机器人端仅保留工作空间、单步位移限制和控制模式注入。
 
@@ -304,6 +309,22 @@ OUTPUT_DATASET_PATH=./datasets/bamboo_newview_full_recovery_v1 \
 - 抓取点的预测高度要接近示教高度，误差应以厘米以下为目标；
 - 正常保留轨迹与恢复起始轨迹都不能出现大量超过 1 cm 的单帧跳变；
 - 真实推理时若再次偏离，应能下降并完成吸取，而不是持续悬停。
+
+### 7.3 run06 已完成：当前可复现基线（2026-08-03）
+
+恢复数据已补录并聚合为 `bamboo_newview_full_recovery_v1`：**60 episodes / 51,797 frames**。
+GPU 隔离工作树中的 `models/bamboo_newview_act_run06_recovery/best` 完成 30,000 steps 训练，最佳
+validation loss 为 `0.13953`（step 29,000）。离线验收覆盖常规起点、s05 恢复和 s06 保留集：XYZ
+平均误差为毫米量级，吸盘 precision/recall 均约为 99%，且队列模拟中没有超过 3 cm 的单帧 XYZ
+跳变。
+
+2026-08-03 的 `bamboo_newview_eval_run06_trial01` 记录了 1 次真实成功：竹条完成抓取、搬运、目标区
+放置和释放；推理输出零帧超过 8 mm 单帧限幅。该结果证明当前固定场景下端到端流程可行，但仍只是
+1/1 单次证据，不能直接作为稳定成功率或几何泛化结论。训练集、成功评估数据和部署模型已复制到项目
+内 Git 忽略的 `artifacts/run06_recovery/`，并由 `MANIFEST.sha256` 校验。
+
+完整的实验方法、代码改动、指标、保存位置和论文表述边界见
+[`docs/robot_arm_technical_documentation.md`](../../docs/robot_arm_technical_documentation.md)。
 
 ## 辅助工具
 
