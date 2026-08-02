@@ -1,6 +1,6 @@
 # AUBO + LeRobot 项目背景与当前状态
 
-> 更新时间：2026-08-02
+> 更新时间：2026-08-03
 >
 > 用途：帮助后续维护者快速理解项目背景、当前目标、系统架构、工程约束和阶段性数据状态。
 
@@ -10,6 +10,8 @@
 - 具体录制、聚合、远程训练和推理命令以
   [`examples/phone_to_auboi10/README.md`](examples/phone_to_auboi10/README.md)
   为准。
+- run06 恢复示教阶段的实验方法、模型指标、真实验证结果、归档与论文表述边界见
+  [`docs/robot_arm_technical_documentation.md`](docs/robot_arm_technical_documentation.md)。
 - 工作站与 GPU 机的连接和数据同步约束以
   [`examples/phone_to_auboi10/REMOTE_TRAINING.md`](examples/phone_to_auboi10/REMOTE_TRAINING.md)
   为准。
@@ -36,8 +38,8 @@ ACT 的核心思想是一次预测一段连续动作，而不是只预测下一�
 
 - 当前开发分支是 `pyc`。
 - 眼在手外相机已经重新调整位置，因此旧视角数据和旧 checkpoint 不应混入当前基线。
-- `bamboo_newview_s01`～`s04` 已完成审核并聚合为 30 条首个基线；run05 已完成训练与一次
-  真实推理验证。当前阶段是针对闭环偏离补录恢复示教，再建立独立的 run06 对照实验。
+- `bamboo_newview_s01`～`s06_recovery` 已完成审核并聚合为 60 条训练集；run06 已完成训练、离线
+  验收和 1 次真实端到端成功验证。当前阶段转入重复验证和受控泛化实验。
 - run05 只验证了数据、训练、网络推理和机器人控制的完整链路，不应被描述为已经具有稳定
   抓取成功率或强泛化能力。
 - 最终推理目标是纯 ACT：模型输出不得被固定 xyz 阈值、脚本化下降/提起、启发式夹爪
@@ -130,8 +132,8 @@ Android 手机
 - 默认 `chunk_size=25`，`n_action_steps=4`，首个基线不使用图像增强。
 - 标准 ACT CVAE 是当前基线；修改 `USE_VAE`、动作块长度或执行步数时必须建立独立实验，
   不能同时改变多项后只凭一次推理下结论。
-- `inference_server.py` 默认使用低延迟 action queue；只有显式配置
-  `TEMPORAL_ENSEMBLE_COEFF` 才启用 temporal ensemble。
+- `inference_server.py` 默认启用 temporal ensembling（系数 `0.01`）；服务端运行时将
+  `n_action_steps` 设为 1。显式设置 `TEMPORAL_ENSEMBLE_COEFF=0` 才使用旧 action queue。
 - `evaluate_split.py` 只加入通用安全边界和 `abs_j6yaw` 控制模式，不包含任务位置启发式。
 
 ## 关键工作流文件
@@ -367,8 +369,26 @@ trial02 的第 472 帧：关节角 `[-23.27, -5.91, 111.13, 28.57, 89.55, -162.2
 具体命令、恢复录制逐步操作和聚合命令维护在
 `examples/phone_to_auboi10/README.md` 的“当前基线与下一轮恢复训练”章节。
 
+## 2026-08-03 run06 完成状态与保存要求
+
+- `bamboo_newview_full_recovery_v1` 已由 30 条常规成功示教与 30 条恢复示教聚合而成：60 episodes、
+  51,797 frames、25 FPS。不要覆盖它；后续新实验另建聚合输出目录。
+- GPU 隔离工作树中的部署模型为
+  `models/bamboo_newview_act_run06_recovery/best`：最佳 validation loss `0.13953`（step 29,000）。
+  部署应使用 `best/`，不要改用训练根目录的最终 checkpoint。
+- 离线审计在常规、s05 恢复和 s06 保留集上均通过：吸盘 precision/recall 约 99%，抓取高度误差为
+  毫米量级，队列模拟没有超过 3 cm 的单帧 XYZ 跳变。s06 的绕 Z 轴角度仍有少量较大误差，后续应
+  通过更一致的示教姿态改善。
+- `bamboo_newview_eval_run06_trial01` 为常规起点的一次真实成功记录：完成抓取、搬运、放置和释放，
+  且实际记录的模型动作没有超过 8 mm 单帧位移限幅。这是 1/1 的任务成功证据，不是成功率结论。
+- 已在本项目 `artifacts/run06_recovery/` 保存训练集、成功评估集和可部署 `best` 模型，并生成
+  `MANIFEST.sha256`；该目录由 `.gitignore` 排除，不能因为 Git 工作树干净而误认为数据不需要备份。
+- 后续论文、汇报或新实验前，先阅读
+  [`docs/robot_arm_technical_documentation.md`](docs/robot_arm_technical_documentation.md)，并保持其
+  “单次成功不等于泛化成功率”的结论边界。
+
 ## 审计边界
 
-已完成数据审核、30 条聚合、GPU run05 训练、真实推理回放和离线模型审计；所有真实机械臂
-运动仍由现场操作者手动启动和监护。本文件记录这些阶段性结论，不替代每次操作前的相机预检、
-只读位姿检查和安全确认。
+已完成 30 条常规基线与 30 条恢复示教的审核、60 条聚合、GPU run05/run06 训练、run06 离线模型
+审计和 1 次真实成功推理；所有真实机械臂运动仍由现场操作者手动启动和监护。本文件记录这些阶段性
+结论，不替代每次操作前的相机预检、只读位姿检查和安全确认。
