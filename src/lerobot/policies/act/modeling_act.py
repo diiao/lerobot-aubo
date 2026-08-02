@@ -402,10 +402,11 @@ class ACT(nn.Module):
         batch_size = batch[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch else batch[OBS_ENV_STATE].shape[0]
 
         # Prepare the latent for input to the transformer encoder.
-        # Validation also provides target actions and must compute the same VAE loss
-        # components as training. Inference omits ACTION and therefore still uses a
-        # zero latent without invoking the VAE encoder.
-        if self.config.use_vae and ACTION in batch:
+        # Validation provides target actions and must compute the same VAE loss
+        # components as training. Inference may preserve ACTION with a None value
+        # in its processor batch, so only a real action tensor may invoke the VAE
+        # encoder; inference then uses the zero latent below.
+        if self.config.use_vae and batch.get(ACTION) is not None:
             # Prepare the input to the VAE encoder: [cls, *joint_space_configuration, *action_sequence].
             cls_embed = einops.repeat(
                 self.vae_encoder_cls_embed.weight, "1 d -> b 1 d", b=batch_size
