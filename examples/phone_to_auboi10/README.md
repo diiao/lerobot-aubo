@@ -261,15 +261,17 @@ cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
 
 DATASET_PATH=./datasets/bamboo_newview_s05_recovery \
 NUM_EPISODES=20 \
+RECORD_START_MODE=recovery \
 ../../.venv/bin/python record.py
 ```
 
 每条 episode 的人工操作顺序：
 
-1. 运行 `move_to_recovery_start.py --confirm` 后，机械臂处于固定的、吸盘释放的恢复起点。不要
-   在这一阶段凭目测手动调节高度；起点的一致性比“看起来接近”更重要。
-2. `record.py` 出现“按 -> 开始录制”后，**不要按 `r`**；`r` 会回到正常起始位，丢失恢复
-   场景。按右箭头开始录制。
+1. `record.py` 出现“按 -> 开始录制”后，按 **`r`**。恢复模式会先回标准位、再以 20% 速度到
+   固定恢复起点并释放吸盘；只有终端显示“已到固定恢复起点”后才允许右箭头开始。不要在
+   `record.py` 运行时从另一终端执行 `move_to_recovery_start.py`，避免两个程序同时控制机器人。
+2. 在固定恢复起点摆好竹条后按右箭头开始录制。不要凭目测手动调节高度；起点的一致性比
+   “看起来接近”更重要。
 3. 在该悬停位置保留约 0.5～1 秒，然后使用手机连续示范：下降、吸取、确认吸住、抬升、
    搬运、放置、释放。
 4. 释放后立即按右箭头结束。不要只录下降/抓取，也不要在抓住后停下；应录完整的任务后半段。

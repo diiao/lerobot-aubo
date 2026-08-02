@@ -19,17 +19,17 @@ import time
 
 import pyaubo_sdk
 
+from aubo_start_poses import (
+    NORMAL_START_DEG,
+    RECOVERY_EXPECTED_TCP_XYZ_M,
+    RECOVERY_START_DEG,
+)
 
 ROBOT_IP = "192.168.31.200"
 ROBOT_PORT = 30004
 
-# 当前 30 条基线的统一正常录制/推理起点；恢复动作只允许从此姿态附近开始。
-NORMAL_START_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
-
 # run05 trial02 第 472 帧的实际关节状态：TCP 约 (0.5749, -0.4706, 0.1716) m，
 # 即竹条上方的典型闭环失败状态。它不是抓取点，也不会替代 NORMAL_START_DEG。
-RECOVERY_START_DEG = [-23.27, -5.91, 111.13, 28.57, 89.55, -162.21]
-EXPECTED_TCP_XYZ_M = [0.5749, -0.4706, 0.1716]
 
 NORMAL_START_TOLERANCE_DEG = 5.0
 SPEED_FRACTION = 0.20
@@ -138,7 +138,7 @@ def main():
 
         arrived_deg, tcp = print_state(iface, "到位后状态")
         joint_error = max_joint_error_deg(arrived_deg, RECOVERY_START_DEG)
-        tcp_xyz_error_mm = 1000.0 * math.dist(tcp[:3], EXPECTED_TCP_XYZ_M)
+        tcp_xyz_error_mm = 1000.0 * math.dist(tcp[:3], RECOVERY_EXPECTED_TCP_XYZ_M)
         print(f"到位最大关节误差: {joint_error:.2f}°")
         print(f"相对记录恢复 TCP 的位置差: {tcp_xyz_error_mm:.1f} mm")
 
@@ -148,7 +148,8 @@ def main():
             print(f"吸盘释放失败: {exc}")
             return 4
 
-        print("完成。现在可以启动 record.py，并在开始提示时不要按 r。")
+        print("完成。若开始恢复录制，请以 RECORD_START_MODE=recovery 启动 record.py；")
+        print("录制程序中的 r 会安全复现相同的标准位→恢复位过程。")
         return 0
     finally:
         if rpc.hasLogined():

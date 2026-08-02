@@ -10,8 +10,10 @@ import time
 
 import pyaubo_sdk
 
-# 训练起始关节角(度) -- 48/50 条数据真实起始位姿中位数 (EE约 0.11,-0.72,0.15)。旧 [-21.14,...] 只 ep0/ep24 覆盖、分布外，评估乱抖，故改用真实起始位。
-TARGET_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
+from aubo_start_poses import NORMAL_START_DEG
+
+# 训练起始关节角(度) -- 30 条数据真实起始位姿中位数 (EE约 0.11,-0.72,0.15)。
+TARGET_DEG = NORMAL_START_DEG
 ROBOT_IP = "192.168.31.200"
 ROBOT_PORT = 30004
 
