@@ -212,7 +212,7 @@ EVAL_DATASET_PATH=./datasets/bamboo_newview_eval_run01 \
 ### 恢复示教（闭环偏离数据）
 
 若模型悬在竹条上方、未下降或未吸取，不要在 `evaluate_split.py` 的同一轮中混入手机操控。
-应安全结束推理、保持或手动准备该偏离姿态，然后以新的 `bamboo_newview_sXX_recovery`
+应安全结束推理，并使用固定的恢复起点准备脚本，以新的 `bamboo_newview_sXX_recovery`
 数据集运行 `record.py`，从该姿态开始用手机完整示范“下降、吸取、抬升、放置、释放”。
 这些 episode 与原始成功示教分开审核、聚合到新的训练集，并使用新的模型目录重训；它们让
 ACT 在下次遇到偏离状态时学习恢复，而不是只能依赖理想轨迹。
@@ -230,7 +230,31 @@ steps，最佳保留集 loss 为 `0.05918`。这只是第一条端到端基线�
 
 ### 7.1 录制恢复示教
 
-先完成相机预检和 `read_pose.py`。机械臂、急停和工作区必须由现场操作者确认安全。
+先完成相机预检和 `read_pose.py`。机械臂、急停和工作区必须由现场操作者确认安全。恢复起点
+取自 run05 trial02 的真实闭环失败状态，不要求操作者凭目测悬停在某个高度；首次使用必须先在
+无竹条、清空工位的条件下做一次低速演练，确认关节路径和 TCP 位置都安全。
+
+先用正常起点归位，再预览固定恢复起点。预览只读取状态，不会移动机械臂：
+
+```bash
+cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
+
+# 由现场操作者确认安全后执行；该脚本会产生真实机械臂运动
+../../.venv/bin/python move_to_start.py
+
+# 只读预览：要求当前位于正常起点 ±5° 内
+../../.venv/bin/python move_to_recovery_start.py
+```
+
+预览显示的当前关节角、目标关节角均合理，且无竹条演练已通过后，才执行以下命令。它以 20%
+速度移动，并在到位后将吸盘设为释放：
+
+```bash
+../../.venv/bin/python move_to_recovery_start.py --confirm
+```
+
+若脚本提示“当前姿态不在统一正常起点 ±5° 内”，不要绕过检查；先安全归位再运行。该检查是为了
+避免从未知姿态直接执行关节运动。到位后即可开始下列录制命令。
 
 ```bash
 cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
@@ -242,8 +266,8 @@ NUM_EPISODES=20 \
 
 每条 episode 的人工操作顺序：
 
-1. 让机械臂处于模型常见的失败状态：吸盘已释放、末端在竹条上方约 6～10 cm；如果刚刚
-   结束失败推理，可安全结束该轮后保持该姿态，或由操作者手动准备相近姿态。
+1. 运行 `move_to_recovery_start.py --confirm` 后，机械臂处于固定的、吸盘释放的恢复起点。不要
+   在这一阶段凭目测手动调节高度；起点的一致性比“看起来接近”更重要。
 2. `record.py` 出现“按 -> 开始录制”后，**不要按 `r`**；`r` 会回到正常起始位，丢失恢复
    场景。按右箭头开始录制。
 3. 在该悬停位置保留约 0.5～1 秒，然后使用手机连续示范：下降、吸取、确认吸住、抬升、
@@ -283,6 +307,8 @@ OUTPUT_DATASET_PATH=./datasets/bamboo_newview_full_recovery_v1 \
 
 - `teleoperate.py`：手动遥操作检查。
 - `move_to_start.py`：移动到统一起始姿态。
+- `move_to_recovery_start.py`：从统一起始姿态低速移动到固定恢复示教起点；缺省只预览，须加
+  `--confirm` 才会运动。
 - `read_pose.py`：只读当前 TCP 位姿。
 - `test_io.py`：确认吸盘 IO。
 - `test_servo.py`：诊断伺服接口。
