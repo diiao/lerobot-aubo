@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import math
 import os
 import time
@@ -51,12 +52,14 @@ FIXED_CAPTURE_FPS = 25
 EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取竹条"
-LOCAL_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_s01")
+# 本轮补录使用新的独立批次；LeRobotDataset 会在录制启动时创建此目录。
+LOCAL_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_s04")
 
 # 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。
 # handeye = GENERAL WEBCAM（眼在手外，当前重新调整的眼相机）。
 # fixed = USB2.0_CAM1（另一视角；录制/训练/推理期间必须始终保持相同键名映射）。
-# fourcc="MJPG" 必须，否则 USB2.0_CAM1(05a3:9230) 在 OpenCV 里读线程起不来 → 占位图。
+# USB2.0_CAM1(05a3:9230) 使用 640x480 MJPG 25 FPS。YUYV 长测仍会触发
+# USB 重新枚举，不能作为规避方案，并且会显著增加 USB2.0 带宽。
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
 
@@ -112,6 +115,40 @@ def wait_for_key(events: dict, prompt: str = "按 → (右箭头键) 继续") ->
     if events["stop_recording"]:
         return False
     events["exit_early"] = False
+    return True
+
+
+def is_camera_read_failure(exc: Exception) -> bool:
+    """只识别机器人观测层主动抛出的相机断流保护异常。"""
+    message = str(exc)
+    return isinstance(exc, RuntimeError) and "相机 " in message and "读取失败" in message
+
+
+def reconnect_cameras(robot) -> bool:
+    """重启所有学习相机，使两路后台取帧线程重新同步启动。"""
+    for cam_name, cam in robot.cameras.items():
+        try:
+            if cam.is_connected or getattr(cam, "thread", None) is not None:
+                cam.disconnect()
+        except Exception:
+            logging.warning("清理相机 %s 的旧连接失败", cam_name, exc_info=True)
+
+    try:
+        for cam_name, cam in robot.cameras.items():
+            cam.connect(warmup=True)
+            logging.info("相机 %s 重新连接成功", cam_name)
+    except Exception:
+        logging.error("相机重新连接失败", exc_info=True)
+        # warmup 阶段也可能在失败相机上留下读取线程，因此回滚所有相机，
+        # 让下一次按键重试从完全断开的状态开始。
+        for cam_name, cam in robot.cameras.items():
+            try:
+                if cam.is_connected or getattr(cam, "thread", None) is not None:
+                    cam.disconnect()
+            except Exception:
+                logging.warning("回滚相机 %s 重连失败", cam_name, exc_info=True)
+        return False
+
     return True
 
 
@@ -259,19 +296,47 @@ def main():
             log_say(f"开始录制 episode {episode_idx + 1} / {NUM_EPISODES}")
             print("录制中... 按 → 结束本轮, 按 ← 重录, 按 Esc 终止")
 
-            record_loop(
-                robot=robot,
-                events=events,
-                fps=CONTROL_FPS,
-                teleop=phone,
-                dataset=dataset,
-                control_time_s=EPISODE_TIME_SEC,
-                single_task=TASK_DESCRIPTION,
-                display_data=False,
-                teleop_action_processor=phone_to_robot_ee_pose_processor,
-                robot_action_processor=ee_to_delta_processor,
-                robot_observation_processor=robot_observation_processor,
-            )
+            try:
+                record_loop(
+                    robot=robot,
+                    events=events,
+                    fps=CONTROL_FPS,
+                    teleop=phone,
+                    dataset=dataset,
+                    control_time_s=EPISODE_TIME_SEC,
+                    single_task=TASK_DESCRIPTION,
+                    display_data=False,
+                    teleop_action_processor=phone_to_robot_ee_pose_processor,
+                    robot_action_processor=ee_to_delta_processor,
+                    robot_observation_processor=robot_observation_processor,
+                )
+            except RuntimeError as exc:
+                if not is_camera_read_failure(exc):
+                    raise
+
+                # 不在断流中途续接：先停机器人，再完整丢弃本轮，避免时间不连续的
+                # 图像/动作进入同一个训练 episode。之前已保存的 episode 不受影响。
+                robot.disable_servo_mode()
+                dataset.clear_episode_buffer()
+                events["rerecord_episode"] = False
+                events["exit_early"] = False
+                logging.error("相机断流，本轮已丢弃", exc_info=True)
+                log_say(f"{exc}；当前 episode 已丢弃")
+
+                while not events["stop_recording"]:
+                    if not wait_for_key(
+                        events,
+                        "检查或重新插拔相机后，按 → 尝试重连；成功后将重录当前 episode",
+                    ):
+                        break
+                    if reconnect_cameras(robot):
+                        log_say("两台相机已重新连接，请归位后重录当前 episode")
+                        break
+                    print("相机重连仍失败；请继续检查设备，按 → 再试，或按 Esc 结束")
+
+                if events["stop_recording"]:
+                    break
+                continue
 
             # Esc 会让 record_loop 提前返回；丢弃当前未完成片段，避免保存为训练 episode。
             if events["stop_recording"]:
@@ -317,6 +382,19 @@ def main():
                 break
             events["exit_early"] = False
 
+    except Exception:
+        # 未被上面处理的异常也不能把半条 episode 留在数据集目录中。
+        if (
+            dataset is not None
+            and dataset.episode_buffer is not None
+            and dataset.episode_buffer.get("size", 0) > 0
+        ):
+            try:
+                dataset.clear_episode_buffer()
+                logging.info("异常退出前已清理未完成的 episode")
+            except Exception:
+                logging.error("异常退出时清理 episode 失败", exc_info=True)
+        raise
     finally:
         log_say("录制结束")
         if listener:

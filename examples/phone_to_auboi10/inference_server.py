@@ -34,6 +34,27 @@ from lerobot.utils.utils import init_logging
 MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
 PORT = 5555
+DEFAULT_TEMPORAL_ENSEMBLE_COEFF = 0.01
+
+
+def get_temporal_ensemble_coeff() -> float | None:
+    """Return the configured ACT smoothing coefficient.
+
+    Temporal ensembling is the standard ACT mechanism for reconciling
+    overlapping action chunks.  It is enabled by default for physical-robot
+    inference, while an explicit ``TEMPORAL_ENSEMBLE_COEFF=0`` keeps the old
+    low-latency queue mode available for controlled comparisons.
+    """
+    raw_value = os.environ.get("TEMPORAL_ENSEMBLE_COEFF")
+    if raw_value is None:
+        return DEFAULT_TEMPORAL_ENSEMBLE_COEFF
+    value = raw_value.strip().lower()
+    if value in ("", "0", "false", "no", "none", "off"):
+        return None
+    coeff = float(value)
+    if coeff <= 0:
+        raise ValueError("TEMPORAL_ENSEMBLE_COEFF 必须大于 0，或显式设为 0 关闭")
+    return coeff
 
 
 def send_msg(sock, obj):
@@ -74,23 +95,21 @@ class InferenceServer:
             pretrained_path=MODEL_PATH,
             preprocessor_overrides={"device_processor": {"device": str(self.device)}},
         )
-        self.n_action_steps = self.policy.config.n_action_steps
-
-        # Temporal ensembling: 推理时启用（不用重训）。coeff!=None 时 select_action 走 ensemble
-        # 路径：每帧推理 + 在线 ensemble，返回 1 个平滑动作（解决 chunk 边界跳变）。
-        # 显式设置 TEMPORAL_ENSEMBLE_COEFF 才开启；默认走低延迟 queue 模式。
-        coeff = os.environ.get("TEMPORAL_ENSEMBLE_COEFF", "").strip()
-        if coeff:
+        # Temporal ensembling: every tick predicts an overlapping action chunk,
+        # then fuses them online. This avoids hard boundaries between chunks.
+        coeff = get_temporal_ensemble_coeff()
+        if coeff is not None:
             from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
-            c = float(coeff)
-            self.policy.config.temporal_ensemble_coeff = c
+
+            self.policy.config.temporal_ensemble_coeff = coeff
             self.policy.config.n_action_steps = 1  # ensemble 要求 n_action_steps=1
-            self.policy.temporal_ensembler = ACTTemporalEnsembler(c, self.policy.config.chunk_size)
+            self.policy.temporal_ensembler = ACTTemporalEnsembler(coeff, self.policy.config.chunk_size)
             self.policy.reset()
             self.ensemble = True
-            logging.info(f"temporal ensembling 开启: coeff={c}")
+            logging.info(f"temporal ensembling 开启: coeff={coeff}")
         else:
             self.ensemble = False
+        self.n_action_steps = self.policy.config.n_action_steps
 
         self.task = "抓取竹条"
         self.robot_type = "aubo_i10"

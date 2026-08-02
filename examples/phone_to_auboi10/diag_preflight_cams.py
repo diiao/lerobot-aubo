@@ -9,6 +9,7 @@
 本脚本不连接机械臂。预览图只写到 /tmp/aubo_camera_preflight。
 """
 
+import os
 import statistics
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 CONTROL_FPS = 25
 MIN_ACCEPTABLE_FPS = 23.0
 MAX_FRAME_AGE_MS = 80.0
+MEASURE_SECONDS = float(os.environ.get("CAMERA_TEST_SECONDS", "2"))
 PREVIEW_DIR = Path("/tmp/aubo_camera_preflight")
 
 CAMERA_CONFIGS = {
@@ -29,10 +31,12 @@ CAMERA_CONFIGS = {
     "handeye": {
         "device": "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0",
         "capture_fps": 30,
+        "fourcc": "MJPG",
     },
     "fixed": {
         "device": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
         "capture_fps": 25,
+        "fourcc": "MJPG",
     },
 }
 
@@ -40,7 +44,7 @@ CAMERA_CONFIGS = {
 def measure_camera(name: str, camera: OpenCVCamera) -> list[str]:
     failures: list[str] = []
     timestamps: list[float] = []
-    end = time.perf_counter() + 2.0
+    end = time.perf_counter() + MEASURE_SECONDS
 
     while time.perf_counter() < end:
         with camera.frame_lock:
@@ -126,12 +130,21 @@ def main() -> int:
                 width=640,
                 height=480,
                 fps=values["capture_fps"],
-                fourcc="MJPG",
+                fourcc=values["fourcc"],
                 warmup_s=3,
             )
             camera = OpenCVCamera(config)
             camera.connect(warmup=True)
             cameras[name] = camera
+            actual_fourcc_code = int(camera.videocapture.get(cv2.CAP_PROP_FOURCC))
+            actual_fourcc = "".join(
+                chr((actual_fourcc_code >> (8 * index)) & 0xFF)
+                for index in range(4)
+            )
+            print(
+                f"  configured={values['fourcc']}@{values['capture_fps']} FPS, "
+                f"actual={actual_fourcc}@{camera.videocapture.get(cv2.CAP_PROP_FPS):.1f} FPS"
+            )
 
         for name, camera in cameras.items():
             print(f"\n检查 [{name}]")

@@ -57,6 +57,10 @@ EPISODE_TIME_SEC = 60
 TASK_DESCRIPTION = "抓取竹条"
 TRAINING_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")
 LOCAL_EVAL_DATASET_PATH = os.environ.get("EVAL_DATASET_PATH", "./datasets/bamboo_newview_eval")
+# Generic physical safety limit, not a task-specific trajectory rule. 8 mm at
+# 25 Hz caps off-distribution action jumps to 0.2 m/s while preserving the
+# normal demonstrated motion range. Override only for a documented experiment.
+MAX_EE_STEP_M = float(os.environ.get("MAX_EE_STEP_M", "0.008"))
 
 # GPU 机（Tailscale）
 SERVER_HOST = "100.88.143.45"
@@ -249,6 +253,12 @@ def main():
     log_dir.mkdir(exist_ok=True)
     init_logging(log_file=str(log_dir / "evaluate_split.log"))
 
+    if not 0.001 <= MAX_EE_STEP_M <= 0.05:
+        raise ValueError(
+            f"MAX_EE_STEP_M 必须在 [0.001, 0.05] m，当前为 {MAX_EE_STEP_M}"
+        )
+    logging.info("推理通用单帧位移限幅: %.3f m", MAX_EE_STEP_M)
+
     # 1. 以训练数据集的 FPS 为唯一控制时间基准。
     training_metadata = LeRobotDatasetMetadata(TRAINING_DATASET_PATH)
     control_fps = int(training_metadata.fps)
@@ -286,7 +296,7 @@ def main():
         steps=[
             AuboEEBoundsAndSafety(
                 end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [1.0, 0.0, 0.8]},
-                max_ee_step_m=0.05,
+                max_ee_step_m=MAX_EE_STEP_M,
             ),
             AuboSetEEMode(ee_mode="abs_j6yaw"),
         ],
