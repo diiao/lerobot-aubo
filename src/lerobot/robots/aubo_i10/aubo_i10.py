@@ -9,6 +9,8 @@ from .config_aubo_i10 import AuboI10Config
 from lerobot.utils.rotation import Rotation
 import pyaubo_sdk
 
+from lerobot.bamboo_sorting.gripper import CommandedGripperState, DigitalOutputPneumaticGripper
+
 
 class AuboI10Robot(Robot):
     """
@@ -43,11 +45,15 @@ class AuboI10Robot(Robot):
         self.robot_name = None
         self.robot_interface = None
 
-        # 吸盘 IO 配置（双引脚互斥控制）
-        # 端口 2 = 吸（真空开启）；端口 3 = 不吸（真空关闭/释放）
-        self.suction_on_pin = 2    # 拉高 → 吸
-        self.suction_off_pin = 3   # 拉高 → 不吸
-        self.is_suction_on = False
+        # 气动二指夹爪 IO 配置（双引脚互斥控制）。
+        # 已验证语义：端口 2 拉高=闭合，端口 3 拉高=张开；动作值 100=闭合、0=张开。
+        self.gripper_close_pin = 2
+        self.gripper_open_pin = 3
+        # 以下旧属性保留，避免历史脚本因字段消失而报错。
+        self.suction_on_pin = self.gripper_close_pin
+        self.suction_off_pin = self.gripper_open_pin
+        self._gripper_closed_commanded = False
+        self.pneumatic_gripper = None
         self.io_control = None
 
         # 固定 Aubo 的第五轴角度（单位：度）
@@ -90,6 +96,24 @@ class AuboI10Robot(Robot):
     def is_connected(self) -> bool:
         return self.robot_rpc_client.hasConnected()
 
+    @property
+    def is_gripper_closed(self) -> bool:
+        """Last successful close/open command; not measured jaw or grasp state."""
+        return self._gripper_closed_commanded
+
+    @is_gripper_closed.setter
+    def is_gripper_closed(self, value: bool) -> None:
+        self._gripper_closed_commanded = bool(value)
+
+    @property
+    def is_suction_on(self) -> bool:
+        """Compatibility alias for the historical, inaccurately named state."""
+        return self._gripper_closed_commanded
+
+    @is_suction_on.setter
+    def is_suction_on(self, value: bool) -> None:
+        self._gripper_closed_commanded = bool(value)
+
     def connect(self, calibrate: bool = True) -> None:
         try:
             # A configured learning camera is mandatory. Warmup verifies that the
@@ -118,6 +142,11 @@ class AuboI10Robot(Robot):
             self.robot_interface = self.robot_rpc_client.getRobotInterface(self.robot_name)
             self.get_robot_status()
             self.io_control = self.robot_interface.getIoControl()
+            self.pneumatic_gripper = DigitalOutputPneumaticGripper(
+                self.io_control,
+                close_pin=self.gripper_close_pin,
+                open_pin=self.gripper_open_pin,
+            )
             logging.info(f"Robot connect success: {self.robot_name}")
         except Exception:
             # Never leave camera handles or a partial RPC session alive after a
@@ -228,7 +257,8 @@ class AuboI10Robot(Robot):
                 obs_dict["ee.wy"] = float(tcp_pose[4])
                 obs_dict["ee.wz"] = float(tcp_pose[5])
 
-                obs_dict["gripper_pos"] = 100.0 if self.is_suction_on else 0.0
+                # 软件命令状态，不代表实际开口、是否夹到物体或夹持力。
+                obs_dict["gripper_pos"] = 100.0 if self.is_gripper_closed else 0.0
 
             except Exception as e:
                 logging.error(f"读取关节状态失败: {e}")
@@ -734,54 +764,68 @@ class AuboI10Robot(Robot):
                      f"{target_pose[2]:.3f}]m, rotvec=[{target_pose[3]:.3f},{target_pose[4]:.3f},"
                      f"{target_pose[5]:.3f}]rad")
 
-    def _control_suction_based_on_gripper(self, gripper_pos: float):
-        """根据 gripper_pos 控制吸盘。
-        
-        gripper_pos > 60  → A 键按下 → 激活真空（吸）
-        gripper_pos < 20  → B 键按下 → 关闭真空（放）
+    def _control_pneumatic_gripper_based_on_position(self, gripper_pos: float):
+        """根据兼容动作字段控制气动二指夹爪。
+
+        gripper_pos > 60  → 闭合/夹持
+        gripper_pos < 20  → 张开/释放
         20 ≤ pos ≤ 60     → 无按键   → 保持当前状态（不切换）
+
+        ``gripper_pos`` 只是命令状态，不是实际开口或抓取结果。
         """
         try:
             if gripper_pos > 60:
-                if not self.is_suction_on:
-                    self.suction_activate()
+                if not self.is_gripper_closed:
+                    self.gripper_close()
             elif gripper_pos < 20:
-                if self.is_suction_on:
-                    self.suction_release()
+                if self.is_gripper_closed:
+                    self.gripper_open()
             # neutral: maintain current state
         except Exception as e:
-            logging.error(f"控制吸盘时发生错误: {e}")
+            logging.error(f"控制气动二指夹爪时发生错误: {e}")
 
-    # 兼容旧版调用名
-    _control_softpaws_based_on_gripper = _control_suction_based_on_gripper
+    # 兼容旧版调用名；新代码只使用上面的规范名称。
+    _control_softpaws_based_on_gripper = _control_pneumatic_gripper_based_on_position
+    _control_suction_based_on_gripper = _control_pneumatic_gripper_based_on_position
 
-    def suction_activate(self):
-        """开启真空吸附：端口2拉高、端口3拉低。"""
+    def gripper_close(self):
+        """命令夹爪闭合：端口2拉高、端口3拉低。"""
         try:
-            if self.io_control is None:
+            if self.pneumatic_gripper is None:
                 return False
-            self.io_control.setStandardDigitalOutput(self.suction_off_pin, False)
-            self.io_control.setStandardDigitalOutput(self.suction_on_pin, True)
-            self.is_suction_on = True
-            logging.info("吸盘：真空开启（吸）端口2=ON, 端口3=OFF")
+            self.pneumatic_gripper.close()
+            self.is_gripper_closed = True
+            logging.info("气动二指夹爪：闭合命令（端口2=ON, 端口3=OFF）")
             return True
         except Exception as e:
-            logging.error(f"吸盘激活失败: {e}")
+            logging.error(f"夹爪闭合命令失败: {e}")
             return False
+
+    def gripper_open(self):
+        """命令夹爪张开：端口3拉高、端口2拉低。"""
+        try:
+            if self.pneumatic_gripper is None:
+                return False
+            self.pneumatic_gripper.open()
+            self.is_gripper_closed = False
+            logging.info("气动二指夹爪：张开命令（端口2=OFF, 端口3=ON）")
+            return True
+        except Exception as e:
+            logging.error(f"夹爪张开命令失败: {e}")
+            return False
+
+    @property
+    def gripper_commanded_state(self) -> CommandedGripperState:
+        if self.pneumatic_gripper is None:
+            return CommandedGripperState.UNKNOWN
+        return self.pneumatic_gripper.commanded_state
+
+    # 历史 API 兼容别名：旧名称中的 suction 不代表当前硬件类型。
+    def suction_activate(self):
+        return self.gripper_close()
 
     def suction_release(self):
-        """关闭真空（释放物体）：端口3拉高、端口2拉低。"""
-        try:
-            if self.io_control is None:
-                return False
-            self.io_control.setStandardDigitalOutput(self.suction_on_pin, False)
-            self.io_control.setStandardDigitalOutput(self.suction_off_pin, True)
-            self.is_suction_on = False
-            logging.info("吸盘：真空关闭（放）端口2=OFF, 端口3=ON")
-            return True
-        except Exception as e:
-            logging.error(f"吸盘释放失败: {e}")
-            return False
+        return self.gripper_open()
 
     def _disconnect_cameras(self) -> None:
         for cam_name, cam in self.cameras.items():

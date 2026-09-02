@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from .gripper import CommandedGripperState
 from .interfaces import GraspVerifier, MotionExecutor, PneumaticGripper, SceneSensor
 from .pipeline import GeometricPlanningPipeline, PlanningResult
 from .types import CandidateStatus, GraspCandidate, GraspOutcome, GraspOutcomeStatus, SceneFrame
@@ -102,8 +101,6 @@ class SortingTaskRunner:
                 states.append(SortingState.RETREAT)
                 self.executor.recover(candidate, outcome)
 
-            # A commanded state is deliberately not used to upgrade the outcome.
-            _ = self.gripper.commanded_state == CommandedGripperState.CLOSED
             refreshed = self.sensor.capture()
             return SortingCycleResult(outcome, tuple(states), planning, candidate, refreshed)
         except Exception as exc:

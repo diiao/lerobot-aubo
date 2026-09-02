@@ -10,6 +10,8 @@ import time
 
 import pyaubo_sdk
 
+from lerobot.bamboo_sorting.gripper import DigitalOutputPneumaticGripper
+
 from aubo_start_poses import NORMAL_START_DEG
 
 # 训练起始关节角(度) -- 30 条数据真实起始位姿中位数 (EE约 0.11,-0.72,0.15)。
@@ -73,14 +75,13 @@ def main():
     err = max(abs(math.degrees(c) - t) for c, t in zip(cur, TARGET_DEG))
     print(f"到位误差: {err:.2f}°")
 
-    # 松开吸盘（防止上一轮评估吸合后未释放，回起点时拖动物料导致下轮场景偏离）
+    # 张开夹爪，防止上一轮夹持后拖动物料，导致下轮场景偏离。
     try:
         io = iface.getIoControl()
-        io.setStandardDigitalOutput(2, False)  # 端口2(吸)拉低
-        io.setStandardDigitalOutput(3, True)   # 端口3(放)拉高
-        print("吸盘已释放（端口2=OFF, 端口3=ON）")
+        DigitalOutputPneumaticGripper(io).open()
+        print("气动二指夹爪已张开（端口2=OFF, 端口3=ON）")
     except Exception as e:
-        print(f"吸盘释放失败: {e}")
+        print(f"夹爪张开命令失败: {e}")
 
     rpc.logout()
     rpc.disconnect()
