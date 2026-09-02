@@ -70,12 +70,12 @@ SERVER_PORT = 5555
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
 
-# 起始关节角（度），与 record.py 一致。每轮推理完后可按 r 自动归位并张开夹爪。
+# 起始关节角（度），与 record.py 一致。每轮推理完后可按 r 自动归位到此 + 松吸盘。
 START_JOINT_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
 
 
 def return_to_start(robot):
-    """关伺服后用 moveJoint 回到起始关节位并张开夹爪。重置阶段按 r 触发。"""
+    """关伺服后用 moveJoint 回到起始关节位 + 松吸盘。重置阶段按 r 触发。"""
     logging.info("归位：moveJoint 到起始位...")
     motion = robot.robot_interface.getMotionControl()
     if motion.isServoModeEnabled():
@@ -95,12 +95,12 @@ def return_to_start(robot):
     while motion.getExecId() != -1:
         time.sleep(0.05)
     try:
-        if not robot.gripper_open():
-            logging.error("归位完成，但夹爪张开命令失败")
+        if not robot.suction_release():
+            logging.error("归位完成，但吸盘释放失败")
         else:
-            logging.info("归位完成，夹爪已收到张开命令")
+            logging.info("归位完成，吸盘已释放")
     except Exception as e:
-        logging.error(f"夹爪张开命令失败: {e}")
+        logging.error(f"吸盘释放失败: {e}")
 
 
 # ----------------------------- 网络协议（与服务端一致）-----------------------------
@@ -232,7 +232,7 @@ def wait_for_key_with_return(events: dict, robot, prompt: str) -> bool:
     events["return_to_start"] = False
     print("\n" + "=" * 50)
     print(prompt)
-    print("  r  -> 归位到起始位置（moveJoint + 张开夹爪）")
+    print("  r  -> 归位到起始位置（moveJoint + 松吸盘）")
     print("  -> -> 继续（开始下一轮 / 重置结束）")
     print("  Esc -> 终止整个评估")
     print("=" * 50)

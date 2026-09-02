@@ -1,6 +1,6 @@
 # AUBO + LeRobot 项目背景与当前状态
 
-> 更新时间：2026-09-02
+> 更新时间：2026-08-03
 >
 > 用途：帮助后续维护者快速理解项目背景、当前目标、系统架构、工程约束和阶段性数据状态。
 
@@ -12,9 +12,6 @@
   为准。
 - run06 恢复示教阶段的实验方法、模型指标、真实验证结果、归档与论文表述边界见
   [`docs/robot_arm_technical_documentation.md`](docs/robot_arm_technical_documentation.md)。
-- 新的无序竹条几何分拣模块、NPZ 数据约定和离线入口见
-  [`examples/aubo_bamboo_sorting/README.md`](examples/aubo_bamboo_sorting/README.md)，实验冻结规则见
-  [`EXPERIMENT_PROTOCOL.md`](examples/aubo_bamboo_sorting/EXPERIMENT_PROTOCOL.md)。
 - 工作站与 GPU 机的连接和数据同步约束以
   [`examples/phone_to_auboi10/REMOTE_TRAINING.md`](examples/phone_to_auboi10/REMOTE_TRAINING.md)
   为准。
@@ -29,26 +26,24 @@
 内支持 AUBO i10 机械臂。当前具体任务是：
 
 1. 使用 Android 手机遥操作 AUBO i10。
-2. 录制机械臂状态、绝对末端目标、夹爪命令状态和两路相机视频。
+2. 录制机械臂状态、绝对末端目标、吸盘状态和两路相机视频。
 3. 将分批数据聚合成 LeRobot 数据集。
 4. 在 GPU 机上从头训练 ACT（Action Chunking with Transformers）策略。
-5. 保留 ACT 作为历史学习基线，同时建立独立的几何确定性分拣闭环并进行公平对照。
+5. 由 ACT 根据实时观测直接预测动作，控制机械臂完成“抓取竹条”任务。
 
 ACT 的核心思想是一次预测一段连续动作，而不是只预测下一帧。当前实现以约 1 秒的
 25 帧动作块训练，推理时执行约 4 帧（0.16 秒）后重新观察并规划。
 
 ## 当前工作阶段
 
-- 本次几何分拣实施基线分支是 `run06-snapshot`；后续操作前仍须实时检查分支和工作树。
+- 当前开发分支是 `pyc`。
 - 眼在手外相机已经重新调整位置，因此旧视角数据和旧 checkpoint 不应混入当前基线。
 - `bamboo_newview_s01`～`s06_recovery` 已完成审核并聚合为 60 条训练集；run06 已完成训练、离线
   验收和 1 次真实端到端成功验证。当前阶段转入重复验证和受控泛化实验。
 - run05 只验证了数据、训练、网络推理和机器人控制的完整链路，不应被描述为已经具有稳定
   抓取成功率或强泛化能力。
-- 新主线采用“Python 主线、ROS 2/MoveIt 辅助”：先完成统一规格竹条的几何闭环，再加入腕部
-  视觉伺服和 ACT 对照。Mech-Eye 型号和实测参数确认前只开发接口、离线回放与测试。
-- 原纯 ACT 路径仍保持端到端定义：不得向其模型输出混入固定 xyz 阈值、脚本化下降/提起或
-  启发式夹爪。几何规则只存在于独立 `bamboo_sorting` 模块，不混入旧 ACT 路径。
+- 最终推理目标是纯 ACT：模型输出不得被固定 xyz 阈值、脚本化下降/提起、启发式夹爪
+  或其他任务专用规则覆盖。机器人端只保留通用安全边界、单步位移限制和控制模式注入。
 
 ### 2026-07-28 Git 状态快照
 
@@ -79,9 +74,9 @@ ACT 的核心思想是一次预测一段连续动作，而不是只预测下一�
 
 | 文件 | 作用 |
 |---|---|
-| `aubo_i10.py` | 机器人连接、状态读取、关节/末端控制、`servoCartesian`、气动二指夹爪 IO 和相机观测 |
+| `aubo_i10.py` | 机器人连接、状态读取、关节/末端控制、`servoCartesian`、吸盘 IO 和相机观测 |
 | `config_aubo_i10.py` | `AuboI10Config`，包含相机配置与控制频率 |
-| `robot_processor.py` | 手机动作转换、末端位姿、安全边界、夹爪命令锁存和推理动作处理 |
+| `robot_processor.py` | 手机动作转换、末端位姿、安全边界、吸盘锁存和推理动作处理 |
 
 机器人支持两类主要控制输入：
 
@@ -92,18 +87,6 @@ ACT 的核心思想是一次预测一段连续动作，而不是只预测下一�
 `servoCartesian` 对旋转向量的等价表示和连续性比较敏感，不能随意删除姿态对齐、
 竖直姿态锁定或安全处理逻辑。
 
-### 独立几何分拣模块
-
-`src/lerobot/bamboo_sorting/` 是不连接硬件的任务层：定义同步 `SceneFrame`、点云预处理、可见段
-提取、候选硬拒绝/评分、气动夹爪互锁适配器和确定性状态机。没有外部运动学与碰撞验证器时，
-候选只能达到 `geometry_valid`，不能进入 `execution_validated` 或被状态机执行。Mech-Eye、AUBO
-运动执行和 MoveIt 适配器须在硬件资料确认后另行接入。Python/pyaubo_sdk 保持为真机执行主链；
-ROS 2/MoveIt 只负责模型、TF、可达性、碰撞检查、RViz 与仿真验证。
-
-历史 `suction_activate()`、`suction_release()`、`is_suction_on` 只作为兼容别名保留；新代码使用
-`gripper_close()`、`gripper_open()`、`gripper_commanded_state`。历史审计 JSON 中的 `suction`
-字段也不重命名，以免破坏旧实验结果的读取。
-
 ### 录制数据流
 
 ```text
@@ -112,7 +95,7 @@ Android 手机
   -> AuboLockVerticalYaw
   -> PhoneEEToAuboEE（速度输入转换为绝对末端目标）
   -> AuboEEBoundsAndSafety
-  -> AuboGripperVelocityToPosition（持续的 0=张开/100=闭合夹爪命令状态）
+  -> AuboGripperVelocityToPosition（持续的 0/100 吸盘状态）
   -> AUBO i10 执行并写入 LeRobotDataset
 ```
 
@@ -139,6 +122,8 @@ Android 手机
 该值在 `record.py`、`evaluate_split.py` 和 `move_to_start.py` 中必须保持一致；它是当前
 30 条基线的正常任务起点，TCP 约为 `(0.11, -0.72, 0.15) m`。常规录制/推理使用 `r` 或
 `move_to_start.py` 回到此位姿。恢复示教的悬停起点是有意不同的数据状态，不能覆盖或替换
+该标准起点。
+
 ### ACT 训练与推理
 
 - `train.py` 使用纯 ACT，视觉骨干为带 ImageNet 预训练权重的 ResNet18。
@@ -168,7 +153,7 @@ Android 手机
 | `examples/phone_to_auboi10/inference_server.py` | GPU 机纯 ACT 推理服务 |
 | `examples/phone_to_auboi10/evaluate_split.py` | 工作站推理客户端和评估数据记录 |
 | `examples/phone_to_auboi10/evaluate.py` | 模型和机器人位于同机时的直接评估 |
-| `examples/phone_to_auboi10/test_io.py` | 数字 IO 只读检查；禁止依次触发全部输出 |
+| `examples/phone_to_auboi10/test_io.py` | 吸盘 IO 诊断 |
 | `examples/phone_to_auboi10/test_servo.py` | `servoCartesian` 诊断 |
 
 ## 操作与安全约束
@@ -206,7 +191,7 @@ Android 手机
   CUDA、ROS 或全局环境。
 - 修改前先阅读相关文件，确认数据流和影响范围；优先小范围、可回滚的增量修改。
 - Python 代码使用 Ruff 进行检查和格式化；通用逻辑修改后应运行相关单元测试。
-- 相机、机械臂、气动夹爪和真实运动测试不属于普通单元测试，不能在无人监护时自动执行。
+- 相机、机械臂、吸盘和真实运动测试不属于普通单元测试，不能在无人监护时自动执行。
 - 诊断应遵循“现象 -> 假设 -> 只读验证 -> 最小修复 -> 再验证”，不要同时调整相机、
   数据、ACT 参数和控制器。
 - 不要因训练 loss 下降就声称任务成功。必须结合独立验证 loss、未参与训练的位置和真实
@@ -260,7 +245,7 @@ Android 手机
 ### Action 与夹具标签
 
 - 所有 episode 的 action 均未发现 NaN 或 Inf。
-- 每条轨迹均包含夹爪张开值 `0` 和闭合值 `100`；该字段只是命令状态。
+- 每条轨迹均包含吸盘释放值 `0` 和吸取值 `100`。
 - 每条轨迹的吸取状态约持续 13～15 秒。
 - `s03` 有效运动比例约为 52%～61%。
 - 最大单帧末端目标位移约为 4～5 mm，未发现异常跳变。
@@ -291,7 +276,7 @@ Android 手机
 
 1. **输入一致性**：确认推理时 `handeye/fixed` 没有接反，分辨率、25 FPS、相机位置、
    画面方向和训练时一致。
-2. **数据与标签**：确认 action 是当前绝对末端定义，图像、状态、动作时间对齐，夹爪只有
+2. **数据与标签**：确认 action 是当前绝对末端定义，图像、状态、动作时间对齐，吸盘只有
    持续的 `0/100`，没有黑帧、断流拼接、抓空或失败示教。
 3. **训练行为**：同时查看训练 loss 和按完整 episode 划分的验证 loss。训练 loss 很低但
    验证 loss 不降，通常表示过拟合或数据变化不足。
@@ -303,7 +288,7 @@ Android 手机
    周期；延迟抖动会让正确动作在错误时刻执行。
 7. **机器人执行层**：检查 `servoCartesian` 返回值、伺服模式、旋转向量连续性、工作空间
    裁剪和最大步长限制，区分“模型输出错误”与“机器人没有正确执行输出”。
-8. **外部因素**：检查夹爪气压与夹持面、竹条表面与重量、机械臂复位误差、相机曝光、光照、遮挡、
+8. **外部因素**：检查吸盘真空、竹条表面与重量、机械臂复位误差、相机曝光、光照、遮挡、
    桌面和目标位置变化。
 
 评估泛化时，应保留少量未用于训练的竹条位置与角度作为测试条件。不能一边把同一位置的
