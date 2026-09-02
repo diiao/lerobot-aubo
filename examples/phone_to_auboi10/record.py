@@ -131,15 +131,15 @@ def return_to_start(robot):
             logging.error("未确认机械臂已到达恢复起点；本次归位失败")
             return False
 
-    # 通过机器人接口张开夹爪，同时同步命令状态（不是实际开口反馈）。
+    # 通过机器人接口松吸盘，同时同步 is_suction_on 软件观测状态。
     try:
-        if not robot.gripper_open():
-            logging.error("归位完成，但夹爪张开命令失败")
+        if not robot.suction_release():
+            logging.error("归位完成，但吸盘释放失败")
             return False
         else:
-            logging.info("归位完成，夹爪已收到张开命令")
+            logging.info("归位完成，吸盘已释放")
     except Exception as e:
-        logging.error(f"夹爪张开命令失败: {e}")
+        logging.error(f"吸盘释放失败: {e}")
         return False
     return True
 
@@ -249,7 +249,7 @@ def main():
                 end_effector_bounds={"min": [-0.8, -1.2, 0.0], "max": [1.0, 0.0, 0.8]},
                 max_ee_step_m=0.05,
             ),
-            # 直接录制持续的夹爪命令状态 0/100，避免训练稀疏的按键脉冲。
+            # 直接录制持续的目标吸盘状态 0/100，避免训练稀疏的按键脉冲。
             AuboGripperVelocityToPosition(latch=True),
         ],
         to_transition=robot_action_observation_to_transition,
