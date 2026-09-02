@@ -7,7 +7,7 @@
 安全设计：
 * 不带 --confirm 时只读取并展示当前状态，绝不发送运动命令；
 * 仅允许从统一正常起点附近（最大关节误差 <= 5 度）出发，避免从未知姿态直接运动；
-* 带 --confirm 后以 20% 速度执行 moveJoint，并在到位后释放吸盘。
+* 带 --confirm 后以 20% 速度执行 moveJoint，并在到位后张开气动二指夹爪。
 
 运行前必须由现场操作者确认工作区清空、急停可用、没有人员处于机械臂活动范围内。
 """
@@ -18,6 +18,8 @@ import sys
 import time
 
 import pyaubo_sdk
+
+from lerobot.bamboo_sorting.gripper import DigitalOutputPneumaticGripper
 
 from aubo_start_poses import (
     NORMAL_START_DEG,
@@ -69,12 +71,15 @@ def print_state(iface, label):
     return joints_deg, tcp
 
 
-def release_suction(iface):
+def open_gripper(iface):
     """到达恢复起点后显式设为释放状态；失败时只报告，不掩盖移动结果。"""
     io = iface.getIoControl()
-    io.setStandardDigitalOutput(2, False)
-    io.setStandardDigitalOutput(3, True)
-    print("吸盘已释放（端口2=OFF, 端口3=ON）")
+    DigitalOutputPneumaticGripper(io).open()
+    print("气动二指夹爪已张开（端口2=OFF, 端口3=ON）")
+
+
+# 历史调用兼容别名。
+release_suction = open_gripper
 
 
 def main():
@@ -133,7 +138,7 @@ def main():
         target_rad = [math.radians(value) for value in RECOVERY_START_DEG]
         motion.moveJoint(target_rad, JOINT_SPEED_RAD_S, JOINT_ACCEL_RAD_S2, 0, 0)
         if not wait_arrival(iface):
-            print("moveJoint 未在 5 秒内启动；未执行后续吸盘 IO。")
+            print("moveJoint 未在 5 秒内启动；未执行后续夹爪 IO。")
             return 3
 
         arrived_deg, tcp = print_state(iface, "到位后状态")
@@ -143,9 +148,9 @@ def main():
         print(f"相对记录恢复 TCP 的位置差: {tcp_xyz_error_mm:.1f} mm")
 
         try:
-            release_suction(iface)
+            open_gripper(iface)
         except Exception as exc:
-            print(f"吸盘释放失败: {exc}")
+            print(f"夹爪张开命令失败: {exc}")
             return 4
 
         print("完成。若开始恢复录制，请以 RECORD_START_MODE=recovery 启动 record.py；")

@@ -261,21 +261,27 @@ class PhoneEEToAuboEE(RobotActionProcessorStep):
 @dataclass
 class AuboGripperVelocityToPosition(RobotActionProcessorStep):
     """
-    Converts the phone gripper command to an Aubo suction target.
+    Converts the phone command to the pneumatic two-finger gripper target.
 
     With ``latch=False`` this preserves the legacy three-state command:
-    100=activate suction, 0=release suction, 50=no command.
+    100=close/grasp, 0=open/release, 50=no command.
 
-    With ``latch=True`` it emits the persistent desired suction state:
-    100 remains active after the button is released and 0 remains released.
+    With ``latch=True`` it emits the persistent desired commanded state:
+    100 remains closed after the button is released and 0 remains open.
     Persistent targets are preferable as behavior-cloning labels because the
     policy does not have to learn a rare one-frame button pulse.
 
+    This is a command label only; it is not measured jaw opening or proof that
+    an object was grasped.  ``open_threshold`` and ``close_threshold`` are
+    historical field names: positive velocity maps to 100 (close), while
+    negative velocity maps to 0 (open).  They remain unchanged for config and
+    checkpoint compatibility.
+
     Attributes:
-        open_threshold: Velocity threshold to open gripper.
-        close_threshold: Velocity threshold to close gripper.
-        clip_min: Minimum gripper position (closed).
-        clip_max: Maximum gripper position (open).
+        open_threshold: Legacy name for the positive close-command threshold.
+        close_threshold: Legacy name for the negative open-command threshold.
+        clip_min: Open/release command value (0).
+        clip_max: Closed/grasp command value (100).
         neutral_pos: Gripper position when neither open nor close is commanded.
         latch: Emit a persistent 0/100 target instead of the legacy neutral 50.
     """
