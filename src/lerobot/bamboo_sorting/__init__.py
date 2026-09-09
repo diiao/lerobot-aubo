@@ -16,6 +16,13 @@
 
 """Contracts for the AUBO depth-enhanced VLA bamboo-sorting research."""
 
+from .authorization_contract import (
+    CONTROL_SOURCES,
+    EXECUTION_AUTHORIZATION_SCHEMA_VERSION,
+    ExecutionAuthorizationV1,
+    build_authorization_manifest,
+)
+
 from .contracts import (
     ACTION_CONTROL_MODE,
     ACTION_FIELD_NAMES,
@@ -49,6 +56,10 @@ from .observation_contract import (
 )
 
 __all__ = [
+    "CONTROL_SOURCES",
+    "EXECUTION_AUTHORIZATION_SCHEMA_VERSION",
+    "ExecutionAuthorizationV1",
+    "build_authorization_manifest",
     "ACTION_CONTROL_MODE",
     "ACTION_FIELD_NAMES",
     "ACTION_FIELD_SPECS",
