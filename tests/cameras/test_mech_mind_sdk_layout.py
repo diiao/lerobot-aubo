@@ -58,3 +58,18 @@ def test_vendor_frames_expose_ids_but_not_device_timestamps() -> None:
     assert frame_3d.frame_id() == 0
     assert not hasattr(frame_2d, "timestamp")
     assert not hasattr(frame_3d, "timestamp")
+
+
+def test_vendor_calibration_layout_matches_adapter_contract() -> None:
+    intrinsics = sdk.CameraIntrinsics()
+    resolutions = sdk.CameraResolutions()
+
+    assert all(hasattr(intrinsics.texture.camera_matrix, name) for name in ("fx", "fy", "cx", "cy"))
+    assert all(
+        hasattr(intrinsics.texture.camera_distortion, name)
+        for name in ("k1", "k2", "p1", "p2", "k3")
+    )
+    assert np.asarray(intrinsics.depth_to_texture.rotation).shape == (3, 3)
+    assert np.asarray(intrinsics.depth_to_texture.translation).shape == (3,)
+    assert all(hasattr(resolutions.texture, name) for name in ("width", "height"))
+    assert all(hasattr(resolutions.depth, name) for name in ("width", "height"))
