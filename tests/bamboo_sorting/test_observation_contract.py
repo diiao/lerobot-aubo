@@ -52,15 +52,25 @@ def _observation(*, with_depth: bool = False) -> EmbodiedObservationV1:
     }
     kwargs = {}
     if with_depth:
-        valid = np.ones((4, 5), dtype=bool)
-        depth = np.full((4, 5), 0.5, dtype=np.float32)
-        xyz = np.zeros((4, 5, 3), dtype=np.float32)
+        valid = np.ones((3, 4), dtype=bool)
+        depth = np.full((3, 4), 0.5, dtype=np.float32)
+        xyz = np.zeros((3, 4, 3), dtype=np.float32)
         xyz[..., 2] = depth
         timestamps[DEPTH_STREAM_KEY] = _timestamp(10.002)
         kwargs = {
             "wrist_depth_m": depth,
             "wrist_depth_valid": valid,
             "wrist_xyz_m": xyz,
+            "wrist_depth_intrinsics": CameraIntrinsics(
+                width_px=4,
+                height_px=3,
+                fx_px=90.0,
+                fy_px=90.0,
+                cx_px=1.5,
+                cy_px=1.0,
+                distortion_model="none",
+                distortion_coefficients=(),
+            ),
         }
 
     t_ee_camera = np.eye(4, dtype=np.float64)
@@ -129,6 +139,7 @@ def test_observation_manifest_freezes_run06_state_and_dynamic_extrinsic() -> Non
     ]
     assert manifest["derived_transforms"] == ["t_base_camera"]
     assert "wrist_depth_m" in manifest["depth_fields"]
+    assert "wrist_depth_intrinsics" in manifest["depth_fields"]
 
 
 def test_observation_derives_time_varying_base_camera_transform() -> None:
@@ -153,6 +164,17 @@ def test_observation_rejects_partial_depth_bundle() -> None:
 
     with pytest.raises(ValueError, match="must be present together"):
         replace(observation, wrist_xyz_m=None)
+
+
+def test_depth_layout_uses_its_own_intrinsics_instead_of_rgb_dimensions() -> None:
+    observation = _observation(with_depth=True)
+
+    assert observation.wrist_rgb.shape[:2] == (4, 5)
+    assert observation.wrist_depth_m.shape == (3, 4)
+
+    wrong_size = replace(observation.wrist_depth_intrinsics, width_px=5)
+    with pytest.raises(ValueError, match="must match wrist_depth_intrinsics"):
+        replace(observation, wrist_depth_intrinsics=wrong_size)
 
 
 def test_observation_rejects_invalid_depth_or_xyz_at_valid_pixels() -> None:

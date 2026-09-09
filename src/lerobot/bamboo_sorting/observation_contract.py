@@ -247,6 +247,7 @@ class EmbodiedObservationV1:
     wrist_depth_m: NDArray[np.floating] | None = None
     wrist_depth_valid: NDArray[np.bool_] | None = None
     wrist_xyz_m: NDArray[np.floating] | None = None
+    wrist_depth_intrinsics: CameraIntrinsics | None = None
 
     def __post_init__(self) -> None:
         if self.observation_schema_version != OBSERVATION_SCHEMA_VERSION:
@@ -364,16 +365,21 @@ class EmbodiedObservationV1:
             self.wrist_depth_m is not None,
             self.wrist_depth_valid is not None,
             self.wrist_xyz_m is not None,
+            self.wrist_depth_intrinsics is not None,
         )
         if any(present) and not all(present):
-            raise ValueError("wrist_depth_m, wrist_depth_valid, and wrist_xyz_m must be present together")
+            raise ValueError(
+                "wrist_depth_m, wrist_depth_valid, wrist_xyz_m, and wrist_depth_intrinsics "
+                "must be present together"
+            )
         if not any(present):
             return
 
         depth = self.wrist_depth_m
         valid = self.wrist_depth_valid
         xyz = self.wrist_xyz_m
-        assert depth is not None and valid is not None and xyz is not None
+        intrinsics = self.wrist_depth_intrinsics
+        assert depth is not None and valid is not None and xyz is not None and intrinsics is not None
         if not isinstance(depth, np.ndarray) or not np.issubdtype(depth.dtype, np.floating):
             raise ValueError("wrist_depth_m must be a floating-point numpy array")
         if not isinstance(valid, np.ndarray) or valid.dtype != np.bool_:
@@ -381,13 +387,13 @@ class EmbodiedObservationV1:
         if not isinstance(xyz, np.ndarray) or not np.issubdtype(xyz.dtype, np.floating):
             raise ValueError("wrist_xyz_m must be a floating-point numpy array")
 
-        expected_shape = self.wrist_rgb.shape[:2]
+        expected_shape = (intrinsics.height_px, intrinsics.width_px)
         if (
             depth.shape != expected_shape
             or valid.shape != expected_shape
             or xyz.shape != (*expected_shape, 3)
         ):
-            raise ValueError("Depth, valid mask, and XYZ shapes must match wrist_rgb")
+            raise ValueError("Depth, valid mask, and XYZ shapes must match wrist_depth_intrinsics")
         if not valid.any():
             raise ValueError("wrist_depth_valid must contain at least one valid point")
         if not np.isfinite(depth[valid]).all() or (depth[valid] <= 0).any():
@@ -409,7 +415,14 @@ def build_observation_manifest(*, depth_enabled: bool) -> dict[str, object]:
         "schema_version": OBSERVATION_SCHEMA_VERSION,
         "rgb_streams": list(RGB_STREAM_KEYS),
         "depth_fields": (
-            ["wrist_depth_m", "wrist_depth_valid", "wrist_xyz_m"] if depth_enabled else []
+            [
+                "wrist_depth_m",
+                "wrist_depth_valid",
+                "wrist_xyz_m",
+                "wrist_depth_intrinsics",
+            ]
+            if depth_enabled
+            else []
         ),
         "robot_state_fields": [
             {"name": field.name, "unit": field.unit, "semantics": field.semantics}
