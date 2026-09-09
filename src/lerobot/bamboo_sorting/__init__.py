@@ -45,6 +45,16 @@ from .contracts import (
     validate_action_vector,
     validate_instruction_fields,
 )
+from .depth_gate import (
+    DEPTH_GATE_SCHEMA_VERSION,
+    STATIC_GROUP_MINIMUMS,
+    DepthGateDecision,
+    DepthGateEvidence,
+    DepthGateMetrics,
+    DepthGateResult,
+    build_depth_gate_manifest,
+    evaluate_depth_gate,
+)
 from .observation_contract import (
     BASE_TIMESTAMP_STREAMS,
     DEPTH_STREAM_KEY,
@@ -85,6 +95,14 @@ __all__ = [
     "build_instruction_manifest",
     "validate_action_vector",
     "validate_instruction_fields",
+    "DEPTH_GATE_SCHEMA_VERSION",
+    "STATIC_GROUP_MINIMUMS",
+    "DepthGateDecision",
+    "DepthGateEvidence",
+    "DepthGateMetrics",
+    "DepthGateResult",
+    "build_depth_gate_manifest",
+    "evaluate_depth_gate",
     "BASE_TIMESTAMP_STREAMS",
     "DEPTH_STREAM_KEY",
     "OBSERVATION_SCHEMA_VERSION",
