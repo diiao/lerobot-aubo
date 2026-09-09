@@ -49,6 +49,8 @@ class MechMindRGBDFrame:
     xyz_m: NDArray[np.float32] | None
     capture_started_monotonic_s: float
     host_receive_monotonic_s: float
+    frame_2d_id: int
+    frame_3d_id: int | None
     device_timestamp_s: float | None = None
     device_clock_id: str | None = None
 
@@ -208,6 +210,7 @@ class MechMindCamera(Camera):
             frame_2d = vendor_frame.frame_2d()
             frame_3d = vendor_frame.frame_3d()
             depth_m, depth_valid, xyz_m = _convert_metric_depth(frame_3d)
+            frame_3d_id = int(frame_3d.frame_id())
         else:
             frame_2d = self._sdk.Frame2D()
             status = self._camera.capture_2d(frame_2d, timeout_ms)
@@ -216,6 +219,7 @@ class MechMindCamera(Camera):
             depth_m = None
             depth_valid = None
             xyz_m = None
+            frame_3d_id = None
 
         rgb = _convert_color_to_rgb(frame_2d.get_color_image())
         self._validate_or_set_rgb_dimensions(rgb)
@@ -226,6 +230,8 @@ class MechMindCamera(Camera):
             xyz_m=xyz_m,
             capture_started_monotonic_s=capture_started,
             host_receive_monotonic_s=host_receive,
+            frame_2d_id=int(frame_2d.frame_id()),
+            frame_3d_id=frame_3d_id,
         )
         self._latest_frame = result
         return result

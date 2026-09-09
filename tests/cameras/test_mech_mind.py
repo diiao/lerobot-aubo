@@ -66,6 +66,9 @@ class _FakeFrame2D:
     def get_color_image(self) -> _FakeImage:
         return self.color
 
+    def frame_id(self) -> int:
+        return 101
+
 
 class _FakeFrame3D:
     def __init__(self):
@@ -80,6 +83,9 @@ class _FakeFrame3D:
 
     def get_untextured_point_cloud(self) -> _FakeImage:
         return self.xyz
+
+    def frame_id(self) -> int:
+        return 202
 
 
 class _FakeFrame2DAnd3D:
@@ -178,6 +184,8 @@ def test_joint_rgbd_capture_converts_bgr_and_millimeters(fake_sdk: SimpleNamespa
     assert np.isnan(frame.depth_m[0, 1])
     assert frame.device_timestamp_s is None
     assert frame.device_clock_id is None
+    assert frame.frame_2d_id == 101
+    assert frame.frame_3d_id == 202
     assert _FakeCamera.instances[-1].capture_timeout_ms == 456
 
 
@@ -189,6 +197,8 @@ def test_rgb_only_capture_and_latest_frame(fake_sdk: SimpleNamespace) -> None:
 
     assert image.shape == (2, 3, 3)
     assert camera.read_latest().shape == image.shape
+    assert camera._latest_frame.frame_2d_id == 101
+    assert camera._latest_frame.frame_3d_id is None
     assert _FakeCamera.instances[-1].capture_timeout_ms == 13
 
 
