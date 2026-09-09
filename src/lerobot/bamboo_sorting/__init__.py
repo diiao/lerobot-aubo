@@ -17,21 +17,35 @@
 """Contracts for the AUBO depth-enhanced VLA bamboo-sorting research."""
 
 from .contracts import (
+    ACTION_CONTROL_MODE,
+    ACTION_FIELD_NAMES,
+    ACTION_FIELD_SPECS,
+    ACTION_SCHEMA_VERSION,
     CONTROL_FIXED_ID,
     INSTRUCTION_LANGUAGE,
     INSTRUCTION_SCHEMA_VERSION,
     INSTRUCTION_SPECS,
+    ActionFieldSpec,
     InstructionSpec,
+    build_action_manifest,
     build_instruction_manifest,
+    validate_action_vector,
     validate_instruction_fields,
 )
 
 __all__ = [
+    "ACTION_CONTROL_MODE",
+    "ACTION_FIELD_NAMES",
+    "ACTION_FIELD_SPECS",
+    "ACTION_SCHEMA_VERSION",
     "CONTROL_FIXED_ID",
     "INSTRUCTION_LANGUAGE",
     "INSTRUCTION_SCHEMA_VERSION",
     "INSTRUCTION_SPECS",
+    "ActionFieldSpec",
     "InstructionSpec",
+    "build_action_manifest",
     "build_instruction_manifest",
+    "validate_action_vector",
     "validate_instruction_fields",
 ]

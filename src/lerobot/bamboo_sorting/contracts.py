@@ -23,6 +23,8 @@ new schema version.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from types import MappingProxyType
@@ -31,6 +33,9 @@ from typing import Final, Mapping
 INSTRUCTION_SCHEMA_VERSION: Final = "InstructionSchemaV1"
 INSTRUCTION_LANGUAGE: Final = "en"
 CONTROL_FIXED_ID: Final = "control_fixed"
+ACTION_SCHEMA_VERSION: Final = "ActionSchemaV1"
+ACTION_CONTROL_MODE: Final = "abs_j6yaw"
+GRIPPER_BINARY_VALUES: Final = (0.0, 100.0)
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,32 @@ _INSTRUCTION_SPECS = {
 }
 
 INSTRUCTION_SPECS: Final[Mapping[str, InstructionSpec]] = MappingProxyType(_INSTRUCTION_SPECS)
+
+
+@dataclass(frozen=True)
+class ActionFieldSpec:
+    """One ordered scalar in the absolute end-effector action vector."""
+
+    name: str
+    unit: str
+    semantics: str
+
+
+ACTION_FIELD_SPECS: Final = (
+    ActionFieldSpec("ee.j6_target", "rad", "absolute AUBO J6 joint target"),
+    ActionFieldSpec("ee.x", "m", "absolute base-frame TCP x"),
+    ActionFieldSpec("ee.y", "m", "absolute base-frame TCP y"),
+    ActionFieldSpec("ee.z", "m", "absolute base-frame TCP z"),
+    ActionFieldSpec("ee.wx", "rad", "absolute base-frame TCP rotation-vector x"),
+    ActionFieldSpec("ee.wy", "rad", "absolute base-frame TCP rotation-vector y"),
+    ActionFieldSpec("ee.wz", "rad", "absolute base-frame TCP rotation-vector z"),
+    ActionFieldSpec(
+        "ee.gripper_pos",
+        "legacy_binary",
+        "legacy 0/100 command; physical open/close mapping is not yet verified",
+    ),
+)
+ACTION_FIELD_NAMES: Final = tuple(field.name for field in ACTION_FIELD_SPECS)
 
 
 def validate_instruction_fields(
@@ -135,4 +166,52 @@ def build_instruction_manifest() -> dict[str, object]:
             }
             for spec in INSTRUCTION_SPECS.values()
         ],
+    }
+
+
+def validate_action_vector(action: Sequence[object]) -> tuple[float, ...]:
+    """Validate an ordered ``ActionSchemaV1`` vector without applying safety limits.
+
+    This contract checks representation only. Workspace, step-size, speed, age,
+    and IK checks belong to the separate execution safety gate.
+    """
+
+    if isinstance(action, (str, bytes)) or len(action) != len(ACTION_FIELD_SPECS):
+        raise ValueError(
+            f"{ACTION_SCHEMA_VERSION} requires {len(ACTION_FIELD_SPECS)} ordered scalar values"
+        )
+
+    values: list[float] = []
+    for field, raw_value in zip(ACTION_FIELD_SPECS, action, strict=True):
+        if isinstance(raw_value, bool):
+            raise ValueError(f"{field.name} must be numeric, not bool")
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field.name} must be numeric") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"{field.name} must be finite")
+        values.append(value)
+
+    if values[-1] not in GRIPPER_BINARY_VALUES:
+        raise ValueError(
+            f"ee.gripper_pos must be one of {GRIPPER_BINARY_VALUES}; physical open/close mapping is unverified"
+        )
+
+    return tuple(values)
+
+
+def build_action_manifest() -> dict[str, object]:
+    """Build the machine-readable action representation contract."""
+
+    return {
+        "schema_version": ACTION_SCHEMA_VERSION,
+        "representation": "absolute_end_effector_with_absolute_j6",
+        "runtime_control_mode": ACTION_CONTROL_MODE,
+        "fields": [
+            {"name": field.name, "unit": field.unit, "semantics": field.semantics}
+            for field in ACTION_FIELD_SPECS
+        ],
+        "gripper_binary_values": list(GRIPPER_BINARY_VALUES),
+        "gripper_physical_mapping_verified": False,
     }
