@@ -17,11 +17,16 @@ import json
 import pytest
 
 from lerobot.bamboo_sorting.contracts import (
+    ACTION_CONTROL_MODE,
+    ACTION_FIELD_NAMES,
+    ACTION_SCHEMA_VERSION,
     CONTROL_FIXED_ID,
     INSTRUCTION_LANGUAGE,
     INSTRUCTION_SCHEMA_VERSION,
     INSTRUCTION_SPECS,
+    build_action_manifest,
     build_instruction_manifest,
+    validate_action_vector,
     validate_instruction_fields,
 )
 
@@ -109,3 +114,56 @@ def test_manifest_is_serializable_and_complete() -> None:
         item["instruction_id"]: item["instruction_text_sha256"] for item in manifest["instructions"]
     } == EXPECTED_TEXT_HASHES
     assert "InstructionSchemaV1" in serialized
+
+
+def test_action_schema_matches_run06_order_and_units() -> None:
+    manifest = build_action_manifest()
+
+    assert ACTION_FIELD_NAMES == (
+        "ee.j6_target",
+        "ee.x",
+        "ee.y",
+        "ee.z",
+        "ee.wx",
+        "ee.wy",
+        "ee.wz",
+        "ee.gripper_pos",
+    )
+    assert manifest["schema_version"] == ACTION_SCHEMA_VERSION
+    assert manifest["runtime_control_mode"] == ACTION_CONTROL_MODE
+    assert [field["unit"] for field in manifest["fields"]] == [
+        "rad",
+        "m",
+        "m",
+        "m",
+        "rad",
+        "rad",
+        "rad",
+        "legacy_binary",
+    ]
+    assert manifest["gripper_physical_mapping_verified"] is False
+
+
+@pytest.mark.parametrize("gripper_value", [0.0, 100.0])
+def test_validate_action_vector_accepts_both_legacy_binary_values(gripper_value: float) -> None:
+    action = [-2.5, 0.1, -0.7, 0.2, 3.14, 0.0, 0.0, gripper_value]
+
+    assert validate_action_vector(action) == tuple(action)
+
+
+@pytest.mark.parametrize(
+    ("action", "message"),
+    [
+        ([0.0] * 7, "requires 8"),
+        ([0.0] * 7 + [50.0], "must be one of"),
+        ([float("nan")] + [0.0] * 7, "must be finite"),
+        ([0.0, float("inf")] + [0.0] * 6, "must be finite"),
+        ([False] + [0.0] * 7, "not bool"),
+        (["invalid"] + [0.0] * 7, "must be numeric"),
+    ],
+)
+def test_validate_action_vector_rejects_invalid_representation(
+    action: list[object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_action_vector(action)
