@@ -100,6 +100,29 @@ class _FakeFrame2DAnd3D:
         return self.three_d
 
 
+class _FakeCameraIntrinsics:
+    def __init__(self):
+        distortion = SimpleNamespace(k1=0.1, k2=0.2, p1=0.3, p2=0.4, k3=0.5)
+        self.texture = SimpleNamespace(
+            camera_matrix=SimpleNamespace(fx=1000.0, fy=1001.0, cx=640.0, cy=480.0),
+            camera_distortion=distortion,
+        )
+        self.depth = SimpleNamespace(
+            camera_matrix=SimpleNamespace(fx=500.0, fy=501.0, cx=320.0, cy=240.0),
+            camera_distortion=distortion,
+        )
+        self.depth_to_texture = SimpleNamespace(
+            rotation=np.eye(3),
+            translation=np.array([10.0, 20.0, 30.0]),
+        )
+
+
+class _FakeCameraResolutions:
+    def __init__(self):
+        self.texture = SimpleNamespace(width=1280, height=960)
+        self.depth = SimpleNamespace(width=640, height=480)
+
+
 class _FakeCamera:
     next_connect_ok = True
     next_capture_ok = True
@@ -124,6 +147,12 @@ class _FakeCamera:
         self.capture_timeout_ms = timeout_ms
         return _FakeStatus(self.next_capture_ok)
 
+    def get_camera_intrinsics(self, _intrinsics: object) -> _FakeStatus:
+        return _FakeStatus()
+
+    def get_camera_resolutions(self, _resolutions: object) -> _FakeStatus:
+        return _FakeStatus()
+
     def disconnect(self) -> None:
         self.connected = False
 
@@ -135,6 +164,8 @@ def fixture_fake_sdk() -> SimpleNamespace:
     _FakeCamera.instances.clear()
     return SimpleNamespace(
         Camera=_FakeCamera,
+        CameraIntrinsics=_FakeCameraIntrinsics,
+        CameraResolutions=_FakeCameraResolutions,
         Frame2D=_FakeFrame2D,
         Frame2DAnd3D=_FakeFrame2DAnd3D,
     )
@@ -187,6 +218,22 @@ def test_joint_rgbd_capture_converts_bgr_and_millimeters(fake_sdk: SimpleNamespa
     assert frame.frame_2d_id == 101
     assert frame.frame_3d_id == 202
     assert _FakeCamera.instances[-1].capture_timeout_ms == 456
+
+
+def test_factory_calibration_keeps_streams_separate_and_converts_translation(fake_sdk: SimpleNamespace) -> None:
+    camera = _camera(fake_sdk)
+    camera.connect(warmup=False)
+
+    calibration = camera.get_calibration()
+
+    assert (calibration.texture.width, calibration.texture.height) == (1280, 960)
+    assert (calibration.depth.width, calibration.depth.height) == (640, 480)
+    assert calibration.texture.fx == 1000.0
+    assert calibration.depth.fx == 500.0
+    assert calibration.texture.distortion_k1_k2_p1_p2_k3 == (0.1, 0.2, 0.3, 0.4, 0.5)
+    assert calibration.t_texture_depth_m[0][3] == pytest.approx(0.01)
+    assert calibration.t_texture_depth_m[1][3] == pytest.approx(0.02)
+    assert calibration.t_texture_depth_m[2][3] == pytest.approx(0.03)
 
 
 def test_rgb_only_capture_and_latest_frame(fake_sdk: SimpleNamespace) -> None:

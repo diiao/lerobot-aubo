@@ -40,6 +40,33 @@ MILLIMETERS_PER_METER = 1000.0
 
 
 @dataclass(frozen=True)
+class PinholeCalibration:
+    """One camera stream's image size, pinhole intrinsics, and distortion."""
+
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    distortion_k1_k2_p1_p2_k3: tuple[float, float, float, float, float]
+
+
+@dataclass(frozen=True)
+class MechMindCalibration:
+    """Factory calibration, with depth-to-texture translation expressed in metres."""
+
+    texture: PinholeCalibration
+    depth: PinholeCalibration
+    t_texture_depth_m: tuple[
+        tuple[float, float, float, float],
+        tuple[float, float, float, float],
+        tuple[float, float, float, float],
+        tuple[float, float, float, float],
+    ]
+
+
+@dataclass(frozen=True)
 class MechMindRGBDFrame:
     """One jointly requested Mech-Eye frame in model-facing metric units."""
 
@@ -143,6 +170,64 @@ def _convert_metric_depth(frame_3d: object) -> tuple[
     return depth_m, valid, xyz_m
 
 
+def _convert_pinhole_calibration(intrinsics: object, resolution: object) -> PinholeCalibration:
+    matrix = intrinsics.camera_matrix
+    distortion = intrinsics.camera_distortion
+    values = (
+        float(matrix.fx),
+        float(matrix.fy),
+        float(matrix.cx),
+        float(matrix.cy),
+        float(distortion.k1),
+        float(distortion.k2),
+        float(distortion.p1),
+        float(distortion.p2),
+        float(distortion.k3),
+    )
+    width = int(resolution.width)
+    height = int(resolution.height)
+    if width <= 0 or height <= 0 or values[0] <= 0 or values[1] <= 0:
+        raise RuntimeError("Mech-Eye returned invalid camera calibration values")
+    if not all(math.isfinite(value) for value in values):
+        raise RuntimeError("Mech-Eye returned invalid camera calibration values")
+    return PinholeCalibration(
+        width=width,
+        height=height,
+        fx=values[0],
+        fy=values[1],
+        cx=values[2],
+        cy=values[3],
+        distortion_k1_k2_p1_p2_k3=(values[4], values[5], values[6], values[7], values[8]),
+    )
+
+
+def _convert_depth_to_texture_transform(transform: object) -> tuple[
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+]:
+    rotation = np.asarray(transform.rotation, dtype=np.float64)
+    translation_m = np.asarray(transform.translation, dtype=np.float64) / MILLIMETERS_PER_METER
+    if rotation.shape != (3, 3) or translation_m.shape != (3,):
+        raise RuntimeError("Mech-Eye returned an invalid depth-to-texture transform shape")
+    if not np.isfinite(rotation).all() or not np.isfinite(translation_m).all():
+        raise RuntimeError("Mech-Eye returned non-finite depth-to-texture calibration")
+    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5) or not np.isclose(
+        np.linalg.det(rotation), 1.0, atol=1e-5
+    ):
+        raise RuntimeError("Mech-Eye returned a non-rigid depth-to-texture rotation")
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = translation_m
+    return (
+        tuple(float(value) for value in matrix[0]),
+        tuple(float(value) for value in matrix[1]),
+        tuple(float(value) for value in matrix[2]),
+        tuple(float(value) for value in matrix[3]),
+    )
+
+
 class MechMindCamera(Camera):
     """Mech-Eye camera with explicit timeouts and no implicit file writes."""
 
@@ -193,6 +278,21 @@ class MechMindCamera(Camera):
 
     def read(self) -> NDArray[Any]:
         return self.read_rgbd().rgb
+
+    def get_calibration(self) -> MechMindCalibration:
+        """Read factory RGB/depth calibration without capturing an image."""
+        if not self.is_connected or self._camera is None or self._sdk is None:
+            raise DeviceNotConnectedError(f"{self} is not connected")
+
+        intrinsics = self._sdk.CameraIntrinsics()
+        resolutions = self._sdk.CameraResolutions()
+        _require_status_ok(self._camera.get_camera_intrinsics(intrinsics), "get_camera_intrinsics")
+        _require_status_ok(self._camera.get_camera_resolutions(resolutions), "get_camera_resolutions")
+        return MechMindCalibration(
+            texture=_convert_pinhole_calibration(intrinsics.texture, resolutions.texture),
+            depth=_convert_pinhole_calibration(intrinsics.depth, resolutions.depth),
+            t_texture_depth_m=_convert_depth_to_texture_transform(intrinsics.depth_to_texture),
+        )
 
     def read_rgbd(self, timeout_ms: int | None = None) -> MechMindRGBDFrame:
         if not self.is_connected or self._camera is None or self._sdk is None:
