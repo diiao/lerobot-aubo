@@ -22,7 +22,13 @@ from .authorization_contract import (
     ExecutionAuthorizationV1,
     build_authorization_manifest,
 )
-
+from .capture_manifest import (
+    CAPTURE_PURPOSES,
+    RAW_CAPTURE_MANIFEST_SCHEMA_VERSION,
+    RawArtifactRecord,
+    RawCaptureManifestV1,
+    reserve_capture_directory,
+)
 from .contracts import (
     ACTION_CONTROL_MODE,
     ACTION_FIELD_NAMES,
@@ -60,6 +66,11 @@ __all__ = [
     "EXECUTION_AUTHORIZATION_SCHEMA_VERSION",
     "ExecutionAuthorizationV1",
     "build_authorization_manifest",
+    "CAPTURE_PURPOSES",
+    "RAW_CAPTURE_MANIFEST_SCHEMA_VERSION",
+    "RawArtifactRecord",
+    "RawCaptureManifestV1",
+    "reserve_capture_directory",
     "ACTION_CONTROL_MODE",
     "ACTION_FIELD_NAMES",
     "ACTION_FIELD_SPECS",
