@@ -55,6 +55,13 @@ from .depth_gate import (
     build_depth_gate_manifest,
     evaluate_depth_gate,
 )
+from .depth_gate_analysis import (
+    DEPTH_GATE_ANALYSIS_SCHEMA_VERSION,
+    DepthGateAnalysisReport,
+    MotionSequenceMeasurements,
+    StaticPoseMeasurements,
+    analyze_depth_gate,
+)
 from .observation_contract import (
     BASE_TIMESTAMP_STREAMS,
     DEPTH_STREAM_KEY,
@@ -103,6 +110,11 @@ __all__ = [
     "DepthGateResult",
     "build_depth_gate_manifest",
     "evaluate_depth_gate",
+    "DEPTH_GATE_ANALYSIS_SCHEMA_VERSION",
+    "DepthGateAnalysisReport",
+    "MotionSequenceMeasurements",
+    "StaticPoseMeasurements",
+    "analyze_depth_gate",
     "BASE_TIMESTAMP_STREAMS",
     "DEPTH_STREAM_KEY",
     "OBSERVATION_SCHEMA_VERSION",
