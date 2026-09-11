@@ -340,7 +340,10 @@ class OpenCVCamera(Camera):
         if self.videocapture is None:
             raise DeviceNotConnectedError(f"{self} videocapture is not initialized")
 
-        ret, frame = self.videocapture.read()
+        try:
+            ret, frame = self.videocapture.read()
+        except cv2.error as exc:
+            raise RuntimeError(f"{self} read failed ({exc}).") from exc
 
         if not ret:
             raise RuntimeError(f"{self} read failed (status={ret}).")
@@ -455,11 +458,43 @@ class OpenCVCamera(Camera):
             except DeviceNotConnectedError:
                 break
             except Exception as e:
-                if failure_count <= 10:
-                    failure_count += 1
-                    logger.warning(f"Error reading frame in background thread for {self}: {e}")
-                else:
+                failure_count += 1
+                logger.warning(f"Error reading frame in background thread for {self}: {e}")
+                if failure_count == 8:
+                    logger.warning(f"{self} consecutive MJPG/USB read failures; reopening capture")
+                    if self._reopen_capture():
+                        failure_count = 0
+                        continue
+                if failure_count > 20:
                     raise RuntimeError(f"{self} exceeded maximum consecutive read failures.") from e
+                time.sleep(0.02)
+
+    def _reopen_capture(self) -> bool:
+        """Reopen VideoCapture after a USB/MJPG glitch without stopping the read thread."""
+        old = self.videocapture
+        self.videocapture = None
+        if old is not None:
+            try:
+                old.release()
+            except Exception:
+                logger.warning("%s failed to release capture during reopen", self, exc_info=True)
+        capture = cv2.VideoCapture(self.index_or_path, self.backend)
+        if not capture.isOpened():
+            capture.release()
+            return False
+        self.videocapture = capture
+        try:
+            self._configure_capture_settings()
+        except Exception:
+            logger.warning("%s failed to reconfigure capture during reopen", self, exc_info=True)
+            try:
+                capture.release()
+            except Exception:
+                pass
+            self.videocapture = None
+            return False
+        logger.info("%s capture reopened after USB/MJPG glitch", self)
+        return True
 
     def _start_read_thread(self) -> None:
         """Starts or restarts the background read thread if it's not running."""

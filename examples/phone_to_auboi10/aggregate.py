@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -211,37 +212,51 @@ def validate_episode_actions(dataset_root, info: dict) -> None:
         )
 
 
+def resolve_dataset_root(spec: str) -> Path:
+    """Resolve a local relative path first, then the Hugging Face cache."""
+    candidate = Path(spec).expanduser()
+    if candidate.exists():
+        return candidate.resolve()
+    cached = (HF_LEROBOT_HOME / spec).expanduser()
+    if cached.exists():
+        return cached.resolve()
+    raise FileNotFoundError(f"源数据集不存在: {spec}")
+
+
 def main():
     sources = discover_sources()
     if not sources:
         raise RuntimeError(
             "没有发现 bamboo_newview_sXX 批次；请先录制，或设置 DATASET_SOURCES"
         )
-    source_roots = [(HF_LEROBOT_HOME / source).resolve() for source in sources]
-    dst_root = (HF_LEROBOT_HOME / DST).resolve()
+    source_roots = [resolve_dataset_root(source) for source in sources]
+    dst_root = Path(DST).expanduser()
+    dst_root = dst_root.resolve() if dst_root.is_absolute() or str(DST).startswith(".") else (HF_LEROBOT_HOME / DST).resolve()
     if dst_root in source_roots:
         raise ValueError("聚合输出不能同时出现在源数据集列表中")
+    if re.fullmatch(r"bamboo_act_report_s\d+", dst_root.name):
+        raise ValueError(f"拒绝把聚合输出写成源批次目录: {dst_root}")
 
     # 先验证每个源批次，避免无效批次导致已有聚合输出被白白删除。
     for source, source_root in zip(sources, source_roots, strict=True):
-        if not source_root.is_dir():
-            raise FileNotFoundError(f"源数据集不存在: {source_root}")
-        print(f"检查源批次: {source}")
+        print(f"检查源批次: {source} -> {source_root}")
         info = validate_metadata(source_root)
         validate_image_stats(source_root)
         validate_gripper_labels(source_root)
         validate_episode_actions(source_root, info)
 
-    # merge_datasets 内部用 create(exist_ok=False)，输出目录已存在会 FileExistsError，先删
+    # merge_datasets 内部用 create(exist_ok=False)，只删除旧聚合输出，不删除 s01–s14。
     if dst_root.exists():
         print(f"删除旧的聚合输出: {dst_root}")
         shutil.rmtree(dst_root)
 
-    print(f"合并: {sources} -> {DST}")
-    datasets = [LeRobotDataset(repo_id=name) for name in sources]
-    merge_datasets(datasets, output_repo_id=DST)
+    print(f"合并: {sources} -> {dst_root}")
+    datasets = [
+        LeRobotDataset(repo_id=source_root.name, root=source_root) for source_root in source_roots
+    ]
+    merge_datasets(datasets, output_repo_id=dst_root.name, output_dir=dst_root)
 
-    m = LeRobotDataset(repo_id=DST)
+    m = LeRobotDataset(repo_id=dst_root.name, root=dst_root)
     merged_info = validate_metadata(dst_root)
     validate_image_stats(dst_root)
     validate_gripper_labels(dst_root)

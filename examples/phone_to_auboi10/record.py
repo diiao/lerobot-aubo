@@ -47,15 +47,19 @@ from lerobot.utils.utils import log_say, init_logging
 
 from aubo_start_poses import NORMAL_START_DEG, RECOVERY_START_DEG
 
-NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "10"))
+NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "4"))
 CONTROL_FPS = 25
 HANDEYE_CAPTURE_FPS = 30  # 驱动只接受 30；硬件实测约 25 FPS
 FIXED_CAPTURE_FPS = 25
-EPISODE_TIME_SEC = 60
+EPISODE_TIME_SEC = 120
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "抓取竹条"
-# 本轮补录使用新的独立批次；LeRobotDataset 会在录制启动时创建此目录。
-LOCAL_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_s04")
+# 汇报用 ACT 单根角度批次。s01 已录的是 90°，角度以
+# datasets/bamboo_act_report_manifest.json 为准，禁止用 sXX 序号反推。
+# 必须传 root= 本地目录，否则会写到 ~/.cache/huggingface/lerobot/。
+_DATASET_PATH = Path(os.environ.get("DATASET_PATH", "./datasets/bamboo_act_report_s14"))
+LOCAL_DATASET_ROOT = _DATASET_PATH.resolve()
+LOCAL_DATASET_REPO_ID = LOCAL_DATASET_ROOT.name
 RECORD_START_MODE = os.environ.get("RECORD_START_MODE", "normal").strip().lower()
 if RECORD_START_MODE not in {"normal", "recovery"}:
     raise ValueError("RECORD_START_MODE 只能是 'normal' 或 'recovery'")
@@ -278,8 +282,10 @@ def main():
         robot.connect()
         phone.connect()
 
+        print(f"数据集将保存到: {LOCAL_DATASET_ROOT}")
         dataset = LeRobotDataset.create(
-            repo_id=LOCAL_DATASET_PATH,
+            repo_id=LOCAL_DATASET_REPO_ID,
+            root=LOCAL_DATASET_ROOT,
             fps=CONTROL_FPS,
             features=combine_feature_dicts(
                 aggregate_pipeline_dataset_features(
@@ -450,7 +456,7 @@ def main():
 
         if dataset is not None:
             dataset.finalize()
-            print(f"\n数据集已保存至: {LOCAL_DATASET_PATH}")
+            print(f"\n数据集已保存至: {LOCAL_DATASET_ROOT}")
             print(f"共录制 {episode_idx} 个 episodes")
         else:
             print("\n录制未开始，没有创建数据集")

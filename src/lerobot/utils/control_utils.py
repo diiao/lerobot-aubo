@@ -18,6 +18,10 @@
 
 
 import logging
+import os
+import select
+import sys
+import threading
 import traceback
 from contextlib import nullcontext
 from copy import copy
@@ -115,6 +119,97 @@ def predict_action(
     return action
 
 
+class _StdinHotkeyListener:
+    """Read record hotkeys from the controlling terminal.
+
+    pynput uses X11 and often receives nothing on Wayland or in IDE terminals.
+    Arrow keys arrive as ANSI sequences on stdin when that terminal is focused.
+    """
+
+    def __init__(self, events: dict[str, bool]):
+        self.events = events
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="stdin-hotkeys", daemon=True)
+        self._fd: int | None = None
+        self._old = None
+
+    def start(self):
+        if not sys.stdin.isatty():
+            logging.warning("stdin is not a TTY; terminal hotkeys are unavailable")
+            return self
+        try:
+            import termios
+            import tty
+        except ImportError:
+            logging.warning("termios unavailable; terminal hotkeys are unavailable")
+            return self
+        self._fd = sys.stdin.fileno()
+        self._old = termios.tcgetattr(self._fd)
+        tty.setcbreak(self._fd)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._fd is None or self._old is None:
+            return
+        try:
+            import termios
+
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+        except Exception:
+            pass
+
+    def _read_byte(self, timeout_s: float) -> bytes | None:
+        if self._fd is None:
+            return None
+        ready, _, _ = select.select([self._fd], [], [], timeout_s)
+        if not ready:
+            return None
+        return os.read(self._fd, 1)
+
+    def _loop(self):
+        try:
+            while not self._stop.is_set():
+                char = self._read_byte(0.05)
+                if not char:
+                    continue
+                if char in (b"r", b"R"):
+                    print("R key pressed. Return to start pose...")
+                    self.events["return_to_start"] = True
+                elif char == b"\x1b":
+                    nxt = self._read_byte(0.03)
+                    if nxt is None:
+                        print("Escape key pressed. Stopping data recording...")
+                        self.events["stop_recording"] = True
+                        self.events["exit_early"] = True
+                        continue
+                    if nxt != b"[":
+                        continue
+                    arrow = self._read_byte(0.03)
+                    if arrow == b"C":
+                        print("Right arrow key pressed. Exiting loop...")
+                        self.events["exit_early"] = True
+                    elif arrow == b"D":
+                        print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
+                        self.events["rerecord_episode"] = True
+                        self.events["exit_early"] = True
+        except Exception as exc:
+            print(f"Error handling stdin key press: {exc}")
+
+
+class _CompositeKeyboardListener:
+    def __init__(self, *listeners):
+        self._listeners = [listener for listener in listeners if listener is not None]
+
+    def stop(self):
+        for listener in self._listeners:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+
+
 def init_keyboard_listener():
     """
     Initializes a non-blocking keyboard listener for real-time user interaction.
@@ -137,39 +232,44 @@ def init_keyboard_listener():
     events["stop_recording"] = False
     events["return_to_start"] = False
 
+    stdin_listener = _StdinHotkeyListener(events)
+    stdin_listener.start()
+
+    pynput_listener = None
     if is_headless():
         logging.warning(
-            "Headless environment detected. On-screen cameras display and keyboard inputs will not be available."
+            "Headless environment detected. On-screen cameras display and pynput hotkeys will not be available."
         )
-        listener = None
-        return listener, events
+    else:
+        # pynput 在 Wayland 下经常收不到键；终端 stdin 监听才是可靠路径。
+        from pynput import keyboard
 
-    # Only import pynput if not in a headless environment
-    from pynput import keyboard
+        def on_press(key):
+            try:
+                if key == keyboard.Key.right:
+                    print("Right arrow key pressed. Exiting loop...")
+                    events["exit_early"] = True
+                elif key == keyboard.Key.left:
+                    print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
+                    events["rerecord_episode"] = True
+                    events["exit_early"] = True
+                elif key == keyboard.Key.esc:
+                    print("Escape key pressed. Stopping data recording...")
+                    events["stop_recording"] = True
+                    events["exit_early"] = True
+                elif hasattr(key, "char") and key.char == "r":
+                    print("R key pressed. Return to start pose...")
+                    events["return_to_start"] = True
+            except Exception as e:
+                print(f"Error handling key press: {e}")
 
-    def on_press(key):
-        try:
-            if key == keyboard.Key.right:
-                print("Right arrow key pressed. Exiting loop...")
-                events["exit_early"] = True
-            elif key == keyboard.Key.left:
-                print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
-                events["rerecord_episode"] = True
-                events["exit_early"] = True
-            elif key == keyboard.Key.esc:
-                print("Escape key pressed. Stopping data recording...")
-                events["stop_recording"] = True
-                events["exit_early"] = True
-            elif hasattr(key, 'char') and key.char == 'r':
-                print("R key pressed. Return to start pose...")
-                events["return_to_start"] = True
-        except Exception as e:
-            print(f"Error handling key press: {e}")
+        pynput_listener = keyboard.Listener(on_press=on_press)
+        pynput_listener.start()
 
-    listener = keyboard.Listener(on_press=on_press)
-    listener.start()
+    if sys.stdin.isatty():
+        print("键盘：请在运行本命令的终端内按 → 开始、r 归位、Esc 结束（不要点到别的窗口）")
 
-    return listener, events
+    return _CompositeKeyboardListener(stdin_listener, pynput_listener), events
 
 
 def sanity_check_dataset_name(repo_id, policy_cfg):
