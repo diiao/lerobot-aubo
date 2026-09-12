@@ -45,6 +45,16 @@ def test_nonlegacy_checkpoint_without_contract_fails_closed(tmp_path: Path) -> N
         inference_server.resolve_checkpoint_state_contract(tmp_path, (12,))
 
 
+def test_ensemble_gripper_mode_is_explicit_and_validated(monkeypatch) -> None:
+    monkeypatch.delenv("ENSEMBLE_GRIPPER_MODE", raising=False)
+    assert inference_server.get_ensemble_gripper_mode() == "ensemble"
+    monkeypatch.setenv("ENSEMBLE_GRIPPER_MODE", "latest")
+    assert inference_server.get_ensemble_gripper_mode() == "latest"
+    monkeypatch.setenv("ENSEMBLE_GRIPPER_MODE", "hold")
+    with pytest.raises(ValueError, match="ensemble 或 latest"):
+        inference_server.get_ensemble_gripper_mode()
+
+
 def test_checkpoint_contract_must_match_policy_shape(tmp_path: Path) -> None:
     contract = build_state_input_contract(_features(), DROP_GRIPPER_STATE_VARIANT)
     write_state_input_contract(tmp_path, contract)
@@ -127,5 +137,43 @@ def test_ensemble_selection_retains_pre_ensemble_chunk() -> None:
     selected, predicted, selected_index = server._select_action_with_evidence({})
 
     torch.testing.assert_close(selected, chunk[:, 0] / 2)
+    torch.testing.assert_close(predicted, chunk)
+    assert selected_index == 0
+
+
+def test_ensemble_can_take_gripper_from_latest_chunk_step() -> None:
+    server = object.__new__(inference_server.InferenceServer)
+    chunk = torch.arange(3 * 8, dtype=torch.float32).reshape(1, 3, 8)
+
+    class Ensembler:
+        def update(self, actions):
+            return actions[:, 0] / 2
+
+    class Policy:
+        config = type("Config", (), {"temporal_ensemble_coeff": 0.01})()
+        temporal_ensembler = Ensembler()
+
+        def eval(self):
+            return self
+
+        def predict_action_chunk(self, _batch):
+            return chunk
+
+    server.policy = Policy()
+    server.ensemble_gripper_mode = "latest"
+
+    selected, predicted, selected_index = server._select_action_with_evidence({})
+
+    gripper_index = inference_server.GRIPPER_ACTION_INDEX
+    torch.testing.assert_close(
+        selected[:, :gripper_index], chunk[:, 0, :gripper_index] / 2
+    )
+    torch.testing.assert_close(
+        selected[:, gripper_index + 1 :],
+        chunk[:, 0, gripper_index + 1 :] / 2,
+    )
+    torch.testing.assert_close(
+        selected[:, gripper_index], chunk[:, 0, gripper_index]
+    )
     torch.testing.assert_close(predicted, chunk)
     assert selected_index == 0

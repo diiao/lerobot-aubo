@@ -41,6 +41,48 @@ def test_temporal_ensemble_matches_act_ensembler() -> None:
     assert not np.allclose(got, queue, atol=1e-3)
 
 
+def test_hybrid_keeps_ensemble_motion_and_selected_gripper() -> None:
+    ensemble = np.arange(24, dtype=np.float32).reshape(3, 8)
+    source = ensemble + 100.0
+
+    hybrid = audit.deployed_hybrid_actions(ensemble, source, gripper_index=7)
+
+    np.testing.assert_array_equal(hybrid[:, :7], ensemble[:, :7])
+    np.testing.assert_array_equal(hybrid[:, 7], source[:, 7])
+    np.testing.assert_array_equal(ensemble, np.arange(24, dtype=np.float32).reshape(3, 8))
+
+
+def test_gripper_hysteresis_holds_middle_band() -> None:
+    values = np.array([0.0, 61.0, 60.0, 35.0, 20.0, 19.0], dtype=np.float32)
+
+    states = audit.apply_gripper_hysteresis(values)
+    events = audit.find_threshold_transitions(values)
+
+    np.testing.assert_array_equal(states, [False, True, True, True, True, False])
+    assert [(event["kind"], event["frame"]) for event in events] == [
+        ("on", 1),
+        ("off", 5),
+    ]
+
+
+def test_action_continuity_uses_adjacent_commands() -> None:
+    names = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.j6_target"]
+    actions = np.array(
+        [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.003, 0.004, 0.0, 0.0, 0.0, np.pi / 2, 0.1],
+            [0.003, 0.004, 0.012, 0.0, 0.0, np.pi, 0.3],
+        ],
+        dtype=np.float64,
+    )
+
+    values = audit.action_continuity_values(actions, names)
+
+    np.testing.assert_allclose(values["xyz_step_l2_m"], [0.005, 0.012])
+    np.testing.assert_allclose(values["j6_step_abs_rad"], [0.1, 0.2])
+    np.testing.assert_allclose(values["rotation_step_geodesic_deg"], [90.0, 90.0])
+
+
 def test_finds_all_on_and_off_transitions() -> None:
     episodes = []
     for _ in range(13):
@@ -55,6 +97,24 @@ def test_finds_all_on_and_off_transitions() -> None:
     assert len(offs) == 26
     assert {event["ordinal"] for event in ons} == {0, 1}
     assert {event["ordinal"] for event in offs} == {0, 1}
+
+
+def test_transition_matching_ignores_early_spurious_pulse() -> None:
+    targets = [
+        {"kind": "on", "frame": 100, "ordinal": 0},
+        {"kind": "off", "frame": 200, "ordinal": 0},
+    ]
+    predictions = [
+        {"kind": "on", "frame": 78, "ordinal": 0},
+        {"kind": "off", "frame": 80, "ordinal": 0},
+        {"kind": "on", "frame": 105, "ordinal": 1},
+        {"kind": "off", "frame": 206, "ordinal": 1},
+    ]
+
+    matched, unmatched = audit.match_transition_events(targets, predictions)
+
+    assert matched == {("on", 0): 105, ("off", 0): 206}
+    assert unmatched == {"on": 1, "off": 1}
 
 
 def test_target_event_summary_uses_selected_episode_labels_not_fixed_count() -> None:

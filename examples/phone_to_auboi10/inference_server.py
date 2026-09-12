@@ -43,6 +43,7 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
 PORT = 5555
 DEFAULT_TEMPORAL_ENSEMBLE_COEFF = 0.01
+DEFAULT_ENSEMBLE_GRIPPER_MODE = "ensemble"
 GRIPPER_ACTION_INDEX = ACTION_FIELD_NAMES.index("ee.gripper_pos")
 
 
@@ -86,6 +87,16 @@ def get_temporal_ensemble_coeff() -> float | None:
     if coeff <= 0:
         raise ValueError("TEMPORAL_ENSEMBLE_COEFF 必须大于 0，或显式设为 0 关闭")
     return coeff
+
+
+def get_ensemble_gripper_mode() -> str:
+    """Choose whether temporal aggregation also averages the discrete gripper dimension."""
+    value = os.environ.get(
+        "ENSEMBLE_GRIPPER_MODE", DEFAULT_ENSEMBLE_GRIPPER_MODE
+    ).strip().lower()
+    if value not in {"ensemble", "latest"}:
+        raise ValueError("ENSEMBLE_GRIPPER_MODE 必须是 ensemble 或 latest")
+    return value
 
 
 def send_msg(sock, obj):
@@ -139,6 +150,7 @@ class InferenceServer:
         # Temporal ensembling: every tick predicts an overlapping action chunk,
         # then fuses them online. This avoids hard boundaries between chunks.
         coeff = get_temporal_ensemble_coeff()
+        self.ensemble_gripper_mode = get_ensemble_gripper_mode()
         if coeff is not None:
             from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
 
@@ -147,7 +159,11 @@ class InferenceServer:
             self.policy.temporal_ensembler = ACTTemporalEnsembler(coeff, self.policy.config.chunk_size)
             self.policy.reset()
             self.ensemble = True
-            logging.info(f"temporal ensembling 开启: coeff={coeff}")
+            logging.info(
+                "temporal ensembling 开启: coeff=%s, gripper_mode=%s",
+                coeff,
+                self.ensemble_gripper_mode,
+            )
         else:
             self.ensemble = False
         self.n_action_steps = self.policy.config.n_action_steps
@@ -159,6 +175,7 @@ class InferenceServer:
         logging.info(
             f"纯 ACT 就绪: device={self.device}, n_action_steps={self.n_action_steps}, "
             f"ensemble={self.ensemble}, "
+            f"ensemble_gripper_mode={self.ensemble_gripper_mode}, "
             f"state_contract={self.state_input_contract.variant if self.state_input_contract else 'legacy_full'}"
         )
 
@@ -176,6 +193,11 @@ class InferenceServer:
         if self.policy.config.temporal_ensemble_coeff is not None:
             predicted_chunk = self.policy.predict_action_chunk(batch)
             selected = self.policy.temporal_ensembler.update(predicted_chunk)
+            if getattr(self, "ensemble_gripper_mode", "ensemble") == "latest":
+                selected = selected.clone()
+                selected[:, GRIPPER_ACTION_INDEX] = predicted_chunk[
+                    :, 0, GRIPPER_ACTION_INDEX
+                ]
             return selected, predicted_chunk, 0
 
         if len(self.policy._action_queue) == 0:
@@ -237,6 +259,7 @@ class InferenceServer:
             "prediction_sequence": self.prediction_sequence,
             "model_inference_performed": predicted_chunk_normalized is not None,
             "temporal_ensemble_enabled": bool(self.ensemble),
+            "ensemble_gripper_mode": self.ensemble_gripper_mode,
             "queue_action_index": int(selected_index),
             "selected_normalized_action": selected_normalized_np.squeeze(0).tolist(),
             "selected_denormalized_action": selected_denormalized.squeeze(0).tolist(),
