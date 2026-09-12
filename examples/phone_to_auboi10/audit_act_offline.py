@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,8 @@ from lerobot.utils.constants import ACTION
 
 DEFAULT_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")
 DEFAULT_MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
-SUCTION_THRESHOLD = 60.0
+SUCTION_ON_THRESHOLD = 60.0
+SUCTION_OFF_THRESHOLD = 20.0
 QUEUE_N_ACTION_STEPS = 4
 TEMPORAL_ENSEMBLE_COEFF = 0.01
 TRANSITION_WINDOW = 10
@@ -124,10 +126,35 @@ def deployed_temporal_ensemble_actions(chunks: np.ndarray, coeff: float) -> np.n
     return executed
 
 
-def binary_metrics(predicted: np.ndarray, target: np.ndarray, threshold: float = SUCTION_THRESHOLD) -> dict[str, Any]:
-    """Metrics for the physical suction state, whose labels are 0 or 100."""
-    pred_on = predicted > threshold
-    target_on = target > threshold
+def deployed_hybrid_actions(
+    temporal_ensemble: np.ndarray,
+    gripper_source: np.ndarray,
+    gripper_index: int,
+) -> np.ndarray:
+    """Use smoothed motion dimensions with an explicitly selected gripper source."""
+    if temporal_ensemble.shape != gripper_source.shape:
+        raise ValueError("temporal_ensemble and gripper_source must have identical shapes")
+    result = temporal_ensemble.copy()
+    result[:, gripper_index] = gripper_source[:, gripper_index]
+    return result
+
+
+def binary_metrics(
+    predicted: np.ndarray,
+    target: np.ndarray,
+    *,
+    predicted_on: np.ndarray | None = None,
+    target_on: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Metrics for latched suction state while retaining raw prediction range."""
+    if predicted_on is None:
+        predicted_on = apply_gripper_hysteresis(predicted)
+    if target_on is None:
+        target_on = apply_gripper_hysteresis(target)
+    pred_on = np.asarray(predicted_on, dtype=bool)
+    target_on = np.asarray(target_on, dtype=bool)
+    if pred_on.shape != target_on.shape or pred_on.shape != np.asarray(predicted).shape:
+        raise ValueError("gripper value/state arrays must have identical shapes")
     tp = int(np.logical_and(pred_on, target_on).sum())
     tn = int(np.logical_and(~pred_on, ~target_on).sum())
     fp = int(np.logical_and(pred_on, ~target_on).sum())
@@ -136,7 +163,8 @@ def binary_metrics(predicted: np.ndarray, target: np.ndarray, threshold: float =
     recall = tp / (tp + fn) if tp + fn else None
     specificity = tn / (tn + fp) if tn + fp else None
     return {
-        "threshold": threshold,
+        "on_threshold": SUCTION_ON_THRESHOLD,
+        "off_threshold": SUCTION_OFF_THRESHOLD,
         "true_positive": tp,
         "true_negative": tn,
         "false_positive": fp,
@@ -163,9 +191,37 @@ def action_error_metrics(predicted: np.ndarray, target: np.ndarray, names: list[
     }
 
 
-def find_threshold_transitions(values: np.ndarray, threshold: float = SUCTION_THRESHOLD) -> list[dict[str, Any]]:
-    """Return every 0→100 and 100→0 crossing. Frame 0 is never a transition."""
-    on = np.asarray(values) > threshold
+def apply_gripper_hysteresis(
+    values: np.ndarray,
+    *,
+    initial_on: bool = False,
+    on_threshold: float = SUCTION_ON_THRESHOLD,
+    off_threshold: float = SUCTION_OFF_THRESHOLD,
+) -> np.ndarray:
+    """Replay the client's >60 on, <20 off, middle-band hold state machine."""
+    if off_threshold >= on_threshold:
+        raise ValueError("off_threshold must be lower than on_threshold")
+    array = np.asarray(values, dtype=np.float64)
+    if array.ndim != 1:
+        raise ValueError(f"gripper values must be one-dimensional; got {array.shape}")
+    state = bool(initial_on)
+    states = np.empty(array.shape, dtype=bool)
+    for index, value in enumerate(array):
+        if value > on_threshold:
+            state = True
+        elif value < off_threshold:
+            state = False
+        states[index] = state
+    return states
+
+
+def find_threshold_transitions(
+    values: np.ndarray,
+    *,
+    initial_on: bool = False,
+) -> list[dict[str, Any]]:
+    """Return every latched off→on and on→off transition after frame 0."""
+    on = apply_gripper_hysteresis(values, initial_on=initial_on)
     events: list[dict[str, Any]] = []
     on_ordinal = 0
     off_ordinal = 0
@@ -211,17 +267,70 @@ def _desired_on(kind: str) -> bool:
     return kind == "on"
 
 
+def match_transition_events(
+    target_events: list[dict[str, Any]],
+    predicted_events: list[dict[str, Any]],
+) -> tuple[dict[tuple[str, int], int], dict[str, int]]:
+    """Pair same-kind crossings uniquely while ignoring extra predicted crossings.
+
+    The previous ordinal-only pairing shifted every later match after one early
+    spurious pulse.  This sequence-alignment objective first maximizes the number
+    of unique monotonic matches, then minimizes their total frame distance.
+    """
+    matched: dict[tuple[str, int], int] = {}
+    unmatched_predicted: dict[str, int] = {}
+    for kind in ("on", "off"):
+        targets = sorted(
+            (event for event in target_events if event["kind"] == kind),
+            key=lambda event: event["frame"],
+        )
+        predictions = sorted(
+            (event for event in predicted_events if event["kind"] == kind),
+            key=lambda event: event["frame"],
+        )
+
+        @lru_cache(maxsize=None)
+        def solve(
+            target_index: int, prediction_index: int
+        ) -> tuple[int, int, tuple[tuple[int, int], ...]]:
+            if target_index == len(targets) or prediction_index == len(predictions):
+                return 0, 0, ()
+            tail_matches, tail_cost, tail_pairs = solve(target_index + 1, prediction_index + 1)
+            candidates = [
+                (
+                    tail_matches + 1,
+                    tail_cost
+                    + abs(
+                        int(targets[target_index]["frame"])
+                        - int(predictions[prediction_index]["frame"])
+                    ),
+                    ((target_index, prediction_index),) + tail_pairs,
+                ),
+                solve(target_index, prediction_index + 1),
+                solve(target_index + 1, prediction_index),
+            ]
+            return max(candidates, key=lambda result: (result[0], -result[1]))
+
+        match_count, _cost, pairs = solve(0, 0)
+        for target_index, prediction_index in pairs:
+            target = targets[target_index]
+            matched[(kind, int(target["ordinal"]))] = int(
+                predictions[prediction_index]["frame"]
+            )
+        unmatched_predicted[kind] = len(predictions) - match_count
+    return matched, unmatched_predicted
+
+
 def transition_timing(
     predicted: np.ndarray,
     event_frame: int,
     kind: str,
-    predicted_events: list[dict[str, Any]],
-    ordinal: int,
-    threshold: float = SUCTION_THRESHOLD,
+    predicted_frame: int | None,
+    initial_on: bool = False,
     window: int = TRANSITION_WINDOW,
 ) -> dict[str, Any]:
     """Compare one target switch against the matching predicted switch."""
-    pred_on = np.asarray(predicted) > threshold
+    pred_on = apply_gripper_hysteresis(predicted, initial_on=initial_on)
     want_on = _desired_on(kind)
     n = len(pred_on)
     start = max(0, event_frame - window)
@@ -229,8 +338,6 @@ def transition_timing(
     end_after = min(n, event_frame + window + 1)
     pre = pred_on[start:end_before]
     post = pred_on[event_frame:end_after]
-    matches = [item for item in predicted_events if item["kind"] == kind]
-    predicted_frame = int(matches[ordinal]["frame"]) if ordinal < len(matches) else None
     pre_false_trigger = bool(np.any(pre) if want_on else np.any(~pre)) if len(pre) else False
     if want_on:
         post_still_missed = bool(len(post) == 0 or not np.any(post))
@@ -296,6 +403,25 @@ def distribution_report(values: np.ndarray, thresholds: tuple[float, ...] | list
         "p99": float(np.quantile(data, 0.99)),
         "max": float(data.max()),
         "exceed": exceed,
+    }
+
+
+def action_continuity_values(
+    actions: np.ndarray,
+    action_names: list[str],
+) -> dict[str, np.ndarray]:
+    """Measure adjacent command changes within one episode, never across resets."""
+    if actions.ndim != 2 or actions.shape[1] != len(action_names):
+        raise ValueError("actions must have shape (frames, len(action_names))")
+    xyz_indices = [action_names.index(name) for name in ("ee.x", "ee.y", "ee.z")]
+    rot_indices = [action_names.index(name) for name in ("ee.wx", "ee.wy", "ee.wz")]
+    j6_index = action_names.index("ee.j6_target")
+    return {
+        "xyz_step_l2_m": np.linalg.norm(np.diff(actions[:, xyz_indices], axis=0), axis=1),
+        "j6_step_abs_rad": np.abs(np.diff(actions[:, j6_index])),
+        "rotation_step_geodesic_deg": geodesic_angle_deg(
+            actions[:-1, rot_indices], actions[1:, rot_indices]
+        ),
     }
 
 
@@ -509,12 +635,19 @@ def build_transition_row(
     target: np.ndarray,
     observation_tcp: np.ndarray,
     action_names: list[str],
-    predicted_events: list[dict[str, Any]],
+    predicted_cross_frame: int | None,
+    initial_suction_on: bool,
 ) -> dict[str, Any]:
     z_index = action_names.index("ee.z")
     gripper_index = action_names.index("ee.gripper_pos")
     frame = event["frame"]
-    timing = transition_timing(predicted[:, gripper_index], frame, event["kind"], predicted_events, event["ordinal"])
+    timing = transition_timing(
+        predicted[:, gripper_index],
+        frame,
+        event["kind"],
+        predicted_cross_frame,
+        initial_on=initial_suction_on,
+    )
     return {
         "episode_index": episode_index,
         "kind": event["kind"],
@@ -731,7 +864,7 @@ def audit(args: argparse.Namespace) -> Path:
 
     report_dir = make_report_dir(args.report_dir)
     transition_rows: list[dict[str, Any]] = []
-    stored: dict[str, dict[str, list[np.ndarray]]] = {}
+    stored: dict[str, dict[str, Any]] = {}
     all_target_events: list[dict[str, Any]] = []
     frame_lookup: dict[tuple[int, int], dict[str, Any]] = {}
     gripper_index = action_names.index("ee.gripper_pos")
@@ -749,22 +882,49 @@ def audit(args: argparse.Namespace) -> Path:
         observation_tcp = state[:, tcp_idx]
         observation_rot = state[:, rot_idx]
         observation_j6_rad = np.deg2rad(state[:, j6_state_index])
+        initial_suction_on = bool(state[0, state_gripper_index] > SUCTION_ON_THRESHOLD)
         forced_chunks = None
         if group[0]["forced_release_chunk"] is not None:
             forced_chunks = np.stack([row["forced_release_chunk"] for row in group])
+        queue_actions = deployed_queue_actions(chunks, QUEUE_N_ACTION_STEPS)
+        ensemble_actions = deployed_temporal_ensemble_actions(
+            chunks, TEMPORAL_ENSEMBLE_COEFF
+        )
+        latest_actions = chunks[:, 0, :]
         predicted_by_mode = {
             "normal": {
-                "queue": deployed_queue_actions(chunks, QUEUE_N_ACTION_STEPS),
-                "temporal_ensemble": deployed_temporal_ensemble_actions(chunks, TEMPORAL_ENSEMBLE_COEFF),
+                "queue": queue_actions,
+                "temporal_ensemble": ensemble_actions,
+                "ensemble_queue_gripper": deployed_hybrid_actions(
+                    ensemble_actions, queue_actions, gripper_index
+                ),
+                "ensemble_latest_gripper": deployed_hybrid_actions(
+                    ensemble_actions, latest_actions, gripper_index
+                ),
             }
         }
         if forced_chunks is not None:
+            forced_queue = deployed_queue_actions(forced_chunks, QUEUE_N_ACTION_STEPS)
+            forced_ensemble = deployed_temporal_ensemble_actions(
+                forced_chunks, TEMPORAL_ENSEMBLE_COEFF
+            )
             predicted_by_mode["forced_zero"] = {
-                "queue": deployed_queue_actions(forced_chunks, QUEUE_N_ACTION_STEPS),
-                "temporal_ensemble": deployed_temporal_ensemble_actions(forced_chunks, TEMPORAL_ENSEMBLE_COEFF),
+                "queue": forced_queue,
+                "temporal_ensemble": forced_ensemble,
+                "ensemble_queue_gripper": deployed_hybrid_actions(
+                    forced_ensemble, forced_queue, gripper_index
+                ),
+                "ensemble_latest_gripper": deployed_hybrid_actions(
+                    forced_ensemble, forced_chunks[:, 0, :], gripper_index
+                ),
             }
 
-        target_events = find_threshold_transitions(target[:, gripper_index])
+        target_on = apply_gripper_hysteresis(
+            target[:, gripper_index], initial_on=initial_suction_on
+        )
+        target_events = find_threshold_transitions(
+            target[:, gripper_index], initial_on=initial_suction_on
+        )
         for event in target_events:
             all_target_events.append({"episode_index": episode_index, "target_frame": event["frame"], **event})
 
@@ -781,7 +941,15 @@ def audit(args: argparse.Namespace) -> Path:
 
         for input_mode, deployed in predicted_by_mode.items():
             for deployment, predicted in deployed.items():
-                pred_events = find_threshold_transitions(predicted[:, gripper_index])
+                predicted_on = apply_gripper_hysteresis(
+                    predicted[:, gripper_index], initial_on=initial_suction_on
+                )
+                pred_events = find_threshold_transitions(
+                    predicted[:, gripper_index], initial_on=initial_suction_on
+                )
+                event_matches, unmatched_predicted = match_transition_events(
+                    target_events, pred_events
+                )
                 for event in target_events:
                     row = build_transition_row(
                         episode_index,
@@ -792,7 +960,8 @@ def audit(args: argparse.Namespace) -> Path:
                         target,
                         observation_tcp,
                         action_names,
-                        pred_events,
+                        event_matches.get((event["kind"], event["ordinal"])),
+                        initial_suction_on,
                     )
                     row["target_time_s"] = float(event["frame"] / metadata.fps)
                     if row["predicted_cross_frame"] is not None:
@@ -801,12 +970,40 @@ def audit(args: argparse.Namespace) -> Path:
                         row["predicted_cross_time_s"] = None
                     transition_rows.append(row)
                 key = f"{deployment}:{input_mode}"
-                slot = stored.setdefault(key, {"predicted": [], "target": [], "tcp": [], "rot": [], "j6": []})
+                slot = stored.setdefault(
+                    key,
+                    {
+                        "predicted": [],
+                        "target": [],
+                        "tcp": [],
+                        "rot": [],
+                        "j6": [],
+                        "predicted_on": [],
+                        "target_on": [],
+                        "continuity": {
+                            "xyz_step_l2_m": [],
+                            "j6_step_abs_rad": [],
+                            "rotation_step_geodesic_deg": [],
+                        },
+                        "predicted_transition_count": {"on": 0, "off": 0},
+                        "extra_predicted_transition_count": {"on": 0, "off": 0},
+                    },
+                )
                 slot["predicted"].append(predicted)
                 slot["target"].append(target)
                 slot["tcp"].append(observation_tcp)
                 slot["rot"].append(observation_rot)
                 slot["j6"].append(observation_j6_rad)
+                slot["predicted_on"].append(predicted_on)
+                slot["target_on"].append(target_on)
+                continuity = action_continuity_values(predicted, action_names)
+                for metric_name, values in continuity.items():
+                    slot["continuity"][metric_name].append(values)
+                for kind in ("on", "off"):
+                    slot["predicted_transition_count"][kind] += sum(
+                        event["kind"] == kind for event in pred_events
+                    )
+                    slot["extra_predicted_transition_count"][kind] += unmatched_predicted[kind]
 
     comparison_out: dict[str, Any] = {}
     for key, slot in stored.items():
@@ -817,7 +1014,12 @@ def audit(args: argparse.Namespace) -> Path:
             "deployment": deployment,
             "input_mode": input_mode,
             "frames": int(len(target)),
-            "suction": binary_metrics(predicted[:, gripper_index], target[:, gripper_index]),
+            "suction": binary_metrics(
+                predicted[:, gripper_index],
+                target[:, gripper_index],
+                predicted_on=np.concatenate(slot["predicted_on"]),
+                target_on=np.concatenate(slot["target_on"]),
+            ),
             "per_action_error": action_error_metrics(predicted, target, action_names),
             "command_vs_state": rotation_and_state_metrics(
                 predicted,
@@ -827,21 +1029,43 @@ def audit(args: argparse.Namespace) -> Path:
                 np.concatenate(slot["j6"]),
                 action_names,
             ),
+            "action_continuity": {
+                "xyz_step_l2_m": distribution_report(
+                    np.concatenate(slot["continuity"]["xyz_step_l2_m"]),
+                    XYZ_THRESHOLDS_M,
+                ),
+                "j6_step_abs_rad": distribution_report(
+                    np.concatenate(slot["continuity"]["j6_step_abs_rad"]),
+                    J6_THRESHOLDS_RAD,
+                ),
+                "rotation_step_geodesic_deg": distribution_report(
+                    np.concatenate(slot["continuity"]["rotation_step_geodesic_deg"]),
+                    ROTATION_THRESHOLDS_DEG,
+                ),
+            },
             "transitions": {
-                "on": summarize_transition_rows(
+                "on": {
+                    **summarize_transition_rows(
                     [
                         row
                         for row in transition_rows
                         if row["deployment"] == deployment and row["input_mode"] == input_mode and row["kind"] == "on"
                     ]
-                ),
-                "off": summarize_transition_rows(
+                    ),
+                    "predicted_crossing_count": slot["predicted_transition_count"]["on"],
+                    "extra_predicted_crossing_count": slot["extra_predicted_transition_count"]["on"],
+                },
+                "off": {
+                    **summarize_transition_rows(
                     [
                         row
                         for row in transition_rows
                         if row["deployment"] == deployment and row["input_mode"] == input_mode and row["kind"] == "off"
                     ]
-                ),
+                    ),
+                    "predicted_crossing_count": slot["predicted_transition_count"]["off"],
+                    "extra_predicted_crossing_count": slot["extra_predicted_transition_count"]["off"],
+                },
             },
         }
 
@@ -873,6 +1097,16 @@ def audit(args: argparse.Namespace) -> Path:
                 "n_action_steps": 1,
                 "coeff": TEMPORAL_ENSEMBLE_COEFF,
                 "implementation": "lerobot.policies.act.modeling_act.ACTTemporalEnsembler",
+            },
+            "ensemble_queue_gripper": {
+                "motion": "temporal_ensemble",
+                "gripper": "queue",
+                "description": "Ensemble motion dimensions; preserve the 4-step queue gripper command.",
+            },
+            "ensemble_latest_gripper": {
+                "motion": "temporal_ensemble",
+                "gripper": "latest_chunk_step_0",
+                "description": "Ensemble motion dimensions; use the newest chunk's current gripper command.",
             },
         },
         "target_suction_events": summarize_target_suction_events(all_target_events),
