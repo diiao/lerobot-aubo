@@ -26,6 +26,7 @@ from lerobot.bamboo_sorting.act_input_contract import (
     apply_state_input_contract,
     build_state_input_contract,
     load_episode_split,
+    write_state_input_contract,
 )
 from lerobot.configs.types import FeatureType
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
@@ -224,6 +225,7 @@ def save_checkpoint(
     *,
     step: int,
     best_val: float,
+    state_contract: ActStateInputContract,
 ) -> None:
     """Save inference files plus optimizer and RNG state for recovery."""
 
@@ -231,6 +233,7 @@ def save_checkpoint(
     policy.save_pretrained(output_dir)
     preprocessor.save_pretrained(output_dir)
     postprocessor.save_pretrained(output_dir)
+    write_state_input_contract(output_dir, state_contract)
     torch.save(
         {
             "step": step,
@@ -451,6 +454,7 @@ def main():
                         output_dir / "best",
                         step=step,
                         best_val=best_val,
+                        state_contract=state_contract,
                     )
                     print(f"  saved best checkpoint (val_loss={best_val:.5f})")
 
@@ -464,6 +468,7 @@ def main():
                     checkpoint_dir,
                     step=step,
                     best_val=best_val,
+                    state_contract=state_contract,
                 )
                 print(f"  saved {checkpoint_dir}")
 
@@ -489,6 +494,7 @@ def main():
             output_dir / "best",
             step=TRAINING_STEPS,
             best_val=best_val,
+            state_contract=state_contract,
         )
         print(f"  saved best checkpoint (val_loss={best_val:.5f})")
 
@@ -500,6 +506,7 @@ def main():
         output_dir,
         step=TRAINING_STEPS,
         best_val=best_val,
+        state_contract=state_contract,
     )
     print(f"Training complete: {output_dir}; best_val={best_val:.5f}")
 

@@ -7,6 +7,11 @@ import numpy as np
 import pytest
 import torch
 
+from lerobot.bamboo_sorting.act_input_contract import (
+    DROP_GRIPPER_STATE_VARIANT,
+    build_state_input_contract,
+)
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -82,6 +87,27 @@ def test_forced_zero_does_not_mutate_original_batch() -> None:
     assert float(original[0, 12]) == 100.0
     assert float(masked["observation.state"][0, 12]) == 0.0
     assert float(batch["observation.state"][0, 12]) == 100.0
+
+
+def test_drop_gripper_contract_builds_12d_audit_observation() -> None:
+    features = {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": [13],
+            "names": [f"state_{index}" for index in range(12)] + ["gripper_pos"],
+        }
+    }
+    contract = build_state_input_contract(features, DROP_GRIPPER_STATE_VARIANT)
+    original = {
+        "observation.state": torch.arange(26, dtype=torch.float32).reshape(2, 13),
+    }
+    result = audit.make_inference_observation(
+        original,
+        {"observation.state": object()},
+        state_contract=contract,
+    )
+    assert result["observation.state"].shape == (2, 12)
+    assert original["observation.state"].shape == (2, 13)
 
 
 def test_make_report_dir_refuses_to_overwrite(tmp_path: Path) -> None:

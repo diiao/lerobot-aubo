@@ -26,6 +26,13 @@ import cv2
 import numpy as np
 import torch
 
+from lerobot.bamboo_sorting.act_input_contract import (
+    ActStateInputContract,
+    STATE_INPUT_CONTRACT_FILENAME,
+    STATE_KEY,
+    apply_state_input_contract,
+    load_state_input_contract,
+)
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import prepare_observation_for_inference
@@ -35,6 +42,28 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
 PORT = 5555
 DEFAULT_TEMPORAL_ENSEMBLE_COEFF = 0.01
+
+
+def resolve_checkpoint_state_contract(
+    model_path: Path,
+    expected_state_shape: tuple[int, ...],
+) -> ActStateInputContract | None:
+    """Require an explicit contract for every non-legacy ACT state shape."""
+
+    contract_path = model_path / STATE_INPUT_CONTRACT_FILENAME
+    if contract_path.is_file():
+        contract = load_state_input_contract(model_path)
+        if expected_state_shape != (contract.model_width,):
+            raise ValueError(
+                "checkpoint state contract does not match policy config: "
+                f"contract={contract.model_width}, config={expected_state_shape}"
+            )
+        return contract
+    if expected_state_shape == (13,):
+        return None
+    raise FileNotFoundError(
+        f"non-legacy {expected_state_shape} checkpoint is missing required {contract_path}"
+    )
 
 
 def get_temporal_ensemble_coeff() -> float | None:
@@ -89,6 +118,16 @@ class InferenceServer:
         self.policy = ACTPolicy.from_pretrained(MODEL_PATH)
         self.policy.eval()
         self.device = torch.device(self.policy.config.device)
+        expected_state_shape = tuple(self.policy.config.input_features[STATE_KEY].shape)
+        self.state_input_contract = resolve_checkpoint_state_contract(
+            Path(MODEL_PATH),
+            expected_state_shape,
+        )
+        if self.state_input_contract is None:
+            logging.warning(
+                "legacy 13D checkpoint has no %s; accepting full state without ablation",
+                STATE_INPUT_CONTRACT_FILENAME,
+            )
 
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             policy_cfg=self.policy.config,
@@ -115,7 +154,8 @@ class InferenceServer:
         self.robot_type = "aubo_i10"
         logging.info(
             f"纯 ACT 就绪: device={self.device}, n_action_steps={self.n_action_steps}, "
-            f"ensemble={self.ensemble}"
+            f"ensemble={self.ensemble}, "
+            f"state_contract={self.state_input_contract.variant if self.state_input_contract else 'legacy_full'}"
         )
 
     def reset(self):
@@ -140,6 +180,13 @@ class InferenceServer:
             else:
                 obs_np[name] = np.asarray(value)
 
+        if self.state_input_contract is not None:
+            obs_np = apply_state_input_contract(obs_np, self.state_input_contract)
+        else:
+            state = np.asarray(obs_np[STATE_KEY])
+            if state.shape != (13,):
+                raise ValueError(f"legacy ACT checkpoint expects 13D state; got {state.shape}")
+
         with torch.inference_mode():
             batch = prepare_observation_for_inference(
                 obs_np, self.device, task, robot_type
@@ -147,7 +194,8 @@ class InferenceServer:
             batch = self.preprocessor(batch)
             # select_action 一次返回 1 个动作：
             # - ensemble 模式：每帧推理 + 在线 ensemble，返回平滑动作
-            # - queue 模式：首次推理填队列，之后按 n_action_steps 消耗（队列在 policy 内部管理）
+            # - queue 模式：首次推理填队列，之后按 n_action_steps 消耗
+            #   （队列在 policy 内部管理）
             a = self.policy.select_action(batch)
             a = self.postprocessor(a)
         return a.squeeze(0).cpu().numpy()  # (action_dim,)

@@ -16,6 +16,8 @@ from lerobot.bamboo_sorting.act_input_contract import (
     apply_state_input_contract,
     build_state_input_contract,
     load_episode_split,
+    load_state_input_contract,
+    write_state_input_contract,
 )
 
 
@@ -132,3 +134,21 @@ def test_episode_split_rejects_wrong_dataset_snapshot(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="does not match"):
         load_episode_split(split_path, dataset_info_path=info_path, total_episodes=2)
+
+
+@pytest.mark.parametrize("variant", [FULL_STATE_VARIANT, DROP_GRIPPER_STATE_VARIANT])
+def test_checkpoint_contract_round_trip(tmp_path: Path, variant: str) -> None:
+    contract = build_state_input_contract(_features(), variant)
+    destination = write_state_input_contract(tmp_path, contract)
+    assert destination.name == "act_state_input_contract.json"
+    assert load_state_input_contract(tmp_path) == contract
+
+
+def test_checkpoint_contract_rejects_inconsistent_drop(tmp_path: Path) -> None:
+    contract = build_state_input_contract(_features(), DROP_GRIPPER_STATE_VARIANT)
+    destination = write_state_input_contract(tmp_path, contract)
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    payload["removed_index"] = 0
+    destination.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="internally inconsistent"):
+        load_state_input_contract(tmp_path)

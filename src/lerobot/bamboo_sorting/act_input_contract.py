@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 STATE_KEY = "observation.state"
+STATE_INPUT_CONTRACT_FILENAME = "act_state_input_contract.json"
 FULL_STATE_VARIANT = "full"
 DROP_GRIPPER_STATE_VARIANT = "drop_gripper"
 SUPPORTED_STATE_VARIANTS = frozenset({FULL_STATE_VARIANT, DROP_GRIPPER_STATE_VARIANT})
@@ -51,6 +52,57 @@ class ActStateInputContract:
             "removed_name": self.removed_name,
             "removed_index": self.removed_index,
         }
+
+
+def write_state_input_contract(path: Path, contract: ActStateInputContract) -> Path:
+    """Write the contract beside a checkpoint so deployment cannot guess it."""
+
+    destination = path / STATE_INPUT_CONTRACT_FILENAME
+    destination.write_text(
+        json.dumps(contract.as_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
+def load_state_input_contract(path: Path) -> ActStateInputContract:
+    """Load and validate a checkpoint state contract."""
+
+    source = path / STATE_INPUT_CONTRACT_FILENAME
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "AuboActStateInputContractV1":
+        raise ValueError("state input contract has an unsupported schema_version")
+    if payload.get("state_key") != STATE_KEY:
+        raise ValueError(f"state input contract must target {STATE_KEY}")
+    source_names = payload.get("source_names")
+    model_names = payload.get("model_names")
+    if not isinstance(source_names, list) or not all(isinstance(name, str) for name in source_names):
+        raise ValueError("state input contract source_names must be a string list")
+    if not isinstance(model_names, list) or not all(isinstance(name, str) for name in model_names):
+        raise ValueError("state input contract model_names must be a string list")
+    variant = payload.get("variant")
+    if variant not in SUPPORTED_STATE_VARIANTS:
+        raise ValueError(f"state input contract has unsupported variant {variant!r}")
+    removed_name = payload.get("removed_name")
+    removed_index = payload.get("removed_index")
+    if variant == FULL_STATE_VARIANT:
+        if model_names != source_names or removed_name is not None or removed_index is not None:
+            raise ValueError("full state input contract is internally inconsistent")
+    else:
+        if removed_name != "gripper_pos" or not isinstance(removed_index, int):
+            raise ValueError("drop_gripper contract must declare the removed gripper_pos index")
+        if removed_index < 0 or removed_index >= len(source_names):
+            raise ValueError("drop_gripper contract removed_index is out of range")
+        expected_names = source_names[:removed_index] + source_names[removed_index + 1 :]
+        if source_names[removed_index] != "gripper_pos" or model_names != expected_names:
+            raise ValueError("drop_gripper state input contract is internally inconsistent")
+    return ActStateInputContract(
+        variant=variant,
+        source_names=tuple(source_names),
+        model_names=tuple(model_names),
+        removed_name=removed_name,
+        removed_index=removed_index,
+    )
 
 
 @dataclass(frozen=True)

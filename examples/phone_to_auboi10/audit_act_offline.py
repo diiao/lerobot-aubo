@@ -24,6 +24,13 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from lerobot.bamboo_sorting.act_input_contract import (
+    STATE_INPUT_CONTRACT_FILENAME,
+    ActStateInputContract,
+    apply_state_input_contract,
+    build_state_input_contract,
+    load_state_input_contract,
+)
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy, ACTTemporalEnsembler
 from lerobot.policies.factory import make_pre_post_processors
@@ -307,6 +314,7 @@ def make_inference_observation(
     input_features: dict[str, Any],
     *,
     state_gripper_index: int | None = None,
+    state_contract: ActStateInputContract | None = None,
 ) -> dict[str, Any]:
     """Build a non-mutating inference batch, optionally masking suction state.
 
@@ -323,6 +331,8 @@ def make_inference_observation(
     if set(raw_observation) != set(input_features):
         missing_inputs = set(input_features).difference(raw_observation)
         raise RuntimeError(f"数据批次缺少模型输入: {sorted(missing_inputs)}")
+    if state_contract is not None:
+        raw_observation = apply_state_input_contract(raw_observation, state_contract)
     if state_gripper_index is not None:
         raw_observation["observation.state"] = raw_observation["observation.state"].clone()
         raw_observation["observation.state"][:, state_gripper_index] = 0.0
@@ -539,8 +549,8 @@ def read_model_feature_shapes(model_path: Path) -> dict[str, Any]:
     config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
     state_shape = list(config["input_features"]["observation.state"]["shape"])
     action_shape = list(config["output_features"]["action"]["shape"])
-    if state_shape != [13]:
-        raise ValueError(f"observation.state 期望 [13]，实际 {state_shape}")
+    if state_shape not in ([12], [13]):
+        raise ValueError(f"observation.state 期望 [12] 或 [13]，实际 {state_shape}")
     if action_shape != [8]:
         raise ValueError(f"action 期望 [8]，实际 {action_shape}")
     return {
@@ -582,6 +592,27 @@ def audit(args: argparse.Namespace) -> Path:
     rot_idx = [state_names.index(name) for name in ("ee.wx", "ee.wy", "ee.wz")]
     j6_state_index = state_names.index("J6")
 
+    contract_path = model_path / STATE_INPUT_CONTRACT_FILENAME
+    if contract_path.is_file():
+        state_contract = load_state_input_contract(model_path)
+        evidence["state_input_contract_sha256"] = sha256_file(contract_path)
+    elif feature_shapes["observation.state"] == [13]:
+        state_contract = build_state_input_contract(metadata.features, "full")
+        evidence["state_input_contract_sha256"] = None
+        evidence["state_input_contract_compatibility"] = "legacy_13d_full"
+    else:
+        raise FileNotFoundError(f"12D checkpoint 缺少必要输入合同: {contract_path}")
+    if state_contract.source_names != tuple(state_names):
+        raise ValueError("checkpoint 输入合同的 source_names 与数据集 observation.state 不一致")
+    if state_contract.model_width != feature_shapes["observation.state"][0]:
+        raise ValueError("checkpoint 输入合同的 model_width 与模型 config 不一致")
+    model_gripper_index = (
+        state_contract.model_names.index("gripper_pos")
+        if "gripper_pos" in state_contract.model_names
+        else None
+    )
+    evidence["state_input_contract"] = state_contract.as_dict()
+
     device = select_device(args.device)
     policy = ACTPolicy.from_pretrained(model_path).to(device).eval()
     policy.config.device = str(device)
@@ -598,15 +629,22 @@ def audit(args: argparse.Namespace) -> Path:
     records: list[dict[str, Any]] = []
     with torch.inference_mode():
         for batch in loader:
-            processed = preprocessor(make_inference_observation(batch, policy.config.input_features))
+            processed = preprocessor(
+                make_inference_observation(
+                    batch,
+                    policy.config.input_features,
+                    state_contract=state_contract,
+                )
+            )
             action_chunks = postprocessor(policy.predict_action_chunk(processed)).cpu().numpy()
             forced_release_chunks = None
-            if state_gripper_index is not None:
+            if model_gripper_index is not None:
                 forced_processed = preprocessor(
                     make_inference_observation(
                         batch,
                         policy.config.input_features,
-                        state_gripper_index=state_gripper_index,
+                        state_gripper_index=model_gripper_index,
+                        state_contract=state_contract,
                     )
                 )
                 forced_release_chunks = postprocessor(policy.predict_action_chunk(forced_processed)).cpu().numpy()
@@ -641,7 +679,10 @@ def audit(args: argparse.Namespace) -> Path:
     gripper_index = action_names.index("ee.gripper_pos")
 
     for episode_index in episodes:
-        group = sorted((row for row in records if row["episode_index"] == episode_index), key=lambda row: row["frame_index"])
+        group = sorted(
+            (row for row in records if row["episode_index"] == episode_index),
+            key=lambda row: row["frame_index"],
+        )
         if not group:
             raise RuntimeError(f"episode {episode_index} 没有读取到任何帧")
         chunks = np.stack([row["chunk"] for row in group])
@@ -672,7 +713,11 @@ def audit(args: argparse.Namespace) -> Path:
         for frame_pos, row in enumerate(group):
             frame_lookup[(episode_index, int(row["frame_index"]))] = {
                 "action_gripper": float(target[frame_pos, gripper_index]),
-                "obs_gripper": float(state[frame_pos, state_gripper_index] if state_gripper_index is not None else 0.0),
+                "obs_gripper": float(
+                    state[frame_pos, state_gripper_index]
+                    if state_gripper_index is not None
+                    else 0.0
+                ),
                 "tcp_xyz": [float(v) for v in observation_tcp[frame_pos]],
             }
 
