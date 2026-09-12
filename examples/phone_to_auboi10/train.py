@@ -23,6 +23,7 @@ from lerobot.bamboo_sorting.act_input_contract import (
     ActStateInputContract,
     EpisodeSplit,
     adapt_features_and_stats,
+    aggregate_selected_episode_stats,
     apply_state_input_contract,
     build_state_input_contract,
     load_episode_split,
@@ -276,7 +277,7 @@ def write_experiment_manifest(
         "episode_split_path": str(episode_split.path) if episode_split is not None else None,
         "episode_split_sha256": sha256_file(episode_split.path) if episode_split is not None else None,
         "state_input_contract": state_contract.as_dict(),
-        "normalization_stats_scope": "full_dataset_metadata",
+        "normalization_stats_scope": "train_episodes",
         "validation_scope": "full" if MAX_VAL_BATCHES is None else f"first_{MAX_VAL_BATCHES}_batches",
         "validation_mode": "eval",
         "seed": SEED,
@@ -350,9 +351,14 @@ def main():
         + ("all held-out frames" if MAX_VAL_BATCHES is None else f"first {MAX_VAL_BATCHES} batches")
     )
 
+    train_stats = aggregate_selected_episode_stats(
+        Path(metadata.root),
+        train_episodes,
+        metadata.features,
+    )
     model_features, model_stats = adapt_features_and_stats(
         metadata.features,
-        metadata.stats,
+        train_stats,
         state_contract,
     )
     features = dataset_to_policy_features(model_features)

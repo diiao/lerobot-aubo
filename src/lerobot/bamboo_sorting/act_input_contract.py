@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
+import pandas as pd
 import torch
+
+from lerobot.datasets.compute_stats import aggregate_stats
 
 STATE_KEY = "observation.state"
 STATE_INPUT_CONTRACT_FILENAME = "act_state_input_contract.json"
@@ -244,6 +247,59 @@ def adapt_features_and_stats(
                 expected_width=contract.source_width,
             )
     return adapted_features, adapted_stats
+
+
+def aggregate_selected_episode_stats(
+    dataset_root: Path,
+    episode_indices: list[int] | tuple[int, ...],
+    features: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, np.ndarray]]:
+    """Aggregate stored per-episode statistics for an exact training split."""
+
+    requested = set(episode_indices)
+    if not requested:
+        raise ValueError("cannot aggregate statistics for an empty episode split")
+    episode_stats: dict[int, dict[str, dict[str, np.ndarray]]] = {}
+    parquet_paths = sorted((dataset_root / "meta" / "episodes").rglob("*.parquet"))
+    if not parquet_paths:
+        raise FileNotFoundError(f"dataset has no episode metadata parquet under {dataset_root}")
+
+    for parquet_path in parquet_paths:
+        frame = pd.read_parquet(parquet_path)
+        for _, row in frame[frame["episode_index"].isin(requested)].iterrows():
+            episode_index = int(row["episode_index"])
+            stats: dict[str, dict[str, np.ndarray]] = {}
+            for key, raw_value in row.items():
+                if not key.startswith("stats/"):
+                    continue
+                parts = key.removeprefix("stats/").split("/")
+                if len(parts) != 2:
+                    continue
+                feature_name, stat_name = parts
+                value = raw_value
+                feature = features.get(feature_name)
+                if (
+                    feature is not None
+                    and feature.get("dtype") in ("image", "video")
+                    and stat_name != "count"
+                ):
+                    array = np.asarray(value)
+                    if array.dtype == object:
+                        flat_values = []
+                        for item in array:
+                            while isinstance(item, np.ndarray):
+                                item = item.flatten()[0]
+                            flat_values.append(item)
+                        value = np.asarray(flat_values, dtype=np.float64).reshape(3, 1, 1)
+                    elif array.shape == (3,):
+                        value = array.reshape(3, 1, 1)
+                stats.setdefault(feature_name, {})[stat_name] = np.asarray(value)
+            episode_stats[episode_index] = stats
+
+    missing = sorted(requested.difference(episode_stats))
+    if missing:
+        raise ValueError(f"episode metadata is missing requested indices: {missing}")
+    return aggregate_stats([episode_stats[index] for index in episode_indices])
 
 
 def load_episode_split(
