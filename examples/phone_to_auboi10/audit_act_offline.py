@@ -3,13 +3,7 @@
 
 This script never connects to cameras, the robot, or the inference TCP server.
 It replays saved dataset observations through a checkpoint and compares the
-predicted actions with the recorded demonstrator actions.  In particular, it
-reports metrics which the scalar validation loss hides:
-
-* per-action-dimension absolute error;
-* suction on/off recall and false positives;
-* predicted TCP height at each recorded suction-on transition;
-* action discontinuities under the deployed 4-step ACT queue behaviour.
+predicted actions with the recorded demonstrator actions.
 
 Run this beside ``train.py`` on the GPU machine.  It only reads the model and
 dataset, then writes a new timestamped report directory.
@@ -19,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -30,13 +25,22 @@ import torch
 from torch.utils.data import DataLoader
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from lerobot.policies.act.modeling_act import ACTPolicy
+from lerobot.policies.act.modeling_act import ACTPolicy, ACTTemporalEnsembler
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.constants import ACTION
 
 
 DEFAULT_DATASET_PATH = os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")
 DEFAULT_MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
+SUCTION_THRESHOLD = 60.0
+QUEUE_N_ACTION_STEPS = 4
+TEMPORAL_ENSEMBLE_COEFF = 0.01
+TRANSITION_WINDOW = 10
+CONTACT_OFFSETS = (-10, -5, 0, 1, 5, 10)
+ROTATION_THRESHOLDS_DEG = (5.0, 10.0, 20.0, 30.0, 60.0, 90.0)
+XYZ_THRESHOLDS_M = (0.001, 0.005, 0.008, 0.01, 0.03)
+J6_THRESHOLDS_RAD = (0.01, 0.03, 0.05, 0.1, 0.2)
+CAMERA_KEYS = ("observation.images.handeye", "observation.images.fixed")
 
 
 def parse_episode_list(value: str | None, total_episodes: int) -> list[int]:
@@ -64,6 +68,17 @@ def select_device(value: str | None) -> torch.device:
     return device
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def deployed_queue_actions(chunks: np.ndarray, n_action_steps: int) -> np.ndarray:
     """Reproduce ACT's default queue: replan, then execute the first N actions.
 
@@ -89,7 +104,20 @@ def deployed_queue_actions(chunks: np.ndarray, n_action_steps: int) -> np.ndarra
     return executed
 
 
-def binary_metrics(predicted: np.ndarray, target: np.ndarray, threshold: float = 60.0) -> dict[str, Any]:
+def deployed_temporal_ensemble_actions(chunks: np.ndarray, coeff: float) -> np.ndarray:
+    """Replay ACT temporal ensembling with the real ACTTemporalEnsembler."""
+    if chunks.ndim != 3:
+        raise ValueError(f"chunks 必须为 (frames, chunk, action_dim)，实际为 {chunks.shape}")
+    frames, chunk_size, action_dim = chunks.shape
+    ensembler = ACTTemporalEnsembler(coeff, chunk_size)
+    executed = np.empty((frames, action_dim), dtype=np.float32)
+    for step in range(frames):
+        action = ensembler.update(torch.from_numpy(np.ascontiguousarray(chunks[step : step + 1])))
+        executed[step] = action.squeeze(0).detach().cpu().numpy()
+    return executed
+
+
+def binary_metrics(predicted: np.ndarray, target: np.ndarray, threshold: float = SUCTION_THRESHOLD) -> dict[str, Any]:
     """Metrics for the physical suction state, whose labels are 0 or 100."""
     pred_on = predicted > threshold
     target_on = target > threshold
@@ -128,60 +156,129 @@ def action_error_metrics(predicted: np.ndarray, target: np.ndarray, names: list[
     }
 
 
-def first_suction_transition(target_gripper: np.ndarray) -> int | None:
-    """Find the first release-to-suction transition in one episode."""
-    on = target_gripper > 60.0
-    transitions = np.flatnonzero(on & np.concatenate(([True], ~on[:-1])))
-    return int(transitions[0]) if len(transitions) else None
+def find_threshold_transitions(values: np.ndarray, threshold: float = SUCTION_THRESHOLD) -> list[dict[str, Any]]:
+    """Return every 0→100 and 100→0 crossing. Frame 0 is never a transition."""
+    on = np.asarray(values) > threshold
+    events: list[dict[str, Any]] = []
+    on_ordinal = 0
+    off_ordinal = 0
+    for frame in range(1, len(on)):
+        if on[frame] and not on[frame - 1]:
+            events.append({"kind": "on", "frame": int(frame), "ordinal": on_ordinal})
+            on_ordinal += 1
+        elif on[frame - 1] and not on[frame]:
+            events.append({"kind": "off", "frame": int(frame), "ordinal": off_ordinal})
+            off_ordinal += 1
+    return events
 
 
-def episode_metrics(
-    episode_index: int,
-    frame_index: np.ndarray,
+def _desired_on(kind: str) -> bool:
+    if kind not in {"on", "off"}:
+        raise ValueError(f"未知切换类型: {kind}")
+    return kind == "on"
+
+
+def transition_timing(
     predicted: np.ndarray,
-    target: np.ndarray,
-    action_names: list[str],
-    fps: int,
+    event_frame: int,
+    kind: str,
+    predicted_events: list[dict[str, Any]],
+    ordinal: int,
+    threshold: float = SUCTION_THRESHOLD,
+    window: int = TRANSITION_WINDOW,
 ) -> dict[str, Any]:
-    xyz_indices = [action_names.index(name) for name in ("ee.x", "ee.y", "ee.z")]
-    gripper_index = action_names.index("ee.gripper_pos")
-    deltas = np.abs(np.diff(predicted[:, xyz_indices], axis=0))
-    transition = first_suction_transition(target[:, gripper_index])
-    predicted_on = np.flatnonzero(predicted[:, gripper_index] > 60.0)
-
-    record: dict[str, Any] = {
-        "episode_index": episode_index,
-        "frames": int(len(predicted)),
-        "duration_s": float(len(predicted) / fps),
-        "predicted_suction_on_frames": int((predicted[:, gripper_index] > 60.0).sum()),
-        "first_predicted_suction_on_s": float(predicted_on[0] / fps) if len(predicted_on) else None,
-        "max_xyz_step_m": float(deltas.max()) if len(deltas) else 0.0,
-        "xyz_steps_over_1cm": int((deltas > 0.01).any(axis=1).sum()) if len(deltas) else 0,
-        "xyz_steps_over_3cm": int((deltas > 0.03).any(axis=1).sum()) if len(deltas) else 0,
+    """Compare one target switch against the matching predicted switch."""
+    pred_on = np.asarray(predicted) > threshold
+    want_on = _desired_on(kind)
+    n = len(pred_on)
+    start = max(0, event_frame - window)
+    end_before = event_frame
+    end_after = min(n, event_frame + window + 1)
+    pre = pred_on[start:end_before]
+    post = pred_on[event_frame:end_after]
+    matches = [item for item in predicted_events if item["kind"] == kind]
+    predicted_frame = int(matches[ordinal]["frame"]) if ordinal < len(matches) else None
+    pre_false_trigger = bool(np.any(pre) if want_on else np.any(~pre)) if len(pre) else False
+    if want_on:
+        post_still_missed = bool(len(post) == 0 or not np.any(post))
+    else:
+        post_still_missed = bool(len(post) == 0 or not np.any(~post))
+    return {
+        "predicted_cross_frame": predicted_frame,
+        "timing_error_frames": None if predicted_frame is None else int(predicted_frame - event_frame),
+        "pre_window_false_trigger": pre_false_trigger,
+        "post_window_still_missed": post_still_missed,
     }
-    if transition is None:
-        record.update(
-            {
-                "first_true_suction_on_s": None,
-                "target_pickup_z_m": None,
-                "predicted_pickup_z_m": None,
-                "pickup_z_error_m": None,
-                "predicted_gripper_at_true_pickup": None,
-            }
-        )
-        return record
 
-    z_index = xyz_indices[2]
-    record.update(
-        {
-            "first_true_suction_on_s": float(frame_index[transition] / fps),
-            "target_pickup_z_m": float(target[transition, z_index]),
-            "predicted_pickup_z_m": float(predicted[transition, z_index]),
-            "pickup_z_error_m": float(predicted[transition, z_index] - target[transition, z_index]),
-            "predicted_gripper_at_true_pickup": float(predicted[transition, gripper_index]),
-        }
-    )
-    return record
+
+def rotvec_to_matrix(rotvecs: np.ndarray) -> np.ndarray:
+    """Rodrigues formula, batched over leading dimensions. Shape (..., 3) -> (..., 3, 3)."""
+    rv = np.asarray(rotvecs, dtype=np.float64)
+    original = rv.shape[:-1]
+    flat = rv.reshape(-1, 3)
+    theta = np.linalg.norm(flat, axis=1)
+    matrices = np.zeros((flat.shape[0], 3, 3), dtype=np.float64)
+    small = theta < 1e-12
+    matrices[small] = np.eye(3)
+    large = ~small
+    if np.any(large):
+        th = theta[large][:, None]
+        axis = flat[large] / th
+        kx, ky, kz = axis[:, 0], axis[:, 1], axis[:, 2]
+        zeros = np.zeros_like(kx)
+        k = np.stack(
+            [zeros, -kz, ky, kz, zeros, -kx, -ky, kx, zeros],
+            axis=1,
+        ).reshape(-1, 3, 3)
+        eye = np.eye(3)[None, :, :]
+        sth = np.sin(theta[large])[:, None, None]
+        cth = np.cos(theta[large])[:, None, None]
+        matrices[large] = eye + sth * k + (1.0 - cth) * (k @ k)
+    return matrices.reshape(*original, 3, 3)
+
+
+def geodesic_angle_deg(rotvecs_a: np.ndarray, rotvecs_b: np.ndarray) -> np.ndarray:
+    """Relative rotation angle in degrees; +π and −π about the same axis are equivalent."""
+    ra = rotvec_to_matrix(rotvecs_a)
+    rb = rotvec_to_matrix(rotvecs_b)
+    relative = np.matmul(np.swapaxes(ra, -1, -2), rb)
+    cosine = (np.trace(relative, axis1=-2, axis2=-1) - 1.0) * 0.5
+    cosine = np.clip(cosine, -1.0, 1.0)
+    return np.degrees(np.arccos(cosine))
+
+
+def distribution_report(values: np.ndarray, thresholds: tuple[float, ...] | list[float]) -> dict[str, Any]:
+    data = np.asarray(values, dtype=np.float64).reshape(-1)
+    if data.size == 0:
+        return {"count": 0, "mean": None, "p50": None, "p95": None, "p99": None, "max": None, "exceed": {}}
+    exceed = {}
+    for threshold in thresholds:
+        count = int(np.sum(data > threshold))
+        exceed[str(threshold)] = {"count": count, "ratio": float(count / data.size)}
+    return {
+        "count": int(data.size),
+        "mean": float(data.mean()),
+        "p50": float(np.quantile(data, 0.50)),
+        "p95": float(np.quantile(data, 0.95)),
+        "p99": float(np.quantile(data, 0.99)),
+        "max": float(data.max()),
+        "exceed": exceed,
+    }
+
+
+def summarize_transition_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {"count": 0}
+    errors = [row["timing_error_frames"] for row in rows if row["timing_error_frames"] is not None]
+    return {
+        "count": len(rows),
+        "matched_crossings": len(errors),
+        "unmatched_crossings": sum(1 for row in rows if row["predicted_cross_frame"] is None),
+        "mean_timing_error_frames": float(np.mean(errors)) if errors else None,
+        "mean_abs_timing_error_frames": float(np.mean(np.abs(errors))) if errors else None,
+        "pre_window_false_trigger_count": int(sum(bool(row["pre_window_false_trigger"]) for row in rows)),
+        "post_window_still_missed_count": int(sum(bool(row["post_window_still_missed"]) for row in rows)),
+    }
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -227,10 +324,232 @@ def make_inference_observation(
         missing_inputs = set(input_features).difference(raw_observation)
         raise RuntimeError(f"数据批次缺少模型输入: {sorted(missing_inputs)}")
     if state_gripper_index is not None:
+        raw_observation["observation.state"] = raw_observation["observation.state"].clone()
         raw_observation["observation.state"][:, state_gripper_index] = 0.0
     raw_observation["task"] = batch["task"][0] if "task" in batch else ""
     raw_observation["robot_type"] = "aubo_i10"
     return raw_observation
+
+
+def load_episode_video_meta(dataset_path: Path) -> dict[int, dict[str, Any]]:
+    import pyarrow.parquet as pq
+
+    files = sorted((dataset_path / "meta" / "episodes").rglob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"未找到 episode parquet: {dataset_path / 'meta' / 'episodes'}")
+    rows: dict[int, dict[str, Any]] = {}
+    for file in files:
+        table = pq.read_table(file)
+        for record in table.to_pylist():
+            rows[int(record["episode_index"])] = record
+    return rows
+
+
+def video_file_for(dataset_path: Path, record: dict[str, Any], camera_key: str) -> Path:
+    chunk = int(record[f"videos/{camera_key}/chunk_index"])
+    file_index = int(record[f"videos/{camera_key}/file_index"])
+    return dataset_path / "videos" / camera_key / f"chunk-{chunk:03d}" / f"file-{file_index:03d}.mp4"
+
+
+def read_video_frame_bgr(path: Path, timestamp_s: float) -> np.ndarray:
+    import av
+
+    container = av.open(str(path))
+    try:
+        stream = container.streams.video[0]
+        seek_s = max(0.0, timestamp_s - 0.08)
+        container.seek(int(seek_s * av.time_base))
+        best = None
+        best_dt = 1e9
+        for frame in container.decode(video=0):
+            time_s = float(frame.time) if frame.time is not None else 0.0
+            delta = abs(time_s - timestamp_s)
+            if delta < best_dt:
+                best_dt = delta
+                best = frame
+            if time_s >= timestamp_s + (1.0 / max(float(stream.average_rate or 25), 1.0)):
+                break
+        if best is None:
+            raise RuntimeError(f"无法从 {path} 读取 timestamp={timestamp_s:.4f}s 的帧")
+        return best.to_ndarray(format="bgr24")
+    finally:
+        container.close()
+
+
+def _annotate_panel(image: np.ndarray, lines: list[str]) -> np.ndarray:
+    import cv2
+
+    canvas = image.copy()
+    y = 18
+    for line in lines:
+        cv2.putText(canvas, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(canvas, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        y += 18
+    return canvas
+
+
+def render_contact_sheet(panels: list[list[np.ndarray | None]], cell_h: int = 240) -> np.ndarray:
+    import cv2
+
+    rows = []
+    width = None
+    for row in panels:
+        resized = []
+        for cell in row:
+            if cell is None:
+                placeholder = np.zeros((cell_h, int(cell_h * 640 / 480), 3), dtype=np.uint8)
+                resized.append(placeholder)
+            else:
+                scale = cell_h / cell.shape[0]
+                resized.append(cv2.resize(cell, (int(cell.shape[1] * scale), cell_h)))
+            width = resized[-1].shape[1]
+        rows.append(np.concatenate(resized, axis=1))
+    max_w = max(row.shape[1] for row in rows)
+    padded = []
+    for row in rows:
+        if row.shape[1] < max_w:
+            pad = np.zeros((row.shape[0], max_w - row.shape[1], 3), dtype=np.uint8)
+            row = np.concatenate([row, pad], axis=1)
+        padded.append(row)
+    return np.concatenate(padded, axis=0)
+
+
+def write_suction_contact_sheets(
+    report_dir: Path,
+    dataset_path: Path,
+    fps: int,
+    events: list[dict[str, Any]],
+    frame_lookup: dict[tuple[int, int], dict[str, Any]],
+) -> list[str]:
+    import cv2
+
+    episode_meta = load_episode_video_meta(dataset_path)
+    out_dir = report_dir / "contact_sheets"
+    out_dir.mkdir(parents=True, exist_ok=False)
+    written: list[str] = []
+    for event in events:
+        if event["kind"] != "on":
+            continue
+        episode = int(event["episode_index"])
+        target_frame = int(event["target_frame"])
+        meta = episode_meta[episode]
+        panels: list[list[np.ndarray | None]] = []
+        for camera_key in CAMERA_KEYS:
+            video_path = video_file_for(dataset_path, meta, camera_key)
+            from_ts = float(meta[f"videos/{camera_key}/from_timestamp"])
+            row: list[np.ndarray | None] = []
+            for offset in CONTACT_OFFSETS:
+                frame = target_frame + offset
+                info = frame_lookup.get((episode, frame))
+                if info is None:
+                    row.append(None)
+                    continue
+                timestamp = from_ts + frame / fps
+                image = read_video_frame_bgr(video_path, timestamp)
+                tcp = info["tcp_xyz"]
+                lines = [
+                    f"{camera_key.split('.')[-1]} t{offset:+d}",
+                    f"ep={episode} frame={frame}",
+                    f"act.g={info['action_gripper']:.1f} obs.g={info['obs_gripper']:.1f}",
+                    f"xyz=({tcp[0]:.3f},{tcp[1]:.3f},{tcp[2]:.3f})",
+                ]
+                row.append(_annotate_panel(image, lines))
+            panels.append(row)
+        sheet = render_contact_sheet(panels)
+        name = f"on_ep{episode:02d}_frame{target_frame:04d}.jpg"
+        dest = out_dir / name
+        if not cv2.imwrite(str(dest), sheet):
+            raise RuntimeError(f"写入 contact sheet 失败: {dest}")
+        written.append(str(dest.relative_to(report_dir)))
+    return written
+
+
+def build_transition_row(
+    episode_index: int,
+    event: dict[str, Any],
+    deployment: str,
+    input_mode: str,
+    predicted: np.ndarray,
+    target: np.ndarray,
+    observation_tcp: np.ndarray,
+    action_names: list[str],
+    predicted_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    z_index = action_names.index("ee.z")
+    gripper_index = action_names.index("ee.gripper_pos")
+    frame = event["frame"]
+    timing = transition_timing(predicted[:, gripper_index], frame, event["kind"], predicted_events, event["ordinal"])
+    return {
+        "episode_index": episode_index,
+        "kind": event["kind"],
+        "ordinal": event["ordinal"],
+        "deployment": deployment,
+        "input_mode": input_mode,
+        "target_frame": frame,
+        "target_time_s": None,
+        "predicted_cross_frame": timing["predicted_cross_frame"],
+        "timing_error_frames": timing["timing_error_frames"],
+        "pre_window_false_trigger": timing["pre_window_false_trigger"],
+        "post_window_still_missed": timing["post_window_still_missed"],
+        "target_gripper": float(target[frame, gripper_index]),
+        "predicted_gripper": float(predicted[frame, gripper_index]),
+        "target_z_m": float(target[frame, z_index]),
+        "predicted_z_m": float(predicted[frame, z_index]),
+        "observation_z_m": float(observation_tcp[frame, 2]),
+    }
+
+
+def rotation_and_state_metrics(
+    predicted: np.ndarray,
+    target: np.ndarray,
+    observation_tcp: np.ndarray,
+    observation_rot: np.ndarray,
+    observation_j6_rad: np.ndarray,
+    action_names: list[str],
+) -> dict[str, Any]:
+    xyz_idx = [action_names.index(name) for name in ("ee.x", "ee.y", "ee.z")]
+    j6_idx = action_names.index("ee.j6_target")
+    rot_idx = [action_names.index(name) for name in ("ee.wx", "ee.wy", "ee.wz")]
+    return {
+        "target_xyz_vs_observation_l2_m": distribution_report(
+            np.linalg.norm(target[:, xyz_idx] - observation_tcp, axis=1), XYZ_THRESHOLDS_M
+        ),
+        "predicted_xyz_vs_observation_l2_m": distribution_report(
+            np.linalg.norm(predicted[:, xyz_idx] - observation_tcp, axis=1), XYZ_THRESHOLDS_M
+        ),
+        "target_j6_vs_observation_abs_rad": distribution_report(
+            np.abs(target[:, j6_idx] - observation_j6_rad), J6_THRESHOLDS_RAD
+        ),
+        "predicted_j6_vs_observation_abs_rad": distribution_report(
+            np.abs(predicted[:, j6_idx] - observation_j6_rad), J6_THRESHOLDS_RAD
+        ),
+        "geodesic_predicted_vs_target_deg": distribution_report(
+            geodesic_angle_deg(predicted[:, rot_idx], target[:, rot_idx]), ROTATION_THRESHOLDS_DEG
+        ),
+        "geodesic_target_vs_observation_deg": distribution_report(
+            geodesic_angle_deg(target[:, rot_idx], observation_rot), ROTATION_THRESHOLDS_DEG
+        ),
+        "geodesic_predicted_vs_observation_deg": distribution_report(
+            geodesic_angle_deg(predicted[:, rot_idx], observation_rot), ROTATION_THRESHOLDS_DEG
+        ),
+    }
+
+
+def read_model_feature_shapes(model_path: Path) -> dict[str, Any]:
+    config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
+    state_shape = list(config["input_features"]["observation.state"]["shape"])
+    action_shape = list(config["output_features"]["action"]["shape"])
+    if state_shape != [13]:
+        raise ValueError(f"observation.state 期望 [13]，实际 {state_shape}")
+    if action_shape != [8]:
+        raise ValueError(f"action 期望 [8]，实际 {action_shape}")
+    return {
+        "observation.state": state_shape,
+        "action": action_shape,
+        "n_action_steps": config.get("n_action_steps"),
+        "chunk_size": config.get("chunk_size"),
+        "temporal_ensemble_coeff": config.get("temporal_ensemble_coeff"),
+    }
 
 
 def audit(args: argparse.Namespace) -> Path:
@@ -239,15 +558,29 @@ def audit(args: argparse.Namespace) -> Path:
     if not model_path.is_dir():
         raise FileNotFoundError(f"未找到模型目录: {model_path}")
 
+    feature_shapes = read_model_feature_shapes(model_path)
+    evidence = {
+        "model_config_sha256": sha256_file(model_path / "config.json"),
+        "model_safetensors_sha256": sha256_file(model_path / "model.safetensors"),
+        "dataset_info_sha256": sha256_file(dataset_path / "meta" / "info.json"),
+        "dataset_stats_sha256": sha256_file(dataset_path / "meta" / "stats.json"),
+        "feature_shapes": feature_shapes,
+    }
+
     metadata = LeRobotDatasetMetadata(dataset_path)
     episodes = parse_episode_list(args.episodes, metadata.total_episodes)
     action_names = list(metadata.features[ACTION]["names"])
-    required = {"ee.x", "ee.y", "ee.z", "ee.gripper_pos"}
+    required = {"ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos", "ee.j6_target"}
     missing = required.difference(action_names)
     if missing:
         raise ValueError(f"action features 缺少必要字段: {sorted(missing)}")
     state_names = list(metadata.features["observation.state"]["names"])
+    if len(state_names) != 13:
+        raise ValueError(f"observation.state 维数不是 13: {state_names}")
     state_gripper_index = state_names.index("gripper_pos") if "gripper_pos" in state_names else None
+    tcp_idx = [state_names.index(name) for name in ("ee.x", "ee.y", "ee.z")]
+    rot_idx = [state_names.index(name) for name in ("ee.wx", "ee.wy", "ee.wz")]
+    j6_state_index = state_names.index("J6")
 
     device = select_device(args.device)
     policy = ACTPolicy.from_pretrained(model_path).to(device).eval()
@@ -265,7 +598,6 @@ def audit(args: argparse.Namespace) -> Path:
     records: list[dict[str, Any]] = []
     with torch.inference_mode():
         for batch in loader:
-            # Normal replay mirrors inference_server.py: only current observation enters ACT.
             processed = preprocessor(make_inference_observation(batch, policy.config.input_features))
             action_chunks = postprocessor(policy.predict_action_chunk(processed)).cpu().numpy()
             forced_release_chunks = None
@@ -279,6 +611,7 @@ def audit(args: argparse.Namespace) -> Path:
                 )
                 forced_release_chunks = postprocessor(policy.predict_action_chunk(forced_processed)).cpu().numpy()
             targets = batch[ACTION][:, 0].cpu().numpy()
+            states = batch["observation.state"].cpu().numpy()
 
             for item in range(len(targets)):
                 records.append(
@@ -287,6 +620,7 @@ def audit(args: argparse.Namespace) -> Path:
                         "frame_index": int(batch["frame_index"][item]),
                         "dataset_index": int(batch["index"][item]),
                         "target": targets[item].astype(np.float32),
+                        "state": states[item].astype(np.float32),
                         "chunk": action_chunks[item].astype(np.float32),
                         "forced_release_chunk": (
                             forced_release_chunks[item].astype(np.float32)
@@ -300,11 +634,11 @@ def audit(args: argparse.Namespace) -> Path:
         raise RuntimeError("没有可审核的帧")
 
     report_dir = make_report_dir(args.report_dir)
-    frame_rows: list[dict[str, Any]] = []
-    episode_rows: list[dict[str, Any]] = []
-    all_predicted: list[np.ndarray] = []
-    all_forced_release_predicted: list[np.ndarray] = []
-    all_targets: list[np.ndarray] = []
+    transition_rows: list[dict[str, Any]] = []
+    stored: dict[str, dict[str, list[np.ndarray]]] = {}
+    all_target_events: list[dict[str, Any]] = []
+    frame_lookup: dict[tuple[int, int], dict[str, Any]] = {}
+    gripper_index = action_names.index("ee.gripper_pos")
 
     for episode_index in episodes:
         group = sorted((row for row in records if row["episode_index"] == episode_index), key=lambda row: row["frame_index"])
@@ -312,81 +646,156 @@ def audit(args: argparse.Namespace) -> Path:
             raise RuntimeError(f"episode {episode_index} 没有读取到任何帧")
         chunks = np.stack([row["chunk"] for row in group])
         target = np.stack([row["target"] for row in group])
-        predicted = deployed_queue_actions(chunks, policy.config.n_action_steps)
-        forced_release_predicted = None
+        state = np.stack([row["state"] for row in group])
+        observation_tcp = state[:, tcp_idx]
+        observation_rot = state[:, rot_idx]
+        observation_j6_rad = np.deg2rad(state[:, j6_state_index])
+        forced_chunks = None
         if group[0]["forced_release_chunk"] is not None:
-            forced_release_chunks = np.stack([row["forced_release_chunk"] for row in group])
-            forced_release_predicted = deployed_queue_actions(forced_release_chunks, policy.config.n_action_steps)
-        frames = np.asarray([row["frame_index"] for row in group])
-        row = episode_metrics(episode_index, frames, predicted, target, action_names, int(metadata.fps))
-        if forced_release_predicted is not None:
-            forced_on = np.flatnonzero(forced_release_predicted[:, action_names.index("ee.gripper_pos")] > 60.0)
-            row["forced_release_predicted_suction_on_frames"] = int(len(forced_on))
-            row["forced_release_first_predicted_suction_on_s"] = (
-                float(forced_on[0] / metadata.fps) if len(forced_on) else None
-            )
-            all_forced_release_predicted.append(forced_release_predicted)
-        episode_rows.append(row)
-        all_predicted.append(predicted)
-        all_targets.append(target)
-
-        for frame_pos, (row, pred, truth) in enumerate(zip(group, predicted, target, strict=True)):
-            output: dict[str, Any] = {
-                "episode_index": row["episode_index"],
-                "frame_index": row["frame_index"],
-                "dataset_index": row["dataset_index"],
+            forced_chunks = np.stack([row["forced_release_chunk"] for row in group])
+        predicted_by_mode = {
+            "normal": {
+                "queue": deployed_queue_actions(chunks, QUEUE_N_ACTION_STEPS),
+                "temporal_ensemble": deployed_temporal_ensemble_actions(chunks, TEMPORAL_ENSEMBLE_COEFF),
             }
-            for dim, name in enumerate(action_names):
-                output[f"target.{name}"] = float(truth[dim])
-                output[f"predicted.{name}"] = float(pred[dim])
-                if forced_release_predicted is not None:
-                    output[f"forced_release_predicted.{name}"] = float(forced_release_predicted[frame_pos, dim])
-            frame_rows.append(output)
+        }
+        if forced_chunks is not None:
+            predicted_by_mode["forced_zero"] = {
+                "queue": deployed_queue_actions(forced_chunks, QUEUE_N_ACTION_STEPS),
+                "temporal_ensemble": deployed_temporal_ensemble_actions(forced_chunks, TEMPORAL_ENSEMBLE_COEFF),
+            }
 
-    predicted = np.concatenate(all_predicted)
-    target = np.concatenate(all_targets)
-    gripper_index = action_names.index("ee.gripper_pos")
-    z_errors = [row["pickup_z_error_m"] for row in episode_rows if row["pickup_z_error_m"] is not None]
+        target_events = find_threshold_transitions(target[:, gripper_index])
+        for event in target_events:
+            all_target_events.append({"episode_index": episode_index, "target_frame": event["frame"], **event})
+
+        for frame_pos, row in enumerate(group):
+            frame_lookup[(episode_index, int(row["frame_index"]))] = {
+                "action_gripper": float(target[frame_pos, gripper_index]),
+                "obs_gripper": float(state[frame_pos, state_gripper_index] if state_gripper_index is not None else 0.0),
+                "tcp_xyz": [float(v) for v in observation_tcp[frame_pos]],
+            }
+
+        for input_mode, deployed in predicted_by_mode.items():
+            for deployment, predicted in deployed.items():
+                pred_events = find_threshold_transitions(predicted[:, gripper_index])
+                for event in target_events:
+                    row = build_transition_row(
+                        episode_index,
+                        event,
+                        deployment,
+                        input_mode,
+                        predicted,
+                        target,
+                        observation_tcp,
+                        action_names,
+                        pred_events,
+                    )
+                    row["target_time_s"] = float(event["frame"] / metadata.fps)
+                    if row["predicted_cross_frame"] is not None:
+                        row["predicted_cross_time_s"] = float(row["predicted_cross_frame"] / metadata.fps)
+                    else:
+                        row["predicted_cross_time_s"] = None
+                    transition_rows.append(row)
+                key = f"{deployment}:{input_mode}"
+                slot = stored.setdefault(key, {"predicted": [], "target": [], "tcp": [], "rot": [], "j6": []})
+                slot["predicted"].append(predicted)
+                slot["target"].append(target)
+                slot["tcp"].append(observation_tcp)
+                slot["rot"].append(observation_rot)
+                slot["j6"].append(observation_j6_rad)
+
+    on_events = [event for event in all_target_events if event["kind"] == "on"]
+    off_events = [event for event in all_target_events if event["kind"] == "off"]
+    comparison_out: dict[str, Any] = {}
+    for key, slot in stored.items():
+        deployment, input_mode = key.split(":", 1)
+        predicted = np.concatenate(slot["predicted"])
+        target = np.concatenate(slot["target"])
+        comparison_out[key] = {
+            "deployment": deployment,
+            "input_mode": input_mode,
+            "frames": int(len(target)),
+            "suction": binary_metrics(predicted[:, gripper_index], target[:, gripper_index]),
+            "per_action_error": action_error_metrics(predicted, target, action_names),
+            "command_vs_state": rotation_and_state_metrics(
+                predicted,
+                target,
+                np.concatenate(slot["tcp"]),
+                np.concatenate(slot["rot"]),
+                np.concatenate(slot["j6"]),
+                action_names,
+            ),
+            "transitions": {
+                "on": summarize_transition_rows(
+                    [
+                        row
+                        for row in transition_rows
+                        if row["deployment"] == deployment and row["input_mode"] == input_mode and row["kind"] == "on"
+                    ]
+                ),
+                "off": summarize_transition_rows(
+                    [
+                        row
+                        for row in transition_rows
+                        if row["deployment"] == deployment and row["input_mode"] == input_mode and row["kind"] == "off"
+                    ]
+                ),
+            },
+        }
+
+    contact_files = write_suction_contact_sheets(
+        report_dir,
+        dataset_path,
+        int(metadata.fps),
+        all_target_events,
+        frame_lookup,
+    )
+
     report = {
-        "purpose": "Offline pure-ACT acceptance audit; no robot or camera was connected.",
+        "purpose": "Offline pure-ACT causal audit V2; no robot or camera was connected.",
         "model_path": str(model_path),
         "dataset_path": str(dataset_path),
         "device": str(device),
         "fps": int(metadata.fps),
         "episodes": episodes,
-        "frames": int(len(target)),
-        "deployed_execution": {
-            "chunk_size": int(policy.config.chunk_size),
-            "n_action_steps": int(policy.config.n_action_steps),
-            "description": "Replan every n_action_steps and execute the first actions from each ACT chunk.",
+        "frames": int(sum(1 for _ in records)),
+        "evidence": evidence,
+        "deployments": {
+            "queue": {
+                "chunk_size": int(policy.config.chunk_size),
+                "n_action_steps": QUEUE_N_ACTION_STEPS,
+                "description": "Replan every n_action_steps and execute the first actions from each ACT chunk.",
+            },
+            "temporal_ensemble": {
+                "chunk_size": int(policy.config.chunk_size),
+                "n_action_steps": 1,
+                "coeff": TEMPORAL_ENSEMBLE_COEFF,
+                "implementation": "lerobot.policies.act.modeling_act.ACTTemporalEnsembler",
+            },
         },
-        "per_action_error": action_error_metrics(predicted, target, action_names),
-        "suction": binary_metrics(predicted[:, gripper_index], target[:, gripper_index]),
-        "forced_release_state_counterfactual": (
-            {
-                "description": (
-                    "Every input observation.state.gripper_pos was forced to 0 before inference. "
-                    "This tests whether the policy proactively commands the first suction event."
-                ),
-                "suction": binary_metrics(
-                    np.concatenate(all_forced_release_predicted)[:, gripper_index], target[:, gripper_index]
-                ),
-            }
-            if all_forced_release_predicted
-            else {"available": False, "reason": "observation.state has no gripper_pos"}
-        ),
-        "pickup_height": {
-            "episodes_with_true_suction_transition": len(z_errors),
-            "mean_signed_error_m": float(np.mean(z_errors)) if z_errors else None,
-            "mean_abs_error_m": float(np.mean(np.abs(z_errors))) if z_errors else None,
-            "max_abs_error_m": float(np.max(np.abs(z_errors))) if z_errors else None,
+        "suction_events": {
+            "expected_on": 26,
+            "expected_off": 26,
+            "found_on": len(on_events),
+            "found_off": len(off_events),
+            "all_on_found": len(on_events) == 26,
+            "all_off_found": len(off_events) == 26,
+            "on_events": [
+                {"episode_index": e["episode_index"], "frame": e["target_frame"], "ordinal": e["ordinal"]}
+                for e in on_events
+            ],
+            "off_events": [
+                {"episode_index": e["episode_index"], "frame": e["target_frame"], "ordinal": e["ordinal"]}
+                for e in off_events
+            ],
         },
-        "episode_summary_file": "per_episode.csv",
-        "frame_predictions_file": "per_frame_predictions.csv",
+        "comparison": comparison_out,
+        "contact_sheets": contact_files,
+        "transition_file": "transitions.csv",
     }
     (report_dir / "summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_csv(report_dir / "per_episode.csv", episode_rows)
-    write_csv(report_dir / "per_frame_predictions.csv", frame_rows)
+    write_csv(report_dir / "transitions.csv", transition_rows)
     return report_dir
 
 
