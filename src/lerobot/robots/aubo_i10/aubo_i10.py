@@ -155,7 +155,10 @@ class AuboI10Robot(Robot):
 
         try:
             motion = self.robot_interface.getMotionControl()
-            motion.setServoMode(True)
+            result = motion.setServoMode(True)
+            if result is not None and int(result) != 0:
+                logging.error("开启伺服模式命令失败，SDK 返回码: %s", result)
+                return False
 
             # 等待伺服模式开启，最多重试5次
             retry_count = 0
@@ -188,7 +191,10 @@ class AuboI10Robot(Robot):
 
         try:
             motion = self.robot_interface.getMotionControl()
-            motion.setServoMode(False)
+            result = motion.setServoMode(False)
+            if result is not None and int(result) != 0:
+                logging.error("关闭伺服模式命令失败，SDK 返回码: %s", result)
+                return False
 
             # 等待伺服模式关闭，最多重试5次
             retry_count = 0
@@ -272,12 +278,15 @@ class AuboI10Robot(Robot):
         使用伺服模式进行实时控制
         """
         if not self.is_connected:
-            logging.error("机器人未连接，无法发送动作")
-            return action
+            raise ConnectionError("机器人未连接，无法发送动作")
 
         try:
             motion = self.robot_interface.getMotionControl()
-            motion.setSpeedFraction(0.25)
+            speed_result = motion.setSpeedFraction(0.25)
+            if speed_result is not None and int(speed_result) != 0:
+                raise RuntimeError(
+                    f"设置速度比例失败，SDK 返回码: {speed_result}，动作未发送"
+                )
 
             # 检查伺服模式状态：同时验证本地标志和机器人实际状态
             # 机器人伺服模式可能因超时自动失效（等待按键期间无命令发送），
@@ -285,8 +294,7 @@ class AuboI10Robot(Robot):
             if not self.is_servo_mode_enabled or not motion.isServoModeEnabled():
                 self.is_servo_mode_enabled = False  # 与机器人实际状态同步
                 if not self.enable_servo_mode():
-                    logging.error("无法开启伺服模式，退出")
-                    return action
+                    raise RuntimeError("无法开启伺服模式，动作未发送")
 
             # 检测控制模式：末端位姿控制优先
             ee_keys = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"]
@@ -313,8 +321,9 @@ class AuboI10Robot(Robot):
                 # 关节角度控制模式（关节伺服运动）
                 self._send_joint_action_servo(action, motion)
             else:
-                logging.warning(f"action 中缺少必要的控制参数，action keys: {list(action.keys())}")
-                return action
+                raise ValueError(
+                    f"action 中缺少必要的控制参数，action keys: {list(action.keys())}"
+                )
 
             # 处理夹爪（兼容 SO101 的 gripper.pos / 关节模式的 gripper_pos / EE 的 ee.gripper_pos）
             gripper_pos = action.get(
@@ -399,6 +408,7 @@ class AuboI10Robot(Robot):
         # - blend_radius: 混合半径
         # - max_radius: 最大半径
         retry_count = 0
+        ret = 2
         while retry_count < self.servo_max_queue_retry:
             ret = motion.servoJoint(
                 aubo_joints_rad,
@@ -416,6 +426,11 @@ class AuboI10Robot(Robot):
                 time.sleep(0.005)
             else:
                 break
+
+        if ret == 2:
+            raise RuntimeError(f"关节伺服队列持续满载，已重试 {retry_count} 次")
+        if ret != 0:
+            raise RuntimeError(f"关节伺服返回非 0 码 ret={ret}")
 
         logging.debug(f"关节伺服运动: J1={j1_deg:.2f}°, J2={j2_deg:.2f}°, J3={j3_deg:.2f}°, "
                      f"J4={j4_deg:.2f}°, J5={j5_deg:.2f}°, J6={j6_deg:.2f}°")
@@ -445,11 +460,10 @@ class AuboI10Robot(Robot):
         res = self.robot_interface.getRobotAlgorithm().inverseKinematics(current_q, target_pose)
         q_sol, errno = list(res[0]), int(res[1])
         if errno != 0:
-            logging.warning(
-                f"逆解失败 errno={errno}，跳过本帧。目标 pos="
+            raise RuntimeError(
+                f"逆解失败 errno={errno}，动作未发送。目标 pos="
                 f"[{target_pose[0]:.3f},{target_pose[1]:.3f},{target_pose[2]:.3f}]m"
             )
-            return
 
         # J6 用绝对目标（IK 只负责 J1-J5 的位置与竖直姿态；J6 单独承担手机偏航）。
         # 工具竖直时 J6 轴=竖直方向，故这就是绕竖直方向旋转。
@@ -457,6 +471,7 @@ class AuboI10Robot(Robot):
             q_sol[5] = float(action["ee.j6_target"])
 
         retry_count = 0
+        ret = 2
         while retry_count < self.servo_max_queue_retry:
             ret = motion.servoJoint(
                 q_sol,
@@ -472,9 +487,12 @@ class AuboI10Robot(Robot):
                     logging.warning(f"J6偏航关节伺服队列持续满载，已重试 {retry_count} 次")
                 time.sleep(0.005)
             else:
-                if ret != 0:
-                    logging.warning(f"J6偏航关节伺服返回非 0 码 ret={ret}")
                 break
+
+        if ret == 2:
+            raise RuntimeError(f"J6偏航关节伺服队列持续满载，已重试 {retry_count} 次")
+        if ret != 0:
+            raise RuntimeError(f"J6偏航关节伺服返回非 0 码 ret={ret}")
 
         logging.debug(
             f"位置+J6偏航: pos=[{target_pose[0]:.3f},{target_pose[1]:.3f},{target_pose[2]:.3f}]m, "
@@ -498,8 +516,9 @@ class AuboI10Robot(Robot):
         try:
             leader_deg = [action[k] for k in leader_keys]
         except KeyError as e:
-            logging.error(f"SO101 关节直连缺少键: {e}，实际 action: {list(action.keys())}")
-            return
+            raise ValueError(
+                f"SO101 关节直连缺少键: {e}，实际 action: {list(action.keys())}"
+            ) from e
 
         corrected = [
             leader_deg[i] * self.so101_directions[i] + self.so101_offsets[i]
@@ -605,6 +624,7 @@ class AuboI10Robot(Robot):
         # 伺服模式：acc=vel=0；启用 lookahead_time + gain 平滑轨迹（抑制卡顿），
         # time=控制周期。非零 acc/vel 会触发参数非法 (ret=-5)，故 a=v=0。
         retry_count = 0
+        ret = 2
         while retry_count < self.servo_max_queue_retry:
             ret = motion.servoCartesian(
                 target_pose,
@@ -621,15 +641,19 @@ class AuboI10Robot(Robot):
                     logging.warning(f"笛卡尔伺服队列持续满载，已重试 {retry_count} 次")
                 time.sleep(0.005)
             else:
-                if ret != 0:
-                    logging.warning(
-                        f"笛卡尔伺服返回非 0 码 ret={ret} (servo_enabled={motion.isServoModeEnabled()})，"
-                        f"delta pos=[{dx:.3f},{dy:.3f},{dz:.3f}]m, "
-                        f"delta rot=[{dwx:.3f},{dwy:.3f},{dwz:.3f}]rad, "
-                        f"当前=[{current_pose[0]:.3f},{current_pose[1]:.3f},{current_pose[2]:.3f}]m, "
-                        f"rotvec=[{current_pose[3]:.3f},{current_pose[4]:.3f},{current_pose[5]:.3f}]rad"
-                    )
                 break
+
+        if ret == 2:
+            raise RuntimeError(f"笛卡尔伺服队列持续满载，已重试 {retry_count} 次")
+        if ret != 0:
+            raise RuntimeError(
+                f"笛卡尔伺服返回非 0 码 ret={ret} "
+                f"(servo_enabled={motion.isServoModeEnabled()})，"
+                f"delta pos=[{dx:.3f},{dy:.3f},{dz:.3f}]m, "
+                f"delta rot=[{dwx:.3f},{dwy:.3f},{dwz:.3f}]rad, "
+                f"当前=[{current_pose[0]:.3f},{current_pose[1]:.3f},{current_pose[2]:.3f}]m, "
+                f"rotvec=[{current_pose[3]:.3f},{current_pose[4]:.3f},{current_pose[5]:.3f}]rad"
+            )
 
         logging.debug(f"笛卡尔伺服: delta=[{dx:.3f},{dy:.3f},{dz:.3f}]m, "
                      f"drot=[{dwx:.3f},{dwy:.3f},{dwz:.3f}]rad, "
@@ -696,7 +720,6 @@ class AuboI10Robot(Robot):
             self._prev_sent_rotvec = np.array(current_pose[3:6], dtype=float)
 
         aligned_rotvec = self._continuous_rotvec(target_rotvec, self._prev_sent_rotvec)
-        self._prev_sent_rotvec = aligned_rotvec
 
         target_pose = [
             float(action.get("ee.x", 0.0)),
@@ -710,6 +733,7 @@ class AuboI10Robot(Robot):
         # servoCartesian 伺服模式：acc=vel=0；启用 lookahead_time + gain 平滑轨迹(抑制卡顿)。
         # 非零 acc/vel 在伺服模式下会触发参数非法 (ret=-5)，故用纯时间 + 前瞻/增益平滑。
         retry_count = 0
+        ret = 2
         while retry_count < self.servo_max_queue_retry:
             ret = motion.servoCartesian(
                 target_pose,
@@ -726,13 +750,18 @@ class AuboI10Robot(Robot):
                     logging.warning(f"绝对笛卡尔伺服队列持续满载，已重试 {retry_count} 次")
                 time.sleep(0.005)
             else:
-                if ret != 0:
-                    logging.warning(
-                        f"绝对笛卡尔伺服返回非 0 码 ret={ret} (servo_enabled={motion.isServoModeEnabled()})，目标 "
-                        f"pos=[{target_pose[0]:.3f},{target_pose[1]:.3f},{target_pose[2]:.3f}]m, "
-                        f"rotvec=[{target_pose[3]:.3f},{target_pose[4]:.3f},{target_pose[5]:.3f}]rad"
-                    )
                 break
+
+        if ret == 2:
+            raise RuntimeError(f"绝对笛卡尔伺服队列持续满载，已重试 {retry_count} 次")
+        if ret != 0:
+            raise RuntimeError(
+                f"绝对笛卡尔伺服返回非 0 码 ret={ret} "
+                f"(servo_enabled={motion.isServoModeEnabled()})，目标 "
+                f"pos=[{target_pose[0]:.3f},{target_pose[1]:.3f},{target_pose[2]:.3f}]m, "
+                f"rotvec=[{target_pose[3]:.3f},{target_pose[4]:.3f},{target_pose[5]:.3f}]rad"
+            )
+        self._prev_sent_rotvec = aligned_rotvec
 
         logging.debug(f"绝对笛卡尔伺服: 目标 pos=[{target_pose[0]:.3f},{target_pose[1]:.3f},"
                      f"{target_pose[2]:.3f}]m, rotvec=[{target_pose[3]:.3f},{target_pose[4]:.3f},"
@@ -758,12 +787,18 @@ class AuboI10Robot(Robot):
                 "target_suction_on": bool(target_suction_on),
                 "requested_do": None,
                 "do_writes": [],
+                "do_write_attempt_count": 0,
                 "do_api_success": None,
                 "do_readback_supported": bool(
                     self.io_control is not None
                     and callable(getattr(self.io_control, "getStandardDigitalOutput", None))
                 ),
                 "do_readback": None,
+                "do_readback_after_failure": None,
+                "do_readback_error": None,
+                "controller_output_state_known": False,
+                "controller_output_matches_requested": None,
+                "partial_write_possible": False,
                 "commanded_state_before": bool(self.is_suction_on),
                 "commanded_state_after": bool(self.is_suction_on),
                 "error": None,
@@ -805,9 +840,15 @@ class AuboI10Robot(Robot):
             "target_suction_on": bool(target_suction_on),
             "requested_do": requested_do,
             "do_writes": [],
+            "do_write_attempt_count": 0,
             "do_api_success": False,
             "do_readback_supported": callable(readback_method),
             "do_readback": None,
+            "do_readback_after_failure": None,
+            "do_readback_error": None,
+            "controller_output_state_known": False,
+            "controller_output_matches_requested": None,
+            "partial_write_possible": False,
             "commanded_state_before": state_before,
             "commanded_state_after": state_before,
             "error": None,
@@ -821,6 +862,7 @@ class AuboI10Robot(Robot):
 
         try:
             for pin, value in write_order:
+                trace["do_write_attempt_count"] += 1
                 result = self.io_control.setStandardDigitalOutput(pin, value)
                 write = {"pin": int(pin), "value": bool(value), "return_code": result}
                 trace["do_writes"].append(write)
@@ -835,6 +877,8 @@ class AuboI10Robot(Robot):
                     str(self.suction_off_pin): bool(readback_method(self.suction_off_pin)),
                 }
                 trace["do_readback"] = readback
+                trace["controller_output_state_known"] = True
+                trace["controller_output_matches_requested"] = readback == requested_do
                 if readback != requested_do:
                     raise RuntimeError(
                         f"controller DO readback mismatch: requested={requested_do}, readback={readback}"
@@ -845,6 +889,22 @@ class AuboI10Robot(Robot):
             trace["commanded_state_after"] = bool(self.is_suction_on)
             return True
         except Exception as exc:
+            trace["partial_write_possible"] = trace["do_write_attempt_count"] > 0
+            if trace["do_readback"] is not None:
+                trace["do_readback_after_failure"] = dict(trace["do_readback"])
+            elif callable(readback_method):
+                try:
+                    readback_after_failure = {
+                        str(self.suction_on_pin): bool(readback_method(self.suction_on_pin)),
+                        str(self.suction_off_pin): bool(readback_method(self.suction_off_pin)),
+                    }
+                    trace["do_readback_after_failure"] = readback_after_failure
+                    trace["controller_output_state_known"] = True
+                    trace["controller_output_matches_requested"] = (
+                        readback_after_failure == requested_do
+                    )
+                except Exception as readback_exc:
+                    trace["do_readback_error"] = str(readback_exc)
             trace["error"] = str(exc)
             logging.error("夹爪 DO 写入或回读失败: %s", exc)
             return False

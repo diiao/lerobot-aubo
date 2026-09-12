@@ -67,10 +67,10 @@ def test_target_event_summary_uses_selected_episode_labels_not_fixed_count() -> 
 
     summary = audit.summarize_target_suction_events(events)
 
-    assert summary["expected_on"] == 2
-    assert summary["expected_off"] == 2
-    assert summary["found_on"] == 2
-    assert summary["found_off"] == 2
+    assert summary["target_on_count"] == 2
+    assert summary["target_off_count"] == 2
+    assert "found_on" not in summary
+    assert "all_on_found" not in summary
     assert [event["episode_index"] for event in summary["on_events"]] == [4, 9]
 
 
