@@ -1,0 +1,40 @@
+{
+  "schema_version": "AuboActEpisodeSplitV1",
+  "dataset_repo_id": "bamboo_act_report_full",
+  "dataset_info_sha256": "aa1f76504ba38cc4597775e1f969f4e6f80001f526f0006c898b5768dbd6a85d",
+  "scope": "single_strip_s01_s08_only",
+  "split_method": "last_episode_per_five-episode_angle_batch_is_validation",
+  "limitations": [
+    "Each angle was recorded in one batch, so this is angle-stratified but not an independent recording-session split.",
+    "Episodes s09-s14 are excluded from both training and validation."
+  ],
+  "train_episodes": [
+    0, 1, 2, 3,
+    5, 6, 7, 8,
+    10, 11, 12, 13,
+    15, 16, 17, 18,
+    20, 21, 22, 23,
+    25, 26, 27, 28,
+    30, 31, 32, 33,
+    35, 36, 37, 38
+  ],
+  "val_episodes": [4, 9, 14, 19, 24, 29, 34, 39],
+  "excluded_episodes": [
+    40, 41, 42, 43, 44,
+    45, 46, 47, 48,
+    49, 50, 51,
+    52, 53, 54, 55, 56,
+    57, 58, 59, 60,
+    61, 62, 63, 64
+  ],
+  "angle_batches": {
+    "s01_90_deg": [0, 1, 2, 3, 4],
+    "s02_0_deg": [5, 6, 7, 8, 9],
+    "s03_22_5_deg": [10, 11, 12, 13, 14],
+    "s04_45_deg": [15, 16, 17, 18, 19],
+    "s05_67_5_deg": [20, 21, 22, 23, 24],
+    "s06_112_5_deg": [25, 26, 27, 28, 29],
+    "s07_135_deg": [30, 31, 32, 33, 34],
+    "s08_157_5_deg": [35, 36, 37, 38, 39]
+  }
+}

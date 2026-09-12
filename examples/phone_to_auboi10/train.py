@@ -19,6 +19,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from lerobot.bamboo_sorting.act_input_contract import (
+    ActStateInputContract,
+    EpisodeSplit,
+    adapt_features_and_stats,
+    apply_state_input_contract,
+    build_state_input_contract,
+    load_episode_split,
+)
 from lerobot.configs.types import FeatureType
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.datasets.utils import dataset_to_policy_features
@@ -49,6 +57,9 @@ SAVE_FREQ = int(os.environ.get("SAVE_FREQ", "5000"))
 _VAL_MAX_BATCHES = int(os.environ.get("VAL_MAX_BATCHES", "0"))
 MAX_VAL_BATCHES = None if _VAL_MAX_BATCHES == 0 else _VAL_MAX_BATCHES
 VAL_FRACTION = 0.2
+STATE_INPUT_VARIANT = os.environ.get("STATE_INPUT_VARIANT", "full").strip()
+_EPISODE_SPLIT_PATH = os.environ.get("EPISODE_SPLIT_PATH", "").strip()
+EPISODE_SPLIT_PATH = Path(_EPISODE_SPLIT_PATH).expanduser() if _EPISODE_SPLIT_PATH else None
 
 # Standard ACT CVAE objective is the baseline. Set USE_VAE=0 only for a
 # controlled comparison trained from scratch with the same episode split.
@@ -161,7 +172,13 @@ def make_loader(
 
 
 @torch.inference_mode()
-def evaluate_loss(policy, preprocessor, dataloader, max_batches: int | None) -> float:
+def evaluate_loss(
+    policy,
+    preprocessor,
+    dataloader,
+    max_batches: int | None,
+    state_contract: ActStateInputContract,
+) -> float:
     """Measure held-out loss with dropout disabled and no parameter updates."""
 
     was_training = policy.training
@@ -178,6 +195,7 @@ def evaluate_loss(policy, preprocessor, dataloader, max_batches: int | None) -> 
             for batch_idx, batch in enumerate(dataloader):
                 if max_batches is not None and batch_idx >= max_batches:
                     break
+                batch = apply_state_input_contract(batch, state_contract)
                 batch = preprocessor(batch)
                 loss, _ = policy.forward(batch)
                 total += float(loss.item())
@@ -235,13 +253,15 @@ def write_experiment_manifest(
     val_episodes: list[int],
     chunk_size: int,
     n_action_steps: int,
+    state_contract: ActStateInputContract,
+    episode_split: EpisodeSplit | None,
 ) -> None:
     """Record the exact local inputs and settings used by this run."""
 
     dataset_root = Path(metadata.root)
     act_source = Path(inspect.getfile(ACTPolicy))
     manifest = {
-        "schema_version": "AuboActTrainingRunV1",
+        "schema_version": "AuboActTrainingRunV2",
         "dataset_path": str(dataset_root.resolve()),
         "dataset_repo_id": LOCAL_DATASET_REPO_ID,
         "dataset_total_episodes": metadata.total_episodes,
@@ -250,6 +270,10 @@ def write_experiment_manifest(
         "dataset_stats_sha256": sha256_file(dataset_root / "meta" / "stats.json"),
         "train_episodes": train_episodes,
         "val_episodes": val_episodes,
+        "episode_split_path": str(episode_split.path) if episode_split is not None else None,
+        "episode_split_sha256": sha256_file(episode_split.path) if episode_split is not None else None,
+        "state_input_contract": state_contract.as_dict(),
+        "normalization_stats_scope": "full_dataset_metadata",
         "validation_scope": "full" if MAX_VAL_BATCHES is None else f"first_{MAX_VAL_BATCHES}_batches",
         "validation_mode": "eval",
         "seed": SEED,
@@ -288,7 +312,18 @@ def main():
 
     metadata = LeRobotDatasetMetadata(LOCAL_DATASET_REPO_ID, root=LOCAL_DATASET_ROOT)
     validate_dataset_stats(metadata)
-    train_episodes, val_episodes = split_episodes(metadata.total_episodes)
+    episode_split = None
+    if EPISODE_SPLIT_PATH is None:
+        train_episodes, val_episodes = split_episodes(metadata.total_episodes)
+    else:
+        episode_split = load_episode_split(
+            EPISODE_SPLIT_PATH,
+            dataset_info_path=Path(metadata.root) / "meta" / "info.json",
+            total_episodes=metadata.total_episodes,
+        )
+        train_episodes = list(episode_split.train_episodes)
+        val_episodes = list(episode_split.val_episodes)
+    state_contract = build_state_input_contract(metadata.features, STATE_INPUT_VARIANT)
     # Express the ACT horizon in physical time, then convert using the dataset
     # FPS. New 25 Hz recordings therefore use a 25-frame (~1 s) chunk and
     # replan after 4 frames (~0.16 s).
@@ -300,6 +335,11 @@ def main():
     print(f"dataset={LOCAL_DATASET_PATH}")
     print(f"train episodes={train_episodes}")
     print(f"val episodes={val_episodes}")
+    print(
+        f"state_input_variant={state_contract.variant} "
+        f"({state_contract.source_width}D -> {state_contract.model_width}D)"
+    )
+    print(f"episode_split={episode_split.path if episode_split is not None else 'default_tail_split'}")
     print(f"seed={SEED}")
     print(f"validation_seed={VAL_SEED}")
     print(
@@ -307,7 +347,12 @@ def main():
         + ("all held-out frames" if MAX_VAL_BATCHES is None else f"first {MAX_VAL_BATCHES} batches")
     )
 
-    features = dataset_to_policy_features(metadata.features)
+    model_features, model_stats = adapt_features_and_stats(
+        metadata.features,
+        metadata.stats,
+        state_contract,
+    )
+    features = dataset_to_policy_features(model_features)
     output_features = {k: ft for k, ft in features.items() if ft.type is FeatureType.ACTION}
     input_features = {k: ft for k, ft in features.items() if k not in output_features}
 
@@ -327,7 +372,7 @@ def main():
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy.config,
-        dataset_stats=metadata.stats,
+        dataset_stats=model_stats,
     )
 
     delta_timestamps = {
@@ -365,14 +410,18 @@ def main():
         val_episodes=val_episodes,
         chunk_size=chunk_size,
         n_action_steps=n_action_steps,
+        state_contract=state_contract,
+        episode_split=episode_split,
     )
 
     print(
         f"Starting pure ACT training: steps={TRAINING_STEPS}, "
-        f"chunk={chunk_size}, execute={n_action_steps}, use_vae={USE_VAE}"
+        f"chunk={chunk_size}, execute={n_action_steps}, use_vae={USE_VAE}, "
+        f"state={state_contract.variant}"
     )
     while step < TRAINING_STEPS:
         for batch in train_loader:
+            batch = apply_state_input_contract(batch, state_contract)
             batch = preprocessor(batch)
             loss, _ = policy.forward(batch)
             loss.backward()
@@ -384,7 +433,13 @@ def main():
                 print(f"step {step:>6d} | train_loss={loss.item():.5f}")
 
             if step > 0 and step % VAL_FREQ == 0:
-                val_loss = evaluate_loss(policy, preprocessor, val_loader, MAX_VAL_BATCHES)
+                val_loss = evaluate_loss(
+                    policy,
+                    preprocessor,
+                    val_loader,
+                    MAX_VAL_BATCHES,
+                    state_contract,
+                )
                 print(f"step {step:>6d} | val_loss={val_loss:.5f}")
                 if val_loss < best_val:
                     best_val = val_loss
@@ -416,7 +471,13 @@ def main():
             if step >= TRAINING_STEPS:
                 break
 
-    final_val = evaluate_loss(policy, preprocessor, val_loader, MAX_VAL_BATCHES)
+    final_val = evaluate_loss(
+        policy,
+        preprocessor,
+        val_loader,
+        MAX_VAL_BATCHES,
+        state_contract,
+    )
     print(f"final validation | val_loss={final_val:.5f}")
     if final_val < best_val:
         best_val = final_val
