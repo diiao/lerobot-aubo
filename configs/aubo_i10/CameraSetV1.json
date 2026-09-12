@@ -1,0 +1,47 @@
+{
+  "c0_eligible": true,
+  "camera_streams": [
+    "global_rgb",
+    "grasp_rgb"
+  ],
+  "capture_profiles": {
+    "global_rgb": {
+      "device": "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0",
+      "fourcc": "MJPG",
+      "fps": 30.0,
+      "height": 480,
+      "model_color_layout": "RGB_uint8",
+      "observed_height": 480,
+      "observed_width": 640,
+      "width": 640
+    },
+    "grasp_rgb": {
+      "device": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
+      "fourcc": "MJPG",
+      "fps": 25.0,
+      "height": 480,
+      "model_color_layout": "RGB_uint8",
+      "observed_height": 480,
+      "observed_width": 640,
+      "width": 640
+    }
+  },
+  "decision": "two_rgb",
+  "evidence_sha256": {
+    "mech_eye_2d_isolated_report": "5366e2be064bbad6225cabcda69828d13a3ecb78ad016b157f19599a5d170a2b",
+    "rgb_aubo_state_concurrent_report": "42edaf7e37517dceae8fdf7bbeb12b4771a17490f79a51d6781e668232a3b913"
+  },
+  "frozen_at_utc": "2026-09-09T15:19:51.246070Z",
+  "global_roi_evidence_ref": "artifacts/rgb_gate/roi_preview_20260909T151900Z/global_rgb.jpg#sha256:8425e7b74f19bf5892a6f175e3e721556961b1e80efbb632b6eb2269fd043621",
+  "grasp_roi_evidence_ref": "artifacts/rgb_gate/roi_preview_20260909T151900Z/grasp_rgb.jpg#sha256:46d93ee2135f00e436079b39e8e38f0d088f56ca35c338fe051ebed254e517d1",
+  "immutable": true,
+  "physical_roles": {
+    "global_rgb": "fixed global view covering the accepted pile, motion, and collection ROI",
+    "grasp_rgb": "fixed close oblique view covering the accepted pile and lift-verification ROI"
+  },
+  "schema_version": "CameraSetV1",
+  "timestamp_methods": {
+    "global_rgb": "host_receive_monotonic_after_opencv_read",
+    "grasp_rgb": "host_receive_monotonic_after_opencv_read"
+  }
+}

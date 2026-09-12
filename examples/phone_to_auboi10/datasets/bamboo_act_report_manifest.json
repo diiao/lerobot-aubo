@@ -1,0 +1,111 @@
+{
+  "task": "bamboo_act_report",
+  "root": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets",
+  "paused_after": "s14",
+  "next_batch": null,
+  "notes": "Angle is the strip long-axis vs robot base +X, range [0, 180). 180 equals 0. Do not infer angle from sXX index. Two-strip episodes sequentially clear both sticks. Data lives only on local disk; do not commit videos to git.",
+  "batches": {
+    "bamboo_act_report_s01": {
+      "strip_count": 1,
+      "theta_deg": 90.0,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s02": {
+      "strip_count": 1,
+      "theta_deg": 0.0,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s03": {
+      "strip_count": 1,
+      "theta_deg": 22.5,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s04": {
+      "strip_count": 1,
+      "theta_deg": 45.0,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s05": {
+      "strip_count": 1,
+      "theta_deg": 67.5,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s06": {
+      "strip_count": 1,
+      "theta_deg": 112.5,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s07": {
+      "strip_count": 1,
+      "theta_deg": 135.0,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s08": {
+      "strip_count": 1,
+      "theta_deg": 157.5,
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s09": {
+      "strip_count": 2,
+      "bottom_theta_deg": 0.0,
+      "top_relative_deg": 90.0,
+      "layout": "cross",
+      "grasp": "sequential_clear_two",
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s10": {
+      "strip_count": 2,
+      "bottom_theta_deg": 0.0,
+      "top_relative_deg": 45.0,
+      "layout": "oblique_cross",
+      "grasp": "sequential_clear_two",
+      "planned_success_episodes": 4,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s11": {
+      "strip_count": 2,
+      "bottom_theta_deg": 0.0,
+      "top_relative_deg": 0.0,
+      "layout": "parallel_stacked",
+      "grasp": "sequential_clear_two",
+      "planned_success_episodes": 3,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s12": {
+      "strip_count": 2,
+      "bottom_theta_deg": 90.0,
+      "top_relative_deg": 90.0,
+      "layout": "cross",
+      "grasp": "sequential_clear_two",
+      "planned_success_episodes": 5,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s13": {
+      "strip_count": 2,
+      "bottom_theta_deg": 90.0,
+      "top_relative_deg": 45.0,
+      "layout": "oblique_cross",
+      "grasp": "sequential_clear_two",
+      "planned_success_episodes": 4,
+      "status": "recorded"
+    },
+    "bamboo_act_report_s14": {
+      "strip_count": 2,
+      "bottom_theta_deg": 90.0,
+      "top_relative_deg": 0.0,
+      "layout": "parallel_stacked",
+      "grasp": "sequential_clear_two",
+      "planned_success_episodes": 4,
+      "status": "recorded"
+    }
+  }
+}

@@ -189,3 +189,9 @@ outputs/
 *.part
 .claude/
 .codex/
+.kilo/
+
+# Local robot recordings and evaluation datasets are too large and may contain
+# site-specific evidence. Keep the human-maintained experiment manifest only.
+/examples/phone_to_auboi10/datasets/*
+!/examples/phone_to_auboi10/datasets/bamboo_act_report_manifest.json
