@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -13,6 +14,7 @@ from lerobot.bamboo_sorting.act_input_contract import (
     FULL_STATE_VARIANT,
     STATE_KEY,
     adapt_features_and_stats,
+    aggregate_selected_episode_stats,
     apply_state_input_contract,
     build_state_input_contract,
     load_episode_split,
@@ -152,3 +154,36 @@ def test_checkpoint_contract_rejects_inconsistent_drop(tmp_path: Path) -> None:
     destination.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="internally inconsistent"):
         load_state_input_contract(tmp_path)
+
+
+def test_aggregate_selected_episode_stats_uses_only_requested_rows(tmp_path: Path) -> None:
+    episode_dir = tmp_path / "meta" / "episodes" / "chunk-000"
+    episode_dir.mkdir(parents=True)
+    rows = []
+    for episode_index, mean, count in ((0, 1.0, 2), (1, 5.0, 2), (2, 100.0, 10)):
+        rows.append(
+            {
+                "episode_index": episode_index,
+                "stats/observation.state/min": np.array([mean - 1.0]),
+                "stats/observation.state/max": np.array([mean + 1.0]),
+                "stats/observation.state/mean": np.array([mean]),
+                "stats/observation.state/std": np.array([1.0]),
+                "stats/observation.state/count": np.array([count]),
+            }
+        )
+    pd.DataFrame(rows).to_parquet(episode_dir / "file-000.parquet")
+    features = {
+        "observation.state": {"dtype": "float32", "shape": [1], "names": ["J1"]},
+    }
+    stats = aggregate_selected_episode_stats(tmp_path, [0, 1], features)
+    assert stats["observation.state"]["mean"].tolist() == [3.0]
+    assert stats["observation.state"]["count"].tolist() == [4]
+    assert stats["observation.state"]["max"].tolist() == [6.0]
+
+
+def test_aggregate_selected_episode_stats_rejects_missing_episode(tmp_path: Path) -> None:
+    episode_dir = tmp_path / "meta" / "episodes" / "chunk-000"
+    episode_dir.mkdir(parents=True)
+    pd.DataFrame({"episode_index": [0]}).to_parquet(episode_dir / "file-000.parquet")
+    with pytest.raises(ValueError, match="missing requested indices"):
+        aggregate_selected_episode_stats(tmp_path, [1], {})
