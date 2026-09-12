@@ -11,6 +11,10 @@
 robot.send_action。只有同时设置 DRY_RUN=0 和
 POLICY_EXECUTION_AUTHORIZED=1 才会进入真实策略执行模式。
 
+模型 raw/反归一化/迟滞/DO 证据写入独立 JSONL；默认路径由
+EVAL_DATASET_PATH 派生，也可用 INFERENCE_TRACE_PATH 显式指定。trace 不改变
+评估数据集里原有的迟滞后 0/100 action 语义，且拒绝覆盖已有文件。
+
 操作同 evaluate.py：-> 开始/结束 episode，← 重录，Esc 全停。
 
 前置：
@@ -19,6 +23,7 @@ POLICY_EXECUTION_AUTHORIZED=1 才会进入真实策略执行模式。
   3. 本地有聚合数据集 bamboo_newview_full（取 features；aggregate.py 产物）。
 """
 
+import json
 import logging
 import math
 import os
@@ -88,6 +93,7 @@ START_JOINT_TOLERANCE_DEG = float(os.environ.get("START_JOINT_TOLERANCE_DEG", "2
 CONNECT_TIMEOUT_S = float(os.environ.get("CONNECT_TIMEOUT_S", "10"))
 INFERENCE_TIMEOUT_S = float(os.environ.get("INFERENCE_TIMEOUT_S", "2"))
 MAX_RESPONSE_BYTES = int(os.environ.get("MAX_RESPONSE_BYTES", str(1024 * 1024)))
+GRIPPER_ACTION_INDEX = ACTION_FIELD_NAMES.index("ee.gripper_pos")
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -137,6 +143,45 @@ class ActionSafetyState:
     def initialize_from_observation(self, observation: dict[str, Any]) -> None:
         self.suction_on = float(observation.get("gripper_pos", 0.0)) > 60.0
         self.initialized = True
+
+
+class JsonlTraceWriter:
+    """Append structured inference evidence without changing evaluation action semantics."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = self.path.open("x", encoding="utf-8")
+
+    def write(self, record: dict[str, Any]) -> None:
+        self._stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+        self._stream.flush()
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+def resolve_trace_path(eval_root: Path) -> Path:
+    raw = os.environ.get("INFERENCE_TRACE_PATH")
+    if raw:
+        path = Path(raw).expanduser()
+        return (Path.cwd() / path).resolve() if not path.is_absolute() else path.resolve()
+    return eval_root.parent / f"{eval_root.name}_inference_trace.jsonl"
+
+
+def requested_gripper_do(robot: Any, *, target_suction_on: bool, transition: bool) -> dict[str, bool] | None:
+    """Describe intended controller outputs; this is not physical gripper feedback."""
+    if not transition:
+        return None
+    return {
+        str(robot.suction_on_pin): bool(target_suction_on),
+        str(robot.suction_off_pin): not bool(target_suction_on),
+    }
+
+
+def write_trace(trace_writer: Any | None, record: dict[str, Any]) -> None:
+    if trace_writer is not None:
+        trace_writer.write(record)
 
 
 def resolve_local_dataset_path(path_value: str, *, must_exist: bool) -> tuple[str, Path]:
@@ -394,12 +439,15 @@ def run_episode(
     robot_observation_processor,
     safety_gate: ThinSafetyGate,
     execute_actions: bool,
+    trace_writer: Any | None = None,
+    episode_index: int = 0,
 ):
     action_queue = deque()  # 保留协议兼容性；当前服务端每次返回一步动作
     safety_state = ActionSafetyState()
     ik_checker = make_ik_checker(robot)
     dt = 1.0 / fps
     timestamp = 0.0
+    step_index = 0
     start_episode_t = time.perf_counter()
 
     while timestamp < control_time_s:
@@ -461,17 +509,64 @@ def run_episode(
                     f"服务器动作形状错误: {actions.shape}，应为 (N, {len(ACTION_FIELD_NAMES)})"
                 )
             chunk_created_s = time.monotonic()
-            for row in actions:
+            server_trace = resp.get("trace")
+            for row_index, row in enumerate(actions):
                 act_tensor = torch.from_numpy(row).unsqueeze(0)  # (1, action_dim)
                 action_queue.append(
-                    (make_robot_action(act_tensor, dataset.features), chunk_created_s)
+                    (
+                        make_robot_action(act_tensor, dataset.features),
+                        chunk_created_s,
+                        server_trace if row_index == 0 else None,
+                    )
                 )
 
         # 3. 取一个动作 -> 离散吸盘 -> 按实测位姿限步裁剪 -> 安全门 -> 按模式决定是否下发
-        raw_act, chunk_created_s = action_queue.popleft()
+        raw_act, chunk_created_s, server_trace = action_queue.popleft()
+        previous_suction_on = safety_state.suction_on
         act, next_suction_on = normalize_action_for_actuator(
-            raw_act, suction_on=safety_state.suction_on
+            raw_act, suction_on=previous_suction_on
         )
+        transition_requested = next_suction_on != previous_suction_on
+        trace_record: dict[str, Any] = {
+            "schema_version": "aubo_act_execution_trace_v1",
+            "episode_index": int(episode_index),
+            "step_index": int(step_index),
+            "control_timestamp_s": float(timestamp),
+            "observation_monotonic_s": float(observation_timestamp_s),
+            "chunk_created_monotonic_s": float(chunk_created_s),
+            "execution_mode": "authorized_execution" if execute_actions else "dry_run",
+            "server": server_trace,
+            "gripper": {
+                "selected_normalized": (
+                    float(server_trace["selected_normalized_action"][GRIPPER_ACTION_INDEX])
+                    if server_trace and server_trace.get("selected_normalized_action")
+                    else None
+                ),
+                "raw_denormalized": float(raw_act["ee.gripper_pos"]),
+                "thresholded_command": float(act["ee.gripper_pos"]),
+                "hysteresis_state_before": bool(previous_suction_on),
+                "hysteresis_state_candidate": bool(next_suction_on),
+                "transition_requested": bool(transition_requested),
+                "requested_do": requested_gripper_do(
+                    robot,
+                    target_suction_on=next_suction_on,
+                    transition=transition_requested,
+                ),
+            },
+            "safety": {"passed": None, "reasons": []},
+            "actuator": {
+                "attempted": False,
+                "success": None,
+                "gripper_io": None,
+                "commanded_state_before": bool(
+                    getattr(robot, "is_suction_on", previous_suction_on)
+                ),
+                "commanded_state_after": bool(
+                    getattr(robot, "is_suction_on", previous_suction_on)
+                ),
+            },
+            "outcome": "pending",
+        }
         measured_tcp_m, measured_j6_rad = measured_action_anchors(obs)
         act = clip_absolute_action_to_measured_limits(
             act,
@@ -482,31 +577,83 @@ def run_episode(
         )
         robot_action = ee_mode_processor((act, obs))
         vector = action_vector(robot_action)
-        assert_task_action_envelope(vector)
-        gated = safety_gate.evaluate(
-            [vector],
-            now_monotonic_s=time.monotonic(),
-            observation_sync_timestamp_s=observation_timestamp_s,
-            chunk_created_monotonic_s=chunk_created_s,
-            previous_tcp_m=measured_tcp_m,
-            previous_j6_rad=measured_j6_rad,
-            ik_checker=ik_checker,
-        )
+        try:
+            assert_task_action_envelope(vector)
+            gated = safety_gate.evaluate(
+                [vector],
+                now_monotonic_s=time.monotonic(),
+                observation_sync_timestamp_s=observation_timestamp_s,
+                chunk_created_monotonic_s=chunk_created_s,
+                previous_tcp_m=measured_tcp_m,
+                previous_j6_rad=measured_j6_rad,
+                ik_checker=ik_checker,
+            )
+        except Exception as exc:
+            trace_record["safety"] = {"passed": False, "reasons": [str(exc)]}
+            trace_record["outcome"] = "pre_send_rejected"
+            write_trace(trace_writer, trace_record)
+            if execute_actions:
+                robot.disable_servo_mode()
+            raise
+        trace_record["safety"] = {
+            "passed": bool(gated.passed),
+            "reasons": list(gated.reasons),
+        }
         if not gated.passed:
+            trace_record["outcome"] = "thin_safety_gate_rejected"
+            write_trace(trace_writer, trace_record)
             if execute_actions:
                 robot.disable_servo_mode()
             raise RuntimeError(
                 "ThinSafetyGate 拒绝动作，已停止本轮: " + ", ".join(gated.reasons)
             )
-        safety_state.suction_on = next_suction_on
-
         if execute_actions:
-            robot.send_action(robot_action)
+            trace_record["actuator"]["attempted"] = True
+            try:
+                robot.send_action(robot_action)
+            except Exception as exc:
+                trace_record["actuator"]["success"] = False
+                trace_record["actuator"]["gripper_io"] = getattr(
+                    robot, "last_gripper_command_trace", None
+                )
+                trace_record["actuator"]["commanded_state_after"] = bool(
+                    getattr(robot, "is_suction_on", previous_suction_on)
+                )
+                trace_record["actuator"]["error"] = str(exc)
+                trace_record["outcome"] = "actuator_error"
+                write_trace(trace_writer, trace_record)
+                robot.disable_servo_mode()
+                raise RuntimeError("动作或夹爪 DO 下发失败，已停止本轮并关闭伺服") from exc
+
+            commanded_state_after = bool(getattr(robot, "is_suction_on", next_suction_on))
+            if commanded_state_after != next_suction_on:
+                trace_record["actuator"]["success"] = False
+                trace_record["actuator"]["gripper_io"] = getattr(
+                    robot, "last_gripper_command_trace", None
+                )
+                trace_record["actuator"]["commanded_state_after"] = commanded_state_after
+                trace_record["actuator"]["error"] = "software commanded state mismatch"
+                trace_record["outcome"] = "actuator_state_mismatch"
+                write_trace(trace_writer, trace_record)
+                robot.disable_servo_mode()
+                raise RuntimeError("动作下发后夹爪软件状态不一致，已停止本轮")
+            safety_state.suction_on = commanded_state_after
+            trace_record["actuator"]["success"] = True
+            trace_record["actuator"]["gripper_io"] = getattr(
+                robot, "last_gripper_command_trace", None
+            )
+            trace_record["actuator"]["commanded_state_after"] = commanded_state_after
             motion = robot.robot_interface.getMotionControl()
             if not robot.is_servo_mode_enabled or not motion.isServoModeEnabled():
+                trace_record["actuator"]["success"] = False
+                trace_record["actuator"]["error"] = "servo mode not enabled after action"
+                trace_record["outcome"] = "servo_mode_lost"
+                write_trace(trace_writer, trace_record)
                 robot.disable_servo_mode()
                 raise RuntimeError("动作下发后伺服模式未保持启用，已停止本轮")
         else:
+            # Dry-run hysteresis is a simulation; no robot commanded state is changed.
+            safety_state.suction_on = next_suction_on
             logging.info(
                 "DRY_RUN 动作通过但未下发: xyz=[%.4f, %.4f, %.4f], J6=%.4f, gripper=%.0f",
                 vector[1],
@@ -516,9 +663,13 @@ def run_episode(
                 vector[7],
             )
 
+        trace_record["outcome"] = "action_sent" if execute_actions else "dry_run_not_sent"
+        write_trace(trace_writer, trace_record)
+
         # 4. 写评估数据集（obs + action + task，便于回放）
         action_frame = build_dataset_frame(dataset.features, act, prefix=ACTION)
         dataset.add_frame({**observation_frame, **action_frame, "task": single_task})
+        step_index += 1
 
         # 5. 维持帧率
         timestamp = time.perf_counter() - start_episode_t
@@ -678,11 +829,17 @@ def main():
         raise FileExistsError(
             f"评估数据集已存在: {eval_root}；请设置新的 EVAL_DATASET_PATH"
         )
+    trace_path = resolve_trace_path(eval_root)
+    if trace_path.exists():
+        raise FileExistsError(
+            f"推理 trace 已存在: {trace_path}；请设置新的 EVAL_DATASET_PATH 或 INFERENCE_TRACE_PATH"
+        )
 
     # 5. 连接机器人 + 服务器。连接失败也必须进入统一清理路径。
     listener = None
     sock = None
     dataset = None
+    trace_writer = None
     episode_idx = 0
     try:
         robot.connect()
@@ -752,6 +909,7 @@ def main():
                     use_videos=True,
                     image_writer_threads=4,
                 )
+                trace_writer = JsonlTraceWriter(trace_path)
 
             log_say(f"开始推理 episode {episode_idx + 1} / {NUM_EPISODES}")
             print("推理中... 按 -> 结束本轮, 按 ← 重录, 按 Esc 终止")
@@ -768,6 +926,8 @@ def main():
                 robot_observation_processor=robot_observation_processor,
                 safety_gate=safety_gate,
                 execute_actions=execute_actions,
+                trace_writer=trace_writer,
+                episode_index=episode_idx,
             )
 
             if execute_actions:
@@ -804,9 +964,12 @@ def main():
             robot.disconnect()
         if listener:
             listener.stop()
+        if trace_writer is not None:
+            trace_writer.close()
         if dataset is not None:
             dataset.finalize()
             print(f"\n评估数据已保存至: {eval_root}")
+            print(f"结构化推理 trace 已保存至: {trace_path}")
         else:
             print("\n预检未通过或用户在开始前退出；未创建评估数据集")
         print(f"共执行 {episode_idx} 个 episodes")
