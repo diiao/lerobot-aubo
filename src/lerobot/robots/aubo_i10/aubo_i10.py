@@ -49,6 +49,9 @@ class AuboI10Robot(Robot):
         self.suction_off_pin = 3   # 拉高 → 不吸
         self.is_suction_on = False
         self.io_control = None
+        # Last controller-command evidence. This is software/DO state only;
+        # it is not physical gripper-position or grasp-success feedback.
+        self.last_gripper_command_trace: dict[str, Any] | None = None
 
         # 固定 Aubo 的第五轴角度（单位：度）
         # 建议值：0.0（默认）、90.0、-90.0、180.0 等，根据工具朝向调整
@@ -322,6 +325,7 @@ class AuboI10Robot(Robot):
 
         except Exception as e:
             logging.error(f"发送动作失败: {e}")
+            raise
 
         return action
 
@@ -734,54 +738,130 @@ class AuboI10Robot(Robot):
                      f"{target_pose[2]:.3f}]m, rotvec=[{target_pose[3]:.3f},{target_pose[4]:.3f},"
                      f"{target_pose[5]:.3f}]rad")
 
-    def _control_suction_based_on_gripper(self, gripper_pos: float):
+    def _control_suction_based_on_gripper(self, gripper_pos: float) -> dict[str, Any]:
         """根据 gripper_pos 控制吸盘。
         
         gripper_pos > 60  → A 键按下 → 激活真空（吸）
         gripper_pos < 20  → B 键按下 → 关闭真空（放）
         20 ≤ pos ≤ 60     → 无按键   → 保持当前状态（不切换）
         """
-        try:
-            if gripper_pos > 60:
-                if not self.is_suction_on:
-                    self.suction_activate()
-            elif gripper_pos < 20:
-                if self.is_suction_on:
-                    self.suction_release()
-            # neutral: maintain current state
-        except Exception as e:
-            logging.error(f"控制吸盘时发生错误: {e}")
+        value = float(gripper_pos)
+        target_suction_on = self.is_suction_on
+        if value > 60:
+            target_suction_on = True
+        elif value < 20:
+            target_suction_on = False
+
+        if target_suction_on == self.is_suction_on:
+            trace = {
+                "requested_transition": False,
+                "target_suction_on": bool(target_suction_on),
+                "requested_do": None,
+                "do_writes": [],
+                "do_api_success": None,
+                "do_readback_supported": bool(
+                    self.io_control is not None
+                    and callable(getattr(self.io_control, "getStandardDigitalOutput", None))
+                ),
+                "do_readback": None,
+                "commanded_state_before": bool(self.is_suction_on),
+                "commanded_state_after": bool(self.is_suction_on),
+                "error": None,
+            }
+            self.last_gripper_command_trace = trace
+            return trace
+
+        succeeded = self.suction_activate() if target_suction_on else self.suction_release()
+        if not succeeded:
+            detail = self.last_gripper_command_trace or {}
+            raise RuntimeError(
+                "夹爪 DO 状态切换失败，软件 commanded state 未更新: "
+                f"{detail.get('error', 'unknown error')}"
+            )
+        return dict(self.last_gripper_command_trace or {})
 
     # 兼容旧版调用名
     _control_softpaws_based_on_gripper = _control_suction_based_on_gripper
 
+    def _set_suction_outputs(self, *, target_suction_on: bool) -> bool:
+        """Write both mutually exclusive DOs and verify controller readback when available."""
+        state_before = bool(self.is_suction_on)
+        requested_do = {
+            str(self.suction_on_pin): bool(target_suction_on),
+            str(self.suction_off_pin): not bool(target_suction_on),
+        }
+        write_order = (
+            [(self.suction_off_pin, False), (self.suction_on_pin, True)]
+            if target_suction_on
+            else [(self.suction_on_pin, False), (self.suction_off_pin, True)]
+        )
+        readback_method = (
+            getattr(self.io_control, "getStandardDigitalOutput", None)
+            if self.io_control is not None
+            else None
+        )
+        trace: dict[str, Any] = {
+            "requested_transition": target_suction_on != state_before,
+            "target_suction_on": bool(target_suction_on),
+            "requested_do": requested_do,
+            "do_writes": [],
+            "do_api_success": False,
+            "do_readback_supported": callable(readback_method),
+            "do_readback": None,
+            "commanded_state_before": state_before,
+            "commanded_state_after": state_before,
+            "error": None,
+        }
+        self.last_gripper_command_trace = trace
+
+        if self.io_control is None:
+            trace["error"] = "io_control is None"
+            logging.error("夹爪 DO 写入失败: io_control is None")
+            return False
+
+        try:
+            for pin, value in write_order:
+                result = self.io_control.setStandardDigitalOutput(pin, value)
+                write = {"pin": int(pin), "value": bool(value), "return_code": result}
+                trace["do_writes"].append(write)
+                if result is not None and int(result) != 0:
+                    raise RuntimeError(
+                        f"setStandardDigitalOutput(pin={pin}, value={value}) returned {result}"
+                    )
+
+            if callable(readback_method):
+                readback = {
+                    str(self.suction_on_pin): bool(readback_method(self.suction_on_pin)),
+                    str(self.suction_off_pin): bool(readback_method(self.suction_off_pin)),
+                }
+                trace["do_readback"] = readback
+                if readback != requested_do:
+                    raise RuntimeError(
+                        f"controller DO readback mismatch: requested={requested_do}, readback={readback}"
+                    )
+
+            self.is_suction_on = bool(target_suction_on)
+            trace["do_api_success"] = True
+            trace["commanded_state_after"] = bool(self.is_suction_on)
+            return True
+        except Exception as exc:
+            trace["error"] = str(exc)
+            logging.error("夹爪 DO 写入或回读失败: %s", exc)
+            return False
+
     def suction_activate(self):
         """开启真空吸附：端口2拉高、端口3拉低。"""
-        try:
-            if self.io_control is None:
-                return False
-            self.io_control.setStandardDigitalOutput(self.suction_off_pin, False)
-            self.io_control.setStandardDigitalOutput(self.suction_on_pin, True)
-            self.is_suction_on = True
+        succeeded = self._set_suction_outputs(target_suction_on=True)
+        if succeeded:
             logging.info("吸盘：真空开启（吸）端口2=ON, 端口3=OFF")
-            return True
-        except Exception as e:
-            logging.error(f"吸盘激活失败: {e}")
-            return False
+        return succeeded
 
     def suction_release(self):
         """关闭真空（释放物体）：端口3拉高、端口2拉低。"""
-        try:
-            if self.io_control is None:
-                return False
-            self.io_control.setStandardDigitalOutput(self.suction_on_pin, False)
-            self.io_control.setStandardDigitalOutput(self.suction_off_pin, True)
-            self.is_suction_on = False
+        succeeded = self._set_suction_outputs(target_suction_on=False)
+        if succeeded:
             logging.info("吸盘：真空关闭（放）端口2=OFF, 端口3=ON")
-            return True
-        except Exception as e:
-            logging.error(f"吸盘释放失败: {e}")
-            return False
+        return succeeded
 
     def _disconnect_cameras(self) -> None:
         for cam_name, cam in self.cameras.items():

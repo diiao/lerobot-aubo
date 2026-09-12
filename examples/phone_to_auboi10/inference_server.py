@@ -7,7 +7,7 @@
 协议：TCP + 4 字节大端长度前缀 + pickle（信任的 tailnet，pickle 可接受）。
 客户端每帧发一条消息：
   - {"cmd": "reset"}                      -> 服务端清空策略队列，回 {"ok": True}
-  - {"cmd": "predict", "obs": {...}}      -> 推理，回 {"actions": np.ndarray(8)}
+  - {"cmd": "predict", "obs": {...}}      -> 推理，回 actions + 可选结构化 trace
 obs 字段：observation.state (np), observation.images.* (JPEG bytes), task, robot_type
 
 启动：
@@ -33,6 +33,7 @@ from lerobot.bamboo_sorting.act_input_contract import (
     apply_state_input_contract,
     load_state_input_contract,
 )
+from lerobot.bamboo_sorting.contracts import ACTION_FIELD_NAMES
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import prepare_observation_for_inference
@@ -42,6 +43,7 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
 PORT = 5555
 DEFAULT_TEMPORAL_ENSEMBLE_COEFF = 0.01
+GRIPPER_ACTION_INDEX = ACTION_FIELD_NAMES.index("ee.gripper_pos")
 
 
 def resolve_checkpoint_state_contract(
@@ -149,6 +151,8 @@ class InferenceServer:
         else:
             self.ensemble = False
         self.n_action_steps = self.policy.config.n_action_steps
+        self.prediction_sequence = 0
+        self.queue_action_index = 0
 
         self.task = "抓取竹条"
         self.robot_type = "aubo_i10"
@@ -162,8 +166,33 @@ class InferenceServer:
         self.policy.reset()
         self.preprocessor.reset()
         self.postprocessor.reset()
+        self.prediction_sequence = 0
+        self.queue_action_index = 0
 
-    def predict(self, obs_raw: dict) -> np.ndarray:
+    def _select_action_with_evidence(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor | None, int]:
+        """Mirror ACT selection while retaining the pre-ensemble/pre-queue model chunk."""
+        self.policy.eval()
+        predicted_chunk = None
+        if self.policy.config.temporal_ensemble_coeff is not None:
+            predicted_chunk = self.policy.predict_action_chunk(batch)
+            selected = self.policy.temporal_ensembler.update(predicted_chunk)
+            return selected, predicted_chunk, 0
+
+        if len(self.policy._action_queue) == 0:
+            predicted_chunk = self.policy.predict_action_chunk(batch)[
+                :, : self.policy.config.n_action_steps
+            ]
+            self.policy._action_queue.extend(predicted_chunk.transpose(0, 1))
+            self.queue_action_index = 0
+        selected_index = self.queue_action_index
+        selected = self.policy._action_queue.popleft()
+        self.queue_action_index += 1
+        return selected, predicted_chunk, selected_index
+
+    def _postprocess_numpy(self, action: torch.Tensor) -> np.ndarray:
+        return self.postprocessor(action.clone()).detach().cpu().numpy()
+
+    def predict_with_trace(self, obs_raw: dict) -> tuple[np.ndarray, dict]:
         """obs_raw: {observation.state: np, observation.images.*: jpg bytes, task, robot_type}"""
         task = obs_raw.pop("task", "")
         robot_type = obs_raw.pop("robot_type", "")
@@ -192,13 +221,43 @@ class InferenceServer:
                 obs_np, self.device, task, robot_type
             )
             batch = self.preprocessor(batch)
-            # select_action 一次返回 1 个动作：
-            # - ensemble 模式：每帧推理 + 在线 ensemble，返回平滑动作
-            # - queue 模式：首次推理填队列，之后按 n_action_steps 消耗
-            #   （队列在 policy 内部管理）
-            a = self.policy.select_action(batch)
-            a = self.postprocessor(a)
-        return a.squeeze(0).cpu().numpy()  # (action_dim,)
+            selected_normalized, predicted_chunk_normalized, selected_index = (
+                self._select_action_with_evidence(batch)
+            )
+            selected_denormalized = self._postprocess_numpy(selected_normalized)
+            predicted_chunk_denormalized = (
+                self._postprocess_numpy(predicted_chunk_normalized)
+                if predicted_chunk_normalized is not None
+                else None
+            )
+
+        selected_normalized_np = selected_normalized.detach().cpu().numpy()
+        trace = {
+            "schema_version": "aubo_act_server_trace_v1",
+            "prediction_sequence": self.prediction_sequence,
+            "model_inference_performed": predicted_chunk_normalized is not None,
+            "temporal_ensemble_enabled": bool(self.ensemble),
+            "queue_action_index": int(selected_index),
+            "selected_normalized_action": selected_normalized_np.squeeze(0).tolist(),
+            "selected_denormalized_action": selected_denormalized.squeeze(0).tolist(),
+            "predicted_chunk_normalized_gripper": (
+                predicted_chunk_normalized[0, :, GRIPPER_ACTION_INDEX].detach().cpu().tolist()
+                if predicted_chunk_normalized is not None
+                else None
+            ),
+            "predicted_chunk_denormalized_gripper": (
+                predicted_chunk_denormalized[0, :, GRIPPER_ACTION_INDEX].tolist()
+                if predicted_chunk_denormalized is not None
+                else None
+            ),
+        }
+        self.prediction_sequence += 1
+        return selected_denormalized.squeeze(0), trace
+
+    def predict(self, obs_raw: dict) -> np.ndarray:
+        """Backward-compatible local API returning only the denormalized action."""
+        action, _trace = self.predict_with_trace(obs_raw)
+        return action
 
     def handle_client(self, conn):
         with conn:
@@ -212,8 +271,9 @@ class InferenceServer:
                         self.reset()
                         send_msg(conn, {"ok": True})
                     elif cmd == "predict":
-                        actions = self.predict(msg["obs"])
-                        send_msg(conn, {"actions": actions})
+                        actions, trace = self.predict_with_trace(msg["obs"])
+                        # Existing clients keep reading ``actions``; ``trace`` is additive.
+                        send_msg(conn, {"actions": actions, "trace": trace})
                     else:
                         send_msg(conn, {"error": f"unknown cmd: {cmd}"})
                 except Exception as e:

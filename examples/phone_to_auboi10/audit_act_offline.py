@@ -179,6 +179,36 @@ def find_threshold_transitions(values: np.ndarray, threshold: float = SUCTION_TH
     return events
 
 
+def summarize_target_suction_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Inventory GT transitions for selected episodes without a fixed task count."""
+    on_events = [event for event in events if event["kind"] == "on"]
+    off_events = [event for event in events if event["kind"] == "off"]
+    return {
+        "expected_on": len(on_events),
+        "expected_off": len(off_events),
+        "found_on": len(on_events),
+        "found_off": len(off_events),
+        "all_on_found": True,
+        "all_off_found": True,
+        "on_events": [
+            {
+                "episode_index": event["episode_index"],
+                "frame": event["target_frame"],
+                "ordinal": event["ordinal"],
+            }
+            for event in on_events
+        ],
+        "off_events": [
+            {
+                "episode_index": event["episode_index"],
+                "frame": event["target_frame"],
+                "ordinal": event["ordinal"],
+            }
+            for event in off_events
+        ],
+    }
+
+
 def _desired_on(kind: str) -> bool:
     if kind not in {"on", "off"}:
         raise ValueError(f"未知切换类型: {kind}")
@@ -562,8 +592,36 @@ def read_model_feature_shapes(model_path: Path) -> dict[str, Any]:
     }
 
 
+def resolve_local_dataset_path(path_value: str | Path) -> tuple[str, Path]:
+    """Resolve a local dataset explicitly so Hugging Face lookup is never attempted."""
+    root = Path(path_value).expanduser().resolve()
+    if not (root / "meta" / "info.json").is_file():
+        raise FileNotFoundError(f"本地 LeRobot 数据集不存在或不完整: {root}")
+    return root.name, root
+
+
+def load_local_dataset_metadata(dataset_path: Path) -> LeRobotDatasetMetadata:
+    repo_id, root = resolve_local_dataset_path(dataset_path)
+    return LeRobotDatasetMetadata(repo_id=repo_id, root=root)
+
+
+def load_local_dataset(
+    dataset_path: Path,
+    *,
+    episodes: list[int],
+    delta_timestamps: dict[str, list[float]],
+) -> LeRobotDataset:
+    repo_id, root = resolve_local_dataset_path(dataset_path)
+    return LeRobotDataset(
+        repo_id=repo_id,
+        root=root,
+        episodes=episodes,
+        delta_timestamps=delta_timestamps,
+    )
+
+
 def audit(args: argparse.Namespace) -> Path:
-    dataset_path = Path(args.dataset_path)
+    _dataset_repo_id, dataset_path = resolve_local_dataset_path(args.dataset_path)
     model_path = Path(args.model_path)
     if not model_path.is_dir():
         raise FileNotFoundError(f"未找到模型目录: {model_path}")
@@ -577,7 +635,7 @@ def audit(args: argparse.Namespace) -> Path:
         "feature_shapes": feature_shapes,
     }
 
-    metadata = LeRobotDatasetMetadata(dataset_path)
+    metadata = load_local_dataset_metadata(dataset_path)
     episodes = parse_episode_list(args.episodes, metadata.total_episodes)
     action_names = list(metadata.features[ACTION]["names"])
     required = {"ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos", "ee.j6_target"}
@@ -623,7 +681,11 @@ def audit(args: argparse.Namespace) -> Path:
     )
 
     delta_timestamps = {"action": [i / metadata.fps for i in policy.config.action_delta_indices]}
-    dataset = LeRobotDataset(dataset_path, episodes=episodes, delta_timestamps=delta_timestamps)
+    dataset = load_local_dataset(
+        dataset_path,
+        episodes=episodes,
+        delta_timestamps=delta_timestamps,
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     records: list[dict[str, Any]] = []
@@ -750,8 +812,6 @@ def audit(args: argparse.Namespace) -> Path:
                 slot["rot"].append(observation_rot)
                 slot["j6"].append(observation_j6_rad)
 
-    on_events = [event for event in all_target_events if event["kind"] == "on"]
-    off_events = [event for event in all_target_events if event["kind"] == "off"]
     comparison_out: dict[str, Any] = {}
     for key, slot in stored.items():
         deployment, input_mode = key.split(":", 1)
@@ -819,22 +879,7 @@ def audit(args: argparse.Namespace) -> Path:
                 "implementation": "lerobot.policies.act.modeling_act.ACTTemporalEnsembler",
             },
         },
-        "suction_events": {
-            "expected_on": 26,
-            "expected_off": 26,
-            "found_on": len(on_events),
-            "found_off": len(off_events),
-            "all_on_found": len(on_events) == 26,
-            "all_off_found": len(off_events) == 26,
-            "on_events": [
-                {"episode_index": e["episode_index"], "frame": e["target_frame"], "ordinal": e["ordinal"]}
-                for e in on_events
-            ],
-            "off_events": [
-                {"episode_index": e["episode_index"], "frame": e["target_frame"], "ordinal": e["ordinal"]}
-                for e in off_events
-            ],
-        },
+        "suction_events": summarize_target_suction_events(all_target_events),
         "comparison": comparison_out,
         "contact_sheets": contact_files,
         "transition_file": "transitions.csv",

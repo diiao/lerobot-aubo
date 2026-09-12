@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import struct
 from pathlib import Path
@@ -255,6 +256,20 @@ def test_local_dataset_resolution_checks_metadata(tmp_path, monkeypatch) -> None
     assert root == dataset.resolve()
 
 
+def test_jsonl_trace_writer_refuses_overwrite_and_writes_valid_json(tmp_path) -> None:
+    path = tmp_path / "trace.jsonl"
+    writer = evaluate_split.JsonlTraceWriter(path)
+    writer.write({"schema_version": "test_v1", "value": 1.25})
+    writer.close()
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema_version": "test_v1",
+        "value": 1.25,
+    }
+    with pytest.raises(FileExistsError):
+        evaluate_split.JsonlTraceWriter(path)
+
+
 def test_dry_run_loop_never_calls_robot_send_action(monkeypatch) -> None:
     action_values = [-3.0, 0.1, -0.7, 0.15, 0.0, 0.0, 0.0, 0.0]
 
@@ -318,3 +333,103 @@ def test_dry_run_loop_never_calls_robot_send_action(monkeypatch) -> None:
 
     assert robot.send_count == 0
     assert dataset.frame_count == 1
+
+
+def test_send_failure_does_not_commit_hysteresis_state_and_stops_servo(monkeypatch) -> None:
+    action_values = [-3.0, 0.1, -0.7, 0.15, 0.0, 0.0, 0.0, 100.0]
+
+    class Robot:
+        robot_type = "aubo_i10"
+        suction_on_pin = 2
+        suction_off_pin = 3
+        is_suction_on = False
+        disable_count = 0
+        last_gripper_command_trace = {
+            "do_api_success": False,
+            "commanded_state_before": False,
+            "commanded_state_after": False,
+            "error": "second DO failed",
+        }
+
+        def get_observation(self):
+            return {
+                "J6": math.degrees(-3.0),
+                "ee.x": 0.1,
+                "ee.y": -0.7,
+                "ee.z": 0.15,
+                "gripper_pos": 0.0,
+            }
+
+        def send_action(self, _action):
+            assert self.is_suction_on is False
+            raise RuntimeError("second DO failed")
+
+        def disable_servo_mode(self):
+            self.disable_count += 1
+
+    class Dataset:
+        features = {}
+
+        def add_frame(self, _frame):
+            raise AssertionError("failed action must not be recorded as executed")
+
+    class TraceWriter:
+        def __init__(self):
+            self.records = []
+
+        def write(self, record):
+            self.records.append(record)
+
+    robot = Robot()
+    trace_writer = TraceWriter()
+    monkeypatch.setattr(evaluate_split, "build_dataset_frame", lambda _f, value, prefix: value)
+    monkeypatch.setattr(evaluate_split, "encode_obs", lambda *_args: {})
+    monkeypatch.setattr(evaluate_split, "send_msg", lambda *_args: None)
+    monkeypatch.setattr(
+        evaluate_split,
+        "recv_msg",
+        lambda _sock: {
+            "actions": action_values,
+            "trace": {
+                "selected_normalized_action": [0.0] * 7 + [1.2],
+                "selected_denormalized_action": action_values,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        evaluate_split,
+        "make_robot_action",
+        lambda _tensor, _features: dict(
+            zip(evaluate_split.ACTION_FIELD_NAMES, action_values, strict=True)
+        ),
+    )
+    monkeypatch.setattr(evaluate_split, "make_ik_checker", lambda _robot: lambda _a: True)
+
+    with pytest.raises(RuntimeError, match="已停止本轮并关闭伺服"):
+        evaluate_split.run_episode(
+            robot=robot,
+            events={"exit_early": False},
+            fps=25,
+            sock=object(),
+            dataset=Dataset(),
+            control_time_s=0.0001,
+            single_task="抓取竹条",
+            ee_mode_processor=lambda pair: pair[0],
+            robot_observation_processor=lambda observation: observation,
+            safety_gate=SimpleNamespace(
+                evaluate=lambda *_args, **_kwargs: SimpleNamespace(passed=True, reasons=())
+            ),
+            execute_actions=True,
+            trace_writer=trace_writer,
+            episode_index=3,
+        )
+
+    assert robot.is_suction_on is False
+    assert robot.disable_count == 1
+    assert len(trace_writer.records) == 1
+    record = trace_writer.records[0]
+    assert record["gripper"]["hysteresis_state_before"] is False
+    assert record["gripper"]["hysteresis_state_candidate"] is True
+    assert record["actuator"]["commanded_state_after"] is False
+    assert record["actuator"]["success"] is False
+    assert record["outcome"] == "actuator_error"

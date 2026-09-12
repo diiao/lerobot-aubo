@@ -57,6 +57,23 @@ def test_finds_all_on_and_off_transitions() -> None:
     assert {event["ordinal"] for event in offs} == {0, 1}
 
 
+def test_target_event_summary_uses_selected_episode_labels_not_fixed_count() -> None:
+    events = [
+        {"episode_index": 4, "target_frame": 10, "frame": 10, "kind": "on", "ordinal": 0},
+        {"episode_index": 4, "target_frame": 30, "frame": 30, "kind": "off", "ordinal": 0},
+        {"episode_index": 9, "target_frame": 12, "frame": 12, "kind": "on", "ordinal": 0},
+        {"episode_index": 9, "target_frame": 32, "frame": 32, "kind": "off", "ordinal": 0},
+    ]
+
+    summary = audit.summarize_target_suction_events(events)
+
+    assert summary["expected_on"] == 2
+    assert summary["expected_off"] == 2
+    assert summary["found_on"] == 2
+    assert summary["found_off"] == 2
+    assert [event["episode_index"] for event in summary["on_events"]] == [4, 9]
+
+
 def test_geodesic_treats_plus_minus_pi_as_equivalent() -> None:
     plus = np.array([[0.0, 0.0, np.pi]], dtype=np.float64)
     minus = np.array([[0.0, 0.0, -np.pi]], dtype=np.float64)
@@ -116,3 +133,44 @@ def test_make_report_dir_refuses_to_overwrite(tmp_path: Path) -> None:
     (existing / "summary.json").write_text("{}", encoding="utf-8")
     with pytest.raises(FileExistsError, match="拒绝覆盖"):
         audit.make_report_dir(str(existing))
+
+
+def test_local_dataset_loaders_pass_repo_id_and_root_explicitly(tmp_path: Path, monkeypatch) -> None:
+    dataset_path = tmp_path / "local_dataset"
+    (dataset_path / "meta").mkdir(parents=True)
+    (dataset_path / "meta" / "info.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(
+        audit,
+        "LeRobotDatasetMetadata",
+        lambda **kwargs: calls.append(("metadata", kwargs)) or "metadata",
+    )
+    monkeypatch.setattr(
+        audit,
+        "LeRobotDataset",
+        lambda **kwargs: calls.append(("dataset", kwargs)) or "dataset",
+    )
+
+    assert audit.load_local_dataset_metadata(dataset_path) == "metadata"
+    assert (
+        audit.load_local_dataset(
+            dataset_path,
+            episodes=[1, 2],
+            delta_timestamps={"action": [0.0]},
+        )
+        == "dataset"
+    )
+    assert calls[0] == (
+        "metadata",
+        {"repo_id": "local_dataset", "root": dataset_path.resolve()},
+    )
+    assert calls[1] == (
+        "dataset",
+        {
+            "repo_id": "local_dataset",
+            "root": dataset_path.resolve(),
+            "episodes": [1, 2],
+            "delta_timestamps": {"action": [0.0]},
+        },
+    )
