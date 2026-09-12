@@ -180,16 +180,12 @@ def find_threshold_transitions(values: np.ndarray, threshold: float = SUCTION_TH
 
 
 def summarize_target_suction_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Inventory GT transitions for selected episodes without a fixed task count."""
+    """Inventory target-label transitions; this does not measure model recall."""
     on_events = [event for event in events if event["kind"] == "on"]
     off_events = [event for event in events if event["kind"] == "off"]
     return {
-        "expected_on": len(on_events),
-        "expected_off": len(off_events),
-        "found_on": len(on_events),
-        "found_off": len(off_events),
-        "all_on_found": True,
-        "all_off_found": True,
+        "target_on_count": len(on_events),
+        "target_off_count": len(off_events),
         "on_events": [
             {
                 "episode_index": event["episode_index"],
@@ -879,7 +875,7 @@ def audit(args: argparse.Namespace) -> Path:
                 "implementation": "lerobot.policies.act.modeling_act.ACTTemporalEnsembler",
             },
         },
-        "suction_events": summarize_target_suction_events(all_target_events),
+        "target_suction_events": summarize_target_suction_events(all_target_events),
         "comparison": comparison_out,
         "contact_sheets": contact_files,
         "transition_file": "transitions.csv",

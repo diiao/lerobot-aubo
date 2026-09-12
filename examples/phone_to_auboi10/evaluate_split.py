@@ -184,6 +184,32 @@ def write_trace(trace_writer: Any | None, record: dict[str, Any]) -> None:
         trace_writer.write(record)
 
 
+def attempt_trace_record(
+    *,
+    record_type: str,
+    episode_index: int,
+    attempt_index: int,
+    disposition: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Build an episode-attempt lifecycle record for unambiguous rerecord traces."""
+    if record_type not in {"attempt_start", "attempt_end"}:
+        raise ValueError(f"未知 attempt trace 类型: {record_type}")
+    if record_type == "attempt_start" and (disposition is not None or error is not None):
+        raise ValueError("attempt_start 不应包含 disposition 或 error")
+    if record_type == "attempt_end" and disposition not in {"saved", "rerecorded", "aborted"}:
+        raise ValueError(f"未知 attempt disposition: {disposition}")
+    return {
+        "schema_version": "aubo_act_execution_trace_v1",
+        "record_type": record_type,
+        "episode_index": int(episode_index),
+        "attempt_index": int(attempt_index),
+        "attempt_id": f"episode-{episode_index:04d}-attempt-{attempt_index:03d}",
+        "disposition": disposition,
+        "error": error,
+    }
+
+
 def resolve_local_dataset_path(path_value: str, *, must_exist: bool) -> tuple[str, Path]:
     """Resolve an explicit local LeRobot dataset without falling back to HF cache."""
     root = Path(path_value).expanduser()
@@ -441,6 +467,7 @@ def run_episode(
     execute_actions: bool,
     trace_writer: Any | None = None,
     episode_index: int = 0,
+    attempt_index: int = 0,
 ):
     action_queue = deque()  # 保留协议兼容性；当前服务端每次返回一步动作
     safety_state = ActionSafetyState()
@@ -529,7 +556,10 @@ def run_episode(
         transition_requested = next_suction_on != previous_suction_on
         trace_record: dict[str, Any] = {
             "schema_version": "aubo_act_execution_trace_v1",
+            "record_type": "step",
             "episode_index": int(episode_index),
+            "attempt_index": int(attempt_index),
+            "attempt_id": f"episode-{episode_index:04d}-attempt-{attempt_index:03d}",
             "step_index": int(step_index),
             "control_timestamp_s": float(timestamp),
             "observation_monotonic_s": float(observation_timestamp_s),
@@ -841,6 +871,7 @@ def main():
     dataset = None
     trace_writer = None
     episode_idx = 0
+    attempt_idx = 0
     try:
         robot.connect()
         if not robot.is_connected:
@@ -913,36 +944,81 @@ def main():
 
             log_say(f"开始推理 episode {episode_idx + 1} / {NUM_EPISODES}")
             print("推理中... 按 -> 结束本轮, 按 ← 重录, 按 Esc 终止")
-
-            run_episode(
-                robot=robot,
-                events=events,
-                fps=control_fps,
-                sock=sock,
-                dataset=dataset,
-                control_time_s=EPISODE_TIME_SEC,
-                single_task=TASK_DESCRIPTION,
-                ee_mode_processor=ee_mode_processor,
-                robot_observation_processor=robot_observation_processor,
-                safety_gate=safety_gate,
-                execute_actions=execute_actions,
-                trace_writer=trace_writer,
-                episode_index=episode_idx,
+            write_trace(
+                trace_writer,
+                attempt_trace_record(
+                    record_type="attempt_start",
+                    episode_index=episode_idx,
+                    attempt_index=attempt_idx,
+                ),
             )
+            attempt_closed = False
+            try:
+                run_episode(
+                    robot=robot,
+                    events=events,
+                    fps=control_fps,
+                    sock=sock,
+                    dataset=dataset,
+                    control_time_s=EPISODE_TIME_SEC,
+                    single_task=TASK_DESCRIPTION,
+                    ee_mode_processor=ee_mode_processor,
+                    robot_observation_processor=robot_observation_processor,
+                    safety_gate=safety_gate,
+                    execute_actions=execute_actions,
+                    trace_writer=trace_writer,
+                    episode_index=episode_idx,
+                    attempt_index=attempt_idx,
+                )
 
-            if execute_actions:
-                robot.disable_servo_mode()
+                if execute_actions:
+                    robot.disable_servo_mode()
 
-            if events["rerecord_episode"]:
-                log_say("重新执行本轮 episode")
-                events["rerecord_episode"] = False
-                events["exit_early"] = False
-                dataset.clear_episode_buffer()
-                continue
+                if events["rerecord_episode"]:
+                    dataset.clear_episode_buffer()
+                    write_trace(
+                        trace_writer,
+                        attempt_trace_record(
+                            record_type="attempt_end",
+                            episode_index=episode_idx,
+                            attempt_index=attempt_idx,
+                            disposition="rerecorded",
+                        ),
+                    )
+                    attempt_closed = True
+                    log_say("重新执行本轮 episode")
+                    events["rerecord_episode"] = False
+                    events["exit_early"] = False
+                    attempt_idx += 1
+                    continue
 
-            dataset.save_episode()
-            log_say(f"Episode {episode_idx + 1} 已保存")
-            episode_idx += 1
+                dataset.save_episode()
+                write_trace(
+                    trace_writer,
+                    attempt_trace_record(
+                        record_type="attempt_end",
+                        episode_index=episode_idx,
+                        attempt_index=attempt_idx,
+                        disposition="saved",
+                    ),
+                )
+                attempt_closed = True
+                log_say(f"Episode {episode_idx + 1} 已保存")
+                episode_idx += 1
+                attempt_idx = 0
+            except Exception as exc:
+                if not attempt_closed:
+                    write_trace(
+                        trace_writer,
+                        attempt_trace_record(
+                            record_type="attempt_end",
+                            episode_index=episode_idx,
+                            attempt_index=attempt_idx,
+                            disposition="aborted",
+                            error=str(exc),
+                        ),
+                    )
+                raise
 
             if episode_idx >= NUM_EPISODES or events["stop_recording"]:
                 break

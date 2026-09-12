@@ -270,6 +270,35 @@ def test_jsonl_trace_writer_refuses_overwrite_and_writes_valid_json(tmp_path) ->
         evaluate_split.JsonlTraceWriter(path)
 
 
+def test_attempt_trace_records_distinguish_rerecorded_attempts() -> None:
+    first_end = evaluate_split.attempt_trace_record(
+        record_type="attempt_end",
+        episode_index=3,
+        attempt_index=0,
+        disposition="rerecorded",
+    )
+    second_start = evaluate_split.attempt_trace_record(
+        record_type="attempt_start",
+        episode_index=3,
+        attempt_index=1,
+    )
+
+    assert first_end["attempt_id"] == "episode-0003-attempt-000"
+    assert second_start["attempt_id"] == "episode-0003-attempt-001"
+    assert first_end["disposition"] == "rerecorded"
+    assert second_start["disposition"] is None
+
+
+def test_attempt_trace_rejects_invalid_lifecycle_values() -> None:
+    with pytest.raises(ValueError, match="未知 attempt disposition"):
+        evaluate_split.attempt_trace_record(
+            record_type="attempt_end",
+            episode_index=0,
+            attempt_index=0,
+            disposition="completed",
+        )
+
+
 def test_dry_run_loop_never_calls_robot_send_action(monkeypatch) -> None:
     action_values = [-3.0, 0.1, -0.7, 0.15, 0.0, 0.0, 0.0, 0.0]
 
@@ -422,12 +451,16 @@ def test_send_failure_does_not_commit_hysteresis_state_and_stops_servo(monkeypat
             execute_actions=True,
             trace_writer=trace_writer,
             episode_index=3,
+            attempt_index=2,
         )
 
     assert robot.is_suction_on is False
     assert robot.disable_count == 1
     assert len(trace_writer.records) == 1
     record = trace_writer.records[0]
+    assert record["record_type"] == "step"
+    assert record["attempt_index"] == 2
+    assert record["attempt_id"] == "episode-0003-attempt-002"
     assert record["gripper"]["hysteresis_state_before"] is False
     assert record["gripper"]["hysteresis_state_candidate"] is True
     assert record["actuator"]["commanded_state_after"] is False
