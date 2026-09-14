@@ -6,8 +6,8 @@
     python aggregate.py
 
 默认自动发现 bamboo_newview_s01、s02...，也可通过 DATASET_SOURCES
-传入逗号分隔的 repo_id。每次增加新批次后重新运行；脚本会先删除旧聚合输出再重建
-（LeRobotDataset.create 用 exist_ok=False，输出目录已存在会报错）。
+传入逗号分隔的 repo_id。聚合输出必须使用一个不存在的新目录；脚本拒绝覆盖
+任何已有目录，以保护原始批次和既有聚合成果。
 
 注意: SRC 里的每个批次必须用相同的相机配置、处理器链、FPS、TASK_DESCRIPTION
 录制，否则 aggregate 的 validate_all_metadata 会报 features 不一致。
@@ -16,7 +16,6 @@
 import json
 import os
 import re
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +35,7 @@ REQUIRED_CAMERAS = (
     "observation.images.handeye",
     "observation.images.fixed",
 )
+RESERVED_OUTPUT_NAMES = {"bamboo_act_report_full"}
 
 
 def action_array_to_numpy(actions) -> np.ndarray:
@@ -223,6 +223,22 @@ def resolve_dataset_root(spec: str) -> Path:
     raise FileNotFoundError(f"源数据集不存在: {spec}")
 
 
+def validate_aggregation_paths(source_roots: list[Path], dst_root: Path) -> None:
+    """Fail closed before aggregation can modify the destination directory."""
+    if len(set(source_roots)) != len(source_roots):
+        raise ValueError("源数据集列表包含重复目录；拒绝重复合并 episode")
+    if dst_root in source_roots:
+        raise ValueError("聚合输出不能同时出现在源数据集列表中")
+    if dst_root.name in RESERVED_OUTPUT_NAMES:
+        raise ValueError(f"拒绝使用受保护的聚合输出名称: {dst_root.name}")
+    if re.fullmatch(r"bamboo_act_report_s\d+[a-z]?", dst_root.name):
+        raise ValueError(f"拒绝把聚合输出写成源批次目录: {dst_root}")
+    if dst_root.exists():
+        raise FileExistsError(
+            f"聚合输出已存在，拒绝覆盖: {dst_root}。请使用新的 OUTPUT_DATASET_PATH"
+        )
+
+
 def main():
     sources = discover_sources()
     if not sources:
@@ -232,23 +248,15 @@ def main():
     source_roots = [resolve_dataset_root(source) for source in sources]
     dst_root = Path(DST).expanduser()
     dst_root = dst_root.resolve() if dst_root.is_absolute() or str(DST).startswith(".") else (HF_LEROBOT_HOME / DST).resolve()
-    if dst_root in source_roots:
-        raise ValueError("聚合输出不能同时出现在源数据集列表中")
-    if re.fullmatch(r"bamboo_act_report_s\d+", dst_root.name):
-        raise ValueError(f"拒绝把聚合输出写成源批次目录: {dst_root}")
+    validate_aggregation_paths(source_roots, dst_root)
 
-    # 先验证每个源批次，避免无效批次导致已有聚合输出被白白删除。
+    # 先验证每个源批次；目标目录已经在上方确认不存在。
     for source, source_root in zip(sources, source_roots, strict=True):
         print(f"检查源批次: {source} -> {source_root}")
         info = validate_metadata(source_root)
         validate_image_stats(source_root)
         validate_gripper_labels(source_root)
         validate_episode_actions(source_root, info)
-
-    # merge_datasets 内部用 create(exist_ok=False)，只删除旧聚合输出，不删除 s01–s14。
-    if dst_root.exists():
-        print(f"删除旧的聚合输出: {dst_root}")
-        shutil.rmtree(dst_root)
 
     print(f"合并: {sources} -> {dst_root}")
     datasets = [

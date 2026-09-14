@@ -101,3 +101,36 @@ def test_legacy_neutral_gripper_label_is_rejected(tmp_path):
 
     with pytest.raises(RuntimeError, match="非 0/100"):
         aggregate.validate_gripper_labels(root)
+
+
+def test_aggregation_paths_refuse_existing_output_without_deleting_it(tmp_path):
+    aggregate = _load_aggregate_module()
+    source = tmp_path / "source"
+    source.mkdir()
+    output = tmp_path / "aggregate"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="拒绝覆盖"):
+        aggregate.validate_aggregation_paths([source.resolve()], output.resolve())
+
+    assert marker.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_aggregation_paths_refuse_duplicate_sources(tmp_path):
+    aggregate = _load_aggregate_module()
+    source = (tmp_path / "source").resolve()
+    output = (tmp_path / "aggregate").resolve()
+
+    with pytest.raises(ValueError, match="重复目录"):
+        aggregate.validate_aggregation_paths([source, source], output)
+
+
+def test_aggregation_paths_refuse_protected_original_name(tmp_path):
+    aggregate = _load_aggregate_module()
+    source = (tmp_path / "source").resolve()
+    output = (tmp_path / "bamboo_act_report_full").resolve()
+
+    with pytest.raises(ValueError, match="受保护"):
+        aggregate.validate_aggregation_paths([source], output)

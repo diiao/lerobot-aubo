@@ -48,6 +48,11 @@ class AuboI10Robot(Robot):
         self.suction_on_pin = 2    # 拉高 → 吸
         self.suction_off_pin = 3   # 拉高 → 不吸
         self.is_suction_on = False
+        # live06: setStandardDigitalOutput returned 0 and the vacuum closed,
+        # but the first getStandardDigitalOutput still showed the previous
+        # release pair. Retry instead of aborting the episode on that race.
+        self.suction_do_readback_attempts = 8
+        self.suction_do_readback_interval_s = 0.025
         self.io_control = None
         # Last controller-command evidence. This is software/DO state only;
         # it is not physical gripper-position or grasp-success feedback.
@@ -481,13 +486,29 @@ class AuboI10Robot(Robot):
                 self.servo_blend_radius,
                 200
             )
+            if ret == 0:
+                break
             if ret == 2:  # 队列满
                 retry_count += 1
                 if retry_count >= self.servo_max_queue_retry:
                     logging.warning(f"J6偏航关节伺服队列持续满载，已重试 {retry_count} 次")
                 time.sleep(0.005)
-            else:
-                break
+                continue
+            if int(ret) == -13:
+                # live05/07: IK deltas were ~0.01° at pick hover, then servoJoint
+                # returned -13 and aborted before the vacuum close. Re-enable and
+                # retry instead of killing the episode on a single drop-out.
+                retry_count += 1
+                logging.warning(
+                    "J6偏航 servoJoint ret=-13，重开伺服后重试 (%s/%s)",
+                    retry_count,
+                    self.servo_max_queue_retry,
+                )
+                self.is_servo_mode_enabled = False
+                if not self.enable_servo_mode():
+                    break
+                continue
+            break
 
         if ret == 2:
             raise RuntimeError(f"J6偏航关节伺服队列持续满载，已重试 {retry_count} 次")
@@ -872,14 +893,23 @@ class AuboI10Robot(Robot):
                     )
 
             if callable(readback_method):
-                readback = {
-                    str(self.suction_on_pin): bool(readback_method(self.suction_on_pin)),
-                    str(self.suction_off_pin): bool(readback_method(self.suction_off_pin)),
-                }
-                trace["do_readback"] = readback
-                trace["controller_output_state_known"] = True
-                trace["controller_output_matches_requested"] = readback == requested_do
-                if readback != requested_do:
+                readback = None
+                attempts = max(1, int(self.suction_do_readback_attempts))
+                interval_s = max(0.0, float(self.suction_do_readback_interval_s))
+                for attempt in range(1, attempts + 1):
+                    readback = {
+                        str(self.suction_on_pin): bool(readback_method(self.suction_on_pin)),
+                        str(self.suction_off_pin): bool(readback_method(self.suction_off_pin)),
+                    }
+                    trace["do_readback"] = readback
+                    trace["do_readback_attempts"] = attempt
+                    trace["controller_output_state_known"] = True
+                    trace["controller_output_matches_requested"] = readback == requested_do
+                    if readback == requested_do:
+                        break
+                    if attempt < attempts and interval_s > 0.0:
+                        time.sleep(interval_s)
+                else:
                     raise RuntimeError(
                         f"controller DO readback mismatch: requested={requested_do}, readback={readback}"
                     )

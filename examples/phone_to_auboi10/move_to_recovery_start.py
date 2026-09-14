@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """把 AUBO i10 移到可重复的 ACT 恢复示教起点。
 
-该脚本来自 bamboo_newview_eval_run05_trial02 的真实失败回放：末端已经到达竹条上方，
-但模型没有继续下降或吸取。恢复示教应从这个状态连续示范下降、吸取、抬升、放置和释放。
+可选恢复点来自真实闭环失败回放：末端已经到达竹条上方，但模型没有继续
+下降或吸取。恢复示教应从选定状态连续示范下降、吸取、抬升、放置和释放。
 
 安全设计：
 * 不带 --confirm 时只读取并展示当前状态，绝不发送运动命令；
@@ -20,6 +20,8 @@ import time
 import pyaubo_sdk
 
 from aubo_start_poses import (
+    ACT90_RECOVERY_EXPECTED_TCP_XYZ_M,
+    ACT90_RECOVERY_START_DEG,
     NORMAL_START_DEG,
     RECOVERY_EXPECTED_TCP_XYZ_M,
     RECOVERY_START_DEG,
@@ -28,8 +30,8 @@ from aubo_start_poses import (
 ROBOT_IP = "192.168.31.200"
 ROBOT_PORT = 30004
 
-# run05 trial02 第 472 帧的实际关节状态：TCP 约 (0.5749, -0.4706, 0.1716) m，
-# 即竹条上方的典型闭环失败状态。它不是抓取点，也不会替代 NORMAL_START_DEG。
+# 恢复 profile 都是竹条上方的闭环失败状态。它们不是抓取点，
+# 也不会替代 NORMAL_START_DEG。
 
 NORMAL_START_TOLERANCE_DEG = 5.0
 SPEED_FRACTION = 0.20
@@ -80,11 +82,23 @@ def release_suction(iface):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--profile",
+        choices=("legacy", "act90"),
+        default="legacy",
+        help="legacy=run05 恢复点；act90=12D live10 的 90° 悬停恢复点。",
+    )
+    parser.add_argument(
         "--confirm",
         action="store_true",
         help="确认已检查工位和急停后，才实际执行低速 moveJoint。缺省只预览。",
     )
     args = parser.parse_args()
+    if args.profile == "act90":
+        recovery_start_deg = ACT90_RECOVERY_START_DEG
+        recovery_expected_tcp_xyz_m = ACT90_RECOVERY_EXPECTED_TCP_XYZ_M
+    else:
+        recovery_start_deg = RECOVERY_START_DEG
+        recovery_expected_tcp_xyz_m = RECOVERY_EXPECTED_TCP_XYZ_M
 
     rpc = pyaubo_sdk.RpcClient()
     try:
@@ -103,7 +117,8 @@ def main():
         current_deg, _ = print_state(iface, "当前状态")
         start_error = max_joint_error_deg(current_deg, NORMAL_START_DEG)
         print("\n统一正常起点 (deg):", NORMAL_START_DEG)
-        print("恢复示教起点 (deg):", RECOVERY_START_DEG)
+        print(f"恢复示教 profile: {args.profile}")
+        print("恢复示教起点 (deg):", recovery_start_deg)
         print(f"距统一正常起点的最大关节误差: {start_error:.2f}°")
 
         if start_error > NORMAL_START_TOLERANCE_DEG:
@@ -116,7 +131,10 @@ def main():
         if not args.confirm:
             print("\n预览完成：未发送任何运动或 IO 指令。")
             print("确认工作区清空、急停可用、无人员在活动范围内后，执行：")
-            print("  ../../.venv/bin/python move_to_recovery_start.py --confirm")
+            print(
+                "  ../../.venv/bin/python move_to_recovery_start.py "
+                f"--profile {args.profile} --confirm"
+            )
             return 0
 
         motion = iface.getMotionControl()
@@ -130,15 +148,15 @@ def main():
             "请持续现场监护）..."
         )
         motion.setSpeedFraction(SPEED_FRACTION)
-        target_rad = [math.radians(value) for value in RECOVERY_START_DEG]
+        target_rad = [math.radians(value) for value in recovery_start_deg]
         motion.moveJoint(target_rad, JOINT_SPEED_RAD_S, JOINT_ACCEL_RAD_S2, 0, 0)
         if not wait_arrival(iface):
             print("moveJoint 未在 5 秒内启动；未执行后续吸盘 IO。")
             return 3
 
         arrived_deg, tcp = print_state(iface, "到位后状态")
-        joint_error = max_joint_error_deg(arrived_deg, RECOVERY_START_DEG)
-        tcp_xyz_error_mm = 1000.0 * math.dist(tcp[:3], RECOVERY_EXPECTED_TCP_XYZ_M)
+        joint_error = max_joint_error_deg(arrived_deg, recovery_start_deg)
+        tcp_xyz_error_mm = 1000.0 * math.dist(tcp[:3], recovery_expected_tcp_xyz_m)
         print(f"到位最大关节误差: {joint_error:.2f}°")
         print(f"相对记录恢复 TCP 的位置差: {tcp_xyz_error_mm:.1f} mm")
 
@@ -148,7 +166,11 @@ def main():
             print(f"吸盘释放失败: {exc}")
             return 4
 
-        print("完成。若开始恢复录制，请以 RECORD_START_MODE=recovery 启动 record.py；")
+        record_mode = "act90_recovery" if args.profile == "act90" else "recovery"
+        print(
+            "完成。若开始恢复录制，请以 "
+            f"RECORD_START_MODE={record_mode} 启动 record.py；"
+        )
         print("录制程序中的 r 会安全复现相同的标准位→恢复位过程。")
         return 0
     finally:

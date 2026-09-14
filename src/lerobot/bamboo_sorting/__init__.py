@@ -86,6 +86,13 @@ from .observation_contract import (
     validate_temporal_alignment,
 )
 from .offline_vla_runtime import PHASE_B_POLICY_ID, OfflineVLARuntime
+from .smolvla_adapter import (
+    DEFAULT_IMAGE_HEIGHT,
+    DEFAULT_IMAGE_WIDTH,
+    SmolVLAOfflineForwardAdapter,
+    prepare_smolvla_inference_frame,
+    validate_smolvla_policy_contract,
+)
 from .thin_safety_gate import (
     THIN_SAFETY_GATE_SCHEMA_VERSION,
     GatedActionChunk,
@@ -151,6 +158,11 @@ __all__ = [
     "validate_temporal_alignment",
     "PHASE_B_POLICY_ID",
     "OfflineVLARuntime",
+    "DEFAULT_IMAGE_HEIGHT",
+    "DEFAULT_IMAGE_WIDTH",
+    "SmolVLAOfflineForwardAdapter",
+    "prepare_smolvla_inference_frame",
+    "validate_smolvla_policy_contract",
     "THIN_SAFETY_GATE_SCHEMA_VERSION",
     "GatedActionChunk",
     "ThinSafetyGate",

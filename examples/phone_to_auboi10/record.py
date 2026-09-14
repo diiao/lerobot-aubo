@@ -45,7 +45,11 @@ from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
-from aubo_start_poses import NORMAL_START_DEG, RECOVERY_START_DEG
+from aubo_start_poses import (
+    ACT90_RECOVERY_START_DEG,
+    NORMAL_START_DEG,
+    RECOVERY_START_DEG,
+)
 
 NUM_EPISODES = int(os.environ.get("NUM_EPISODES", "4"))
 CONTROL_FPS = 25
@@ -61,8 +65,14 @@ _DATASET_PATH = Path(os.environ.get("DATASET_PATH", "./datasets/bamboo_act_repor
 LOCAL_DATASET_ROOT = _DATASET_PATH.resolve()
 LOCAL_DATASET_REPO_ID = LOCAL_DATASET_ROOT.name
 RECORD_START_MODE = os.environ.get("RECORD_START_MODE", "normal").strip().lower()
-if RECORD_START_MODE not in {"normal", "recovery"}:
-    raise ValueError("RECORD_START_MODE 只能是 'normal' 或 'recovery'")
+RECOVERY_START_POSES = {
+    "recovery": RECOVERY_START_DEG,
+    "act90_recovery": ACT90_RECOVERY_START_DEG,
+}
+if RECORD_START_MODE != "normal" and RECORD_START_MODE not in RECOVERY_START_POSES:
+    raise ValueError(
+        "RECORD_START_MODE 只能是 'normal'、'recovery' 或 'act90_recovery'"
+    )
 
 # 相机用稳定的 by-id 路径，避免重启/重插后 /dev/videoN 重新编号导致 handeye/fixed 错位。
 # handeye = GENERAL WEBCAM（眼在手外，当前重新调整的眼相机）。
@@ -123,11 +133,15 @@ def return_to_start(robot):
         logging.error("未确认机械臂已到达标准起始位；本次归位失败")
         return False
 
-    if RECORD_START_MODE == "recovery":
-        logging.info("恢复模式：低速 moveJoint 到固定恢复起点...")
+    if RECORD_START_MODE in RECOVERY_START_POSES:
+        recovery_target_deg = RECOVERY_START_POSES[RECORD_START_MODE]
+        logging.info(
+            "恢复模式 %s：低速 moveJoint 到固定恢复起点...",
+            RECORD_START_MODE,
+        )
         if not move_joint_and_wait(
             motion,
-            RECOVERY_START_DEG,
+            recovery_target_deg,
             RECOVERY_MOVE_SPEED_FRACTION,
             speed_deg_s=30,
             accel_deg_s2=30,
@@ -315,7 +329,7 @@ def main():
         print("录制操作指南:")
         print("  → (右箭头): 开始/结束当前 episode")
         print("  ← (左箭头): 结束并重录当前 episode")
-        if RECORD_START_MODE == "recovery":
+        if RECORD_START_MODE in RECOVERY_START_POSES:
             print("  r:          先回标准位，再低速到固定恢复起点（每条必做）")
         else:
             print("  r:          归位到统一正常起始位置")
@@ -328,7 +342,7 @@ def main():
             robot.disable_servo_mode()  # 关伺服，让 r 归位能用 moveJoint
             print("\n" + "=" * 50)
             print(f"  按 -> 开始录制 episode {episode_idx + 1} / {NUM_EPISODES}")
-            if RECORD_START_MODE == "recovery":
+            if RECORD_START_MODE in RECOVERY_START_POSES:
                 print("  按 r 回标准位后低速到固定恢复起点（本模式必须先按 r）")
             else:
                 print("  按 r 归位到统一正常起始位置")
@@ -344,7 +358,7 @@ def main():
                     events["return_to_start"] = False
                     episode_start_ready = return_to_start(robot)
                     if episode_start_ready:
-                        if RECORD_START_MODE == "recovery":
+                        if RECORD_START_MODE in RECOVERY_START_POSES:
                             print("已到固定恢复起点，摆好竹条后按 -> 开始录制")
                         else:
                             print("已归位到正常起点，摆好竹条后按 -> 开始录制")
