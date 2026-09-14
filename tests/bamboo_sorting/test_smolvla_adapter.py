@@ -122,9 +122,13 @@ def test_adapter_runs_policy_stack_and_offline_runtime_stays_unauthorized() -> N
     )
     policy = _Policy(chunk)
     adapter = SmolVLAOfflineForwardAdapter(policy, _identity, _identity)
-    runtime = OfflineVLARuntime(adapter)
+    runtime = OfflineVLARuntime(
+        adapter,
+        checkpoint_ref="checkpoints/001000/pretrained_model",
+        checkpoint_sha256="a" * 64,
+    )
 
-    frame, gated, authorization = runtime.predict_and_gate(
+    frame, prediction, gated, authorization = runtime.predict_and_gate_with_audit(
         _payload(height=480, width=640),
         now_monotonic_s=10.0,
         observation_sync_timestamp_s=9.95,
@@ -139,6 +143,8 @@ def test_adapter_runs_policy_stack_and_offline_runtime_stays_unauthorized() -> N
     assert policy.seen is not None
     assert "action" not in policy.seen
     assert policy.seen["observation.images.global_rgb"].shape == (3, 480, 640)
+    assert prediction.actions == gated.actions
+    assert prediction.checkpoint_sha256 == "a" * 64
     assert gated.passed is True
     assert authorization.policy_execution_authorized is False
 

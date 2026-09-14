@@ -86,6 +86,10 @@ from .observation_contract import (
     validate_temporal_alignment,
 )
 from .offline_vla_runtime import PHASE_B_POLICY_ID, OfflineVLARuntime
+from .policy_prediction import (
+    POLICY_PREDICTION_SCHEMA_VERSION,
+    PolicyPredictionV1,
+)
 from .smolvla_adapter import (
     DEFAULT_IMAGE_HEIGHT,
     DEFAULT_IMAGE_WIDTH,
@@ -158,6 +162,8 @@ __all__ = [
     "validate_temporal_alignment",
     "PHASE_B_POLICY_ID",
     "OfflineVLARuntime",
+    "POLICY_PREDICTION_SCHEMA_VERSION",
+    "PolicyPredictionV1",
     "DEFAULT_IMAGE_HEIGHT",
     "DEFAULT_IMAGE_WIDTH",
     "SmolVLAOfflineForwardAdapter",

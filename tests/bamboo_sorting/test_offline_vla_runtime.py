@@ -60,3 +60,45 @@ def test_offline_runtime_gates_language_observation_and_refuses_actuators() -> N
     assert runtime.policy_execution_authorized is False
     with pytest.raises(PermissionError, match="does not connect"):
         runtime.dispatch_to_actuator(gated, authorization)
+
+
+def test_audited_runtime_binds_checkpoint_observation_instruction_and_gate() -> None:
+    runtime = OfflineVLARuntime(
+        _safe_chunk,
+        checkpoint_ref="checkpoints/001000/pretrained_model",
+        checkpoint_sha256="a" * 64,
+    )
+
+    frame, prediction, gated, authorization = runtime.predict_and_gate_with_audit(
+        _payload(),
+        now_monotonic_s=10.0,
+        observation_sync_timestamp_s=9.95,
+        chunk_created_monotonic_s=9.99,
+        observation_id="observation-0001",
+        action_chunk_id="action-chunk-0001",
+        previous_tcp_m=(0.0, -0.5, 0.2),
+        previous_j6_rad=0.0,
+    )
+
+    assert prediction.checkpoint_sha256 == "a" * 64
+    assert prediction.observation_id == "observation-0001"
+    assert prediction.instruction_id == frame["instruction_id"]
+    assert gated.actions == prediction.actions
+    assert authorization.action_chunk_id == prediction.prediction_id
+    assert authorization.policy_execution_authorized is False
+
+
+def test_audited_runtime_fails_closed_without_checkpoint_identity() -> None:
+    runtime = OfflineVLARuntime(_safe_chunk)
+
+    with pytest.raises(ValueError, match="checkpoint_ref and checkpoint_sha256"):
+        runtime.predict_and_gate_with_audit(
+            _payload(),
+            now_monotonic_s=10.0,
+            observation_sync_timestamp_s=9.95,
+            chunk_created_monotonic_s=9.99,
+            observation_id="observation-0001",
+            action_chunk_id="action-chunk-0001",
+            previous_tcp_m=(0.0, -0.5, 0.2),
+            previous_j6_rad=0.0,
+        )
