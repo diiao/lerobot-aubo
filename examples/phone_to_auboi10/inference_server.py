@@ -273,6 +273,11 @@ class InferenceServer:
                 if predicted_chunk_denormalized is not None
                 else None
             ),
+            "predicted_chunk_denormalized_action": (
+                predicted_chunk_denormalized[0].tolist()
+                if predicted_chunk_denormalized is not None
+                else None
+            ),
         }
         self.prediction_sequence += 1
         return selected_denormalized.squeeze(0), trace

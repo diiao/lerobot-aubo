@@ -31,6 +31,8 @@ def make_robot(*, suction_on: bool = False, io_control=None) -> AuboI10Robot:
     robot.is_suction_on = suction_on
     robot.io_control = io_control
     robot.last_gripper_command_trace = None
+    robot.suction_do_readback_attempts = 1
+    robot.suction_do_readback_interval_s = 0.0
     return robot
 
 
@@ -87,6 +89,21 @@ def test_io_control_none_fails_without_state_change() -> None:
     assert robot.last_gripper_command_trace["controller_output_state_known"] is False
 
 
+class DelayedReadIO(FakeIO):
+    def __init__(self, *, suction_on: bool, stale_attempts: int):
+        super().__init__(suction_on=suction_on)
+        self.stale = dict(self.outputs)
+        self.stale_attempts = stale_attempts
+        self.read_attempts = 0
+
+    def getStandardDigitalOutput(self, pin: int) -> bool:
+        if pin == 2:
+            self.read_attempts += 1
+        if self.read_attempts <= self.stale_attempts:
+            return self.stale[pin]
+        return self.outputs[pin]
+
+
 def test_controller_readback_mismatch_is_not_reported_as_success() -> None:
     io = FakeIO(suction_on=False)
     io.getStandardDigitalOutput = Mock(return_value=False)
@@ -96,6 +113,19 @@ def test_controller_readback_mismatch_is_not_reported_as_success() -> None:
     assert robot.is_suction_on is False
     assert robot.last_gripper_command_trace["do_api_success"] is False
     assert "readback mismatch" in robot.last_gripper_command_trace["error"]
+
+
+def test_stale_do_readback_succeeds_after_retry(monkeypatch) -> None:
+    io = DelayedReadIO(suction_on=False, stale_attempts=2)
+    robot = make_robot(io_control=io)
+    robot.suction_do_readback_attempts = 4
+    robot.suction_do_readback_interval_s = 0.025
+    monkeypatch.setattr("lerobot.robots.aubo_i10.aubo_i10.time.sleep", lambda _s: None)
+
+    assert robot.suction_activate() is True
+    assert robot.is_suction_on is True
+    assert robot.last_gripper_command_trace["do_readback"] == {"2": True, "3": False}
+    assert robot.last_gripper_command_trace["do_readback_attempts"] == 3
 
 
 def test_failed_write_and_failed_readback_marks_controller_state_unknown() -> None:
@@ -220,3 +250,37 @@ def test_joint_servo_failure_return_code_raises(return_code: int) -> None:
             {f"J{index}": 0.0 for index in range(1, 7)},
             motion,
         )
+
+
+def test_j6yaw_servojoint_minus13_retries_after_reenable() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    robot.joint_acceleration = 1.0
+    robot.joint_velocity = 1.0
+    robot.servo_time = 0.04
+    robot.servo_blend_radius = 0.0
+    robot.servo_max_queue_retry = 3
+    robot.is_servo_mode_enabled = True
+    robot.enable_servo_mode = Mock(return_value=True)
+    state = Mock()
+    state.getJointPositions.return_value = [0.0] * 6
+    algo = Mock()
+    algo.inverseKinematics.return_value = ([0.0] * 6, 0)
+    robot.robot_interface = Mock()
+    robot.robot_interface.getRobotState.return_value = state
+    robot.robot_interface.getRobotAlgorithm.return_value = algo
+    motion = Mock()
+    motion.servoJoint.side_effect = [-13, 0]
+    action = {
+        "ee.x": 0.1,
+        "ee.y": -0.7,
+        "ee.z": 0.15,
+        "ee.wx": 0.0,
+        "ee.wy": 0.0,
+        "ee.wz": 0.0,
+        "ee.j6_target": -3.0,
+    }
+
+    robot._send_position_j6yaw(action, motion)
+
+    assert motion.servoJoint.call_count == 2
+    robot.enable_servo_mode.assert_called_once()

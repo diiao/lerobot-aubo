@@ -1,0 +1,53 @@
+{
+  "schema_version": "AuboActEpisodeSplitV1",
+  "dataset_repo_id": "bamboo_act_report_extended137_v1",
+  "dataset_info_sha256": "3052b356bd1cb897227c27f03263cb0a45aff929d8204d86ac2d415ca8802b3a",
+  "scope": "all_s01_s14_train_plus_stratified_s15_s28_extension",
+  "state_input_variant": "drop_gripper",
+  "split_method": "all_original_65_for_training_and_predeclared_last_local_episode_per_new_batch_for_validation",
+  "limitations": [
+    "The 14 validation episodes are within-batch holdouts, not an independent recording-session test.",
+    "The original 65 episodes are all training data and cannot be used as held-out validation for this model.",
+    "Teacher-forced validation cannot establish real-robot closed-loop grasp success."
+  ],
+  "train_episodes": [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59,
+    60, 61, 62, 63, 64, 65, 66, 67, 68, 70, 71, 72,
+    73, 75, 76, 77, 79, 80, 81, 83, 84, 86, 87, 89,
+    90, 92, 93, 95, 96, 97, 98, 99, 100, 102, 103, 104,
+    105, 106, 107, 109, 110, 111, 112, 113, 114, 116, 117, 118,
+    119, 120, 121, 123, 124, 125, 126, 127, 128, 130, 131, 132,
+    133, 134, 135
+  ],
+  "val_episodes": [69, 74, 78, 82, 85, 88, 91, 94, 101, 108, 115, 122, 129, 136],
+  "dataset_summary": {
+    "total_episodes": 137,
+    "total_frames": 180294,
+    "train_episodes": 123,
+    "train_frames": 164676,
+    "val_episodes": 14,
+    "val_frames": 15618,
+    "single_strip_val_episodes": [69, 74, 78, 82, 85, 88, 91, 94],
+    "double_strip_val_episodes": [101, 108, 115, 122, 129, 136]
+  },
+  "validation_provenance": {
+    "69": {"source": "bamboo_act_report_s15", "local_episode": 4},
+    "74": {"source": "bamboo_act_report_s16", "local_episode": 4},
+    "78": {"source": "bamboo_act_report_s17", "local_episode": 3},
+    "82": {"source": "bamboo_act_report_s18", "local_episode": 3},
+    "85": {"source": "bamboo_act_report_s19", "local_episode": 2},
+    "88": {"source": "bamboo_act_report_s20", "local_episode": 2},
+    "91": {"source": "bamboo_act_report_s21", "local_episode": 2},
+    "94": {"source": "bamboo_act_report_s22", "local_episode": 2},
+    "101": {"source": "bamboo_act_report_s23b", "local_episode": 0},
+    "108": {"source": "bamboo_act_report_s24", "local_episode": 6},
+    "115": {"source": "bamboo_act_report_s25", "local_episode": 6},
+    "122": {"source": "bamboo_act_report_s26b", "local_episode": 0},
+    "129": {"source": "bamboo_act_report_s27", "local_episode": 6},
+    "136": {"source": "bamboo_act_report_s28b", "local_episode": 1}
+  }
+}

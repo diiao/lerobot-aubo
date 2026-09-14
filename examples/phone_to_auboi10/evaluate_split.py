@@ -60,6 +60,7 @@ from lerobot.processor.converters import (
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Config, AuboI10Robot
 from lerobot.robots.aubo_i10.robot_processor import AuboEEBoundsAndSafety, AuboSetEEMode
 from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.rotation import Rotation
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import init_logging, log_say
@@ -82,6 +83,12 @@ LOCAL_EVAL_DATASET_PATH = os.environ.get(
 # normal demonstrated motion range. Override only for a documented experiment.
 MAX_EE_STEP_M = float(os.environ.get("MAX_EE_STEP_M", "0.008"))
 MAX_J6_STEP_RAD = float(os.environ.get("MAX_J6_STEP_RAD", "0.03"))
+# Same independent safety layer as 8 mm xyz, but for TCP orientation.
+# 40 single-strip demos (41,704 adjacent steps): 41,516 action orientation
+# changes are ~0 (locked pose); measured TCP geodesic p99.9=0.74°, continuous
+# max=1.09°. 0.03 rad (1.72°) is ~1.6× that continuous max, matching J6, and
+# clips the live02 3.5–7°/frame drift. Relock jumps are not continuous motion.
+MAX_EE_ROT_STEP_RAD = float(os.environ.get("MAX_EE_ROT_STEP_RAD", "0.03"))
 # IK continuity is a configuration-flip detector, not the 8 mm Cartesian cap.
 # 0.03 rad (~1.7°) aborts mid-reach; 0.25 rad (~14°) still catches branch jumps.
 MAX_IK_JOINT_STEP_RAD = float(os.environ.get("MAX_IK_JOINT_STEP_RAD", "0.25"))
@@ -112,6 +119,30 @@ def env_flag(name: str, default: bool = False) -> bool:
 DRY_RUN = env_flag("DRY_RUN", default=True)
 POLICY_EXECUTION_AUTHORIZED = env_flag("POLICY_EXECUTION_AUTHORIZED", default=False)
 AUTOMATIC_RETURN_AUTHORIZED = env_flag("AUTOMATIC_RETURN_AUTHORIZED", default=False)
+# Teleop labels lock ee.wx/wy/wz for the whole press and let J6 carry yaw.
+# Following the model's drifting rotvec, then clipping it toward measured TCP
+# (which already includes J6 yaw), fights that split and leaves closed-loop
+# observations out of distribution. Hold the first measured pose instead.
+HOLD_LOCKED_EE_POSE = env_flag("HOLD_LOCKED_EE_POSE", default=True)
+# Ensemble + n_action_steps=1 only executes chunk[0]. At pick height chunk[0]
+# stays ≈ -3 while later steps rise. live06 crossed 50, live07 peaked at 36.5
+# and never closed. Approach (z>0.12) max(chunk) was 5.5, so 20 is above
+# approach noise and at the hysteresis "open" edge. Hysteresis 60/20 unchanged.
+USE_GRIPPER_CHUNK_LOOKAHEAD = env_flag("USE_GRIPPER_CHUNK_LOOKAHEAD", default=True)
+GRIPPER_CHUNK_CLOSE_SCORE = float(os.environ.get("GRIPPER_CHUNK_CLOSE_SCORE", "20"))
+# live09 90° hover: selected xyz stayed at z≈0.22. Same ACT chunk issue as
+# the gripper: ensemble/chunk[0] holds the approach, later steps may already
+# plan the descent. Follow the lowest-z step of the raw chunk while suction
+# is off; 8 mm clip still rate-limits. Skip when vacuum is on so lift/place
+# are not pulled back down.
+USE_MOTION_CHUNK_LOOKAHEAD = env_flag("USE_MOTION_CHUNK_LOOKAHEAD", default=True)
+MOTION_CHUNK_MIN_Z_DROP_M = float(os.environ.get("MOTION_CHUNK_MIN_Z_DROP_M", "0.02"))
+# live08 pick/place chatter: max(chunk) flickered 13–23 and 12–59. Feeding
+# 100 or the raw -3 skipped the 20–60 hold band. Open only when the whole
+# chunk is below approach noise (~5.5). 8 is from live08: false opens were
+# 13.3/18.3/12.5; real place release dropped to -1.
+GRIPPER_CHUNK_OPEN_SCORE = float(os.environ.get("GRIPPER_CHUNK_OPEN_SCORE", "8"))
+GRIPPER_CHUNK_HOLD_SCORE = 40.0
 
 # GPU 机（Tailscale）
 SERVER_HOST = os.environ.get("SERVER_HOST", "100.88.143.45")
@@ -236,6 +267,11 @@ def validate_runtime_settings() -> None:
         raise ValueError(f"MAX_EE_STEP_M 必须在 [0.001, 0.05] m，当前为 {MAX_EE_STEP_M}")
     if not 0 < MAX_J6_STEP_RAD <= 0.4:
         raise ValueError(f"MAX_J6_STEP_RAD 必须在 (0, 0.4] rad，当前为 {MAX_J6_STEP_RAD}")
+    if not 0 < MAX_EE_ROT_STEP_RAD <= 0.4:
+        raise ValueError(
+            "MAX_EE_ROT_STEP_RAD 必须在 (0, 0.4] rad，"
+            f"当前为 {MAX_EE_ROT_STEP_RAD}"
+        )
     if not 0 < MAX_IK_JOINT_STEP_RAD <= 0.4:
         raise ValueError(
             "MAX_IK_JOINT_STEP_RAD 必须在 (0, 0.4] rad，"
@@ -249,6 +285,21 @@ def validate_runtime_settings() -> None:
         raise ValueError("MAX_RESPONSE_BYTES 必须在 [1024, 67108864]")
     if START_JOINT_TOLERANCE_DEG <= 0:
         raise ValueError("START_JOINT_TOLERANCE_DEG 必须大于 0")
+    if not 0 < GRIPPER_CHUNK_CLOSE_SCORE <= 100:
+        raise ValueError(
+            "GRIPPER_CHUNK_CLOSE_SCORE 必须在 (0, 100]，"
+            f"当前为 {GRIPPER_CHUNK_CLOSE_SCORE}"
+        )
+    if not 0 <= GRIPPER_CHUNK_OPEN_SCORE < GRIPPER_CHUNK_CLOSE_SCORE:
+        raise ValueError(
+            "GRIPPER_CHUNK_OPEN_SCORE 必须在 [0, GRIPPER_CHUNK_CLOSE_SCORE)，"
+            f"当前为 {GRIPPER_CHUNK_OPEN_SCORE}"
+        )
+    if not 0 < MOTION_CHUNK_MIN_Z_DROP_M <= 0.15:
+        raise ValueError(
+            "MOTION_CHUNK_MIN_Z_DROP_M 必须在 (0, 0.15] m，"
+            f"当前为 {MOTION_CHUNK_MIN_Z_DROP_M}"
+        )
 
 
 def discretize_gripper_command(raw_value: Any, *, suction_on: bool) -> tuple[float, bool]:
@@ -261,6 +312,69 @@ def discretize_gripper_command(raw_value: Any, *, suction_on: bool) -> tuple[flo
     if value < 20.0:
         return 0.0, False
     return (100.0, True) if suction_on else (0.0, False)
+
+
+def gripper_chunk_max(chunk: Any) -> float | None:
+    """Return max denormalized gripper in an ACT chunk, or None if unusable."""
+    if chunk is None:
+        return None
+    values = [float(value) for value in chunk]
+    if not values or not all(math.isfinite(value) for value in values):
+        return None
+    return max(values)
+
+
+def apply_motion_chunk_lookahead(
+    action: RobotAction,
+    chunk_actions: Any,
+    *,
+    min_z_drop_m: float,
+    suction_on: bool,
+) -> tuple[RobotAction, bool]:
+    """If the ACT chunk plans a descent, command that pose (still rate-limited)."""
+    if suction_on or chunk_actions is None:
+        return dict(action), False
+    rows = [list(row) for row in chunk_actions]
+    if not rows or any(len(row) < 4 for row in rows):
+        return dict(action), False
+    zs = [float(row[3]) for row in rows]
+    if not all(math.isfinite(value) for value in zs):
+        return dict(action), False
+    index = min(range(len(zs)), key=lambda i: zs[i])
+    planned_z = zs[index]
+    current_z = float(action["ee.z"])
+    if current_z - planned_z < min_z_drop_m:
+        return dict(action), False
+    planned = rows[index]
+    updated = dict(action)
+    updated["ee.j6_target"] = float(planned[0])
+    updated["ee.x"] = float(planned[1])
+    updated["ee.y"] = float(planned[2])
+    updated["ee.z"] = float(planned[3])
+    return updated, True
+
+
+def apply_gripper_chunk_lookahead(
+    action: RobotAction,
+    chunk: Any,
+    *,
+    close_score: float,
+    open_score: float,
+    hold_score: float = GRIPPER_CHUNK_HOLD_SCORE,
+) -> tuple[RobotAction, str]:
+    """Map chunk max to close/hold/pass so hysteresis 20–60 can stick."""
+    chunk_max = gripper_chunk_max(chunk)
+    if chunk_max is None:
+        return dict(action), "pass"
+    if chunk_max > close_score:
+        overridden = dict(action)
+        overridden["ee.gripper_pos"] = 100.0
+        return overridden, "close"
+    if chunk_max < open_score:
+        return dict(action), "pass"
+    held = dict(action)
+    held["ee.gripper_pos"] = float(hold_score)
+    return held, "hold"
 
 
 def normalize_action_for_actuator(
@@ -289,6 +403,73 @@ def measured_action_anchors(
     return tcp_m, j6_rad
 
 
+def measured_tcp_rotvec(observation: dict[str, Any]) -> tuple[float, float, float]:
+    """Return the measured base-frame TCP rotation vector in radians."""
+    return tuple(float(observation[f"ee.w{axis}"]) for axis in "xyz")
+
+
+def rotation_geodesic_angle_rad(
+    current_rotvec: tuple[float, float, float] | np.ndarray,
+    target_rotvec: tuple[float, float, float] | np.ndarray,
+) -> float:
+    """Return the geodesic angle between two rotation vectors, in radians."""
+    current = Rotation.from_rotvec(np.asarray(current_rotvec, dtype=float))
+    target = Rotation.from_rotvec(np.asarray(target_rotvec, dtype=float))
+    delta = (target * current.inv()).as_rotvec()
+    return float(np.linalg.norm(delta))
+
+
+def align_rotvec_to_reference(
+    target_rotvec: tuple[float, float, float] | np.ndarray,
+    reference_rotvec: tuple[float, float, float] | np.ndarray,
+) -> np.ndarray:
+    """Re-express target on the 2π branch nearest the measured/reference rotvec."""
+    target = np.asarray(target_rotvec, dtype=float)
+    reference = np.asarray(reference_rotvec, dtype=float)
+    primary = Rotation.from_rotvec(target).as_rotvec()
+    candidates = [primary]
+    norm = float(np.linalg.norm(primary))
+    if norm > 1e-9:
+        axis = primary / norm
+        candidates.append(primary + 2.0 * math.pi * axis)
+        candidates.append(primary - 2.0 * math.pi * axis)
+    return np.asarray(
+        min(candidates, key=lambda item: float(np.linalg.norm(np.asarray(item) - reference))),
+        dtype=float,
+    )
+
+
+def apply_locked_ee_pose(
+    action: RobotAction, locked_rotvec: tuple[float, float, float]
+) -> RobotAction:
+    """Replace model orientation with the episode-start locked TCP rotvec."""
+    locked = dict(action)
+    locked["ee.wx"] = float(locked_rotvec[0])
+    locked["ee.wy"] = float(locked_rotvec[1])
+    locked["ee.wz"] = float(locked_rotvec[2])
+    return locked
+
+
+def clip_rotvec_toward_measured(
+    target_rotvec: tuple[float, float, float] | np.ndarray,
+    previous_rotvec: tuple[float, float, float] | np.ndarray,
+    max_step_rad: float,
+) -> np.ndarray:
+    """Take at most one geodesic step from the measured pose, then align branches."""
+    previous = np.asarray(previous_rotvec, dtype=float)
+    target = np.asarray(target_rotvec, dtype=float)
+    r_prev = Rotation.from_rotvec(previous)
+    r_tgt = Rotation.from_rotvec(target)
+    rv_delta = (r_tgt * r_prev.inv()).as_rotvec()
+    angle = float(np.linalg.norm(rv_delta))
+    limit = max_step_rad * (1.0 - 1e-6)
+    if angle > limit and angle > 0.0:
+        next_rv = (Rotation.from_rotvec(rv_delta * (limit / angle)) * r_prev).as_rotvec()
+    else:
+        next_rv = target
+    return align_rotvec_to_reference(next_rv, previous)
+
+
 def clip_absolute_action_to_measured_limits(
     action: RobotAction,
     *,
@@ -296,6 +477,8 @@ def clip_absolute_action_to_measured_limits(
     previous_j6_rad: float,
     max_ee_step_m: float,
     max_j6_step_rad: float,
+    previous_rotvec: tuple[float, float, float] | None = None,
+    max_ee_rot_step_rad: float | None = None,
 ) -> RobotAction:
     """Clip one absolute command toward the measured pose instead of rejecting it."""
     clipped = dict(action)
@@ -317,6 +500,17 @@ def clip_absolute_action_to_measured_limits(
     delta_j6 = j6 - previous_j6_rad
     if abs(delta_j6) > j6_limit:
         clipped["ee.j6_target"] = float(previous_j6_rad + math.copysign(j6_limit, delta_j6))
+    if previous_rotvec is not None:
+        if max_ee_rot_step_rad is None:
+            raise ValueError("max_ee_rot_step_rad is required when clipping orientation")
+        clipped_rotvec = clip_rotvec_toward_measured(
+            (float(clipped["ee.wx"]), float(clipped["ee.wy"]), float(clipped["ee.wz"])),
+            previous_rotvec,
+            max_ee_rot_step_rad,
+        )
+        clipped["ee.wx"] = float(clipped_rotvec[0])
+        clipped["ee.wy"] = float(clipped_rotvec[1])
+        clipped["ee.wz"] = float(clipped_rotvec[2])
     return clipped
 
 
@@ -354,27 +548,67 @@ def read_current_joints_deg(robot: AuboI10Robot) -> list[float]:
     return [math.degrees(float(value)) for value in joints_rad]
 
 
+def diagnose_inverse_kinematics(
+    robot: AuboI10Robot, action: tuple[float, ...]
+) -> dict[str, Any]:
+    """Return IK errno, solution, and joint deltas without sending motion."""
+    trace: dict[str, Any] = {
+        "passed": False,
+        "errno": None,
+        "solution_rad": None,
+        "seed_rad": None,
+        "commanded_joints_rad": None,
+        "joint_delta_rad": None,
+        "joint_delta_deg": None,
+        "max_abs_delta_rad": None,
+        "max_abs_delta_deg": None,
+        "limit_rad": MAX_IK_JOINT_STEP_RAD,
+        "failed_joints": [],
+        "error": None,
+    }
+    try:
+        seed = [float(value) for value in robot.robot_interface.getRobotState().getJointPositions()]
+        solution, errno = robot.robot_interface.getRobotAlgorithm().inverseKinematics(
+            seed, list(action[1:7])
+        )
+    except Exception as exc:
+        trace["error"] = str(exc)
+        return trace
+    trace["errno"] = int(errno)
+    trace["seed_rad"] = seed
+    if int(errno) != 0 or len(solution) != 6:
+        trace["solution_rad"] = [float(value) for value in solution]
+        return trace
+    solution_rad = [float(value) for value in solution]
+    commanded = list(solution_rad)
+    commanded[5] = float(action[0])
+    trace["solution_rad"] = solution_rad
+    trace["commanded_joints_rad"] = commanded
+    if not all(math.isfinite(value) for value in commanded):
+        trace["error"] = "non-finite IK solution"
+        return trace
+    deltas = [target - current for target, current in zip(commanded, seed, strict=True)]
+    trace["joint_delta_rad"] = deltas
+    trace["joint_delta_deg"] = [math.degrees(value) for value in deltas]
+    trace["max_abs_delta_rad"] = max(abs(value) for value in deltas)
+    trace["max_abs_delta_deg"] = math.degrees(trace["max_abs_delta_rad"])
+    trace["failed_joints"] = [
+        f"J{index + 1}"
+        for index, value in enumerate(deltas)
+        if abs(value) > MAX_IK_JOINT_STEP_RAD
+    ]
+    trace["passed"] = not trace["failed_joints"]
+    return trace
+
+
 def make_ik_checker(robot: AuboI10Robot):
     """Check IK and reject discontinuous joint solutions before action send."""
 
     def check(action: tuple[float, ...]) -> bool:
-        state = robot.robot_interface.getRobotState()
-        seed = state.getJointPositions()
-        target_pose = list(action[1:7])
-        solution, errno = robot.robot_interface.getRobotAlgorithm().inverseKinematics(
-            seed, target_pose
-        )
-        if int(errno) != 0 or len(solution) != 6:
-            return False
-        target_joints = [float(value) for value in solution]
-        target_joints[5] = action[0]  # abs_j6yaw overrides the IK J6 result.
-        if not all(math.isfinite(value) for value in target_joints):
-            return False
-        return all(
-            abs(target - float(current)) <= MAX_IK_JOINT_STEP_RAD
-            for target, current in zip(target_joints, seed, strict=True)
-        )
+        check.last_trace = diagnose_inverse_kinematics(robot, action)
+        return bool(check.last_trace["passed"])
 
+    check.last_trace = None
     return check
 
 
@@ -472,6 +706,7 @@ def run_episode(
     action_queue = deque()  # 保留协议兼容性；当前服务端每次返回一步动作
     safety_state = ActionSafetyState()
     ik_checker = make_ik_checker(robot)
+    locked_rotvec: tuple[float, float, float] | None = None
     dt = 1.0 / fps
     timestamp = 0.0
     step_index = 0
@@ -550,6 +785,33 @@ def run_episode(
         # 3. 取一个动作 -> 离散吸盘 -> 按实测位姿限步裁剪 -> 安全门 -> 按模式决定是否下发
         raw_act, chunk_created_s, server_trace = action_queue.popleft()
         previous_suction_on = safety_state.suction_on
+        selected_gripper = float(raw_act["ee.gripper_pos"])
+        chunk_actions = (server_trace or {}).get("predicted_chunk_denormalized_action")
+        motion_lookahead_overrode = False
+        if USE_MOTION_CHUNK_LOOKAHEAD:
+            raw_act, motion_lookahead_overrode = apply_motion_chunk_lookahead(
+                raw_act,
+                chunk_actions,
+                min_z_drop_m=MOTION_CHUNK_MIN_Z_DROP_M,
+                suction_on=previous_suction_on,
+            )
+        chunk_gripper = (
+            (server_trace or {}).get("predicted_chunk_denormalized_gripper")
+        )
+        chunk_max = None
+        if chunk_gripper is not None:
+            chunk_values = [float(value) for value in chunk_gripper]
+            if chunk_values:
+                chunk_max = max(chunk_values)
+        lookahead_mode = "pass"
+        if USE_GRIPPER_CHUNK_LOOKAHEAD:
+            raw_act, lookahead_mode = apply_gripper_chunk_lookahead(
+                raw_act,
+                chunk_gripper,
+                close_score=GRIPPER_CHUNK_CLOSE_SCORE,
+                open_score=GRIPPER_CHUNK_OPEN_SCORE,
+            )
+        lookahead_overrode = lookahead_mode == "close"
         act, next_suction_on = normalize_action_for_actuator(
             raw_act, suction_on=previous_suction_on
         )
@@ -572,7 +834,11 @@ def run_episode(
                     if server_trace and server_trace.get("selected_normalized_action")
                     else None
                 ),
-                "raw_denormalized": float(raw_act["ee.gripper_pos"]),
+                "raw_denormalized": selected_gripper,
+                "chunk_max_denormalized": chunk_max,
+                "chunk_lookahead_enabled": USE_GRIPPER_CHUNK_LOOKAHEAD,
+                "chunk_lookahead_mode": lookahead_mode,
+                "chunk_lookahead_overrode": lookahead_overrode,
                 "thresholded_command": float(act["ee.gripper_pos"]),
                 "hysteresis_state_before": bool(previous_suction_on),
                 "hysteresis_state_candidate": bool(next_suction_on),
@@ -584,6 +850,19 @@ def run_episode(
                 ),
             },
             "safety": {"passed": None, "reasons": []},
+            "pose_clip": None,
+            "motion_chunk": {
+                "enabled": USE_MOTION_CHUNK_LOOKAHEAD,
+                "overrode": motion_lookahead_overrode,
+                "min_z_drop_m": MOTION_CHUNK_MIN_Z_DROP_M,
+                "chunk_min_z": (
+                    min(float(row[3]) for row in chunk_actions)
+                    if chunk_actions
+                    else None
+                ),
+                "commanded_z": float(raw_act["ee.z"]),
+            },
+            "ik": None,
             "actuator": {
                 "attempted": False,
                 "success": None,
@@ -598,13 +877,46 @@ def run_episode(
             "outcome": "pending",
         }
         measured_tcp_m, measured_j6_rad = measured_action_anchors(obs)
+        measured_rotvec = measured_tcp_rotvec(obs)
+        raw_rotvec = (
+            float(act["ee.wx"]),
+            float(act["ee.wy"]),
+            float(act["ee.wz"]),
+        )
+        if HOLD_LOCKED_EE_POSE:
+            if locked_rotvec is None:
+                locked_rotvec = measured_rotvec
+            act = apply_locked_ee_pose(act, locked_rotvec)
+        ik_checker.last_trace = None
+        clip_rotvec = None if HOLD_LOCKED_EE_POSE else measured_rotvec
         act = clip_absolute_action_to_measured_limits(
             act,
             previous_tcp_m=measured_tcp_m,
             previous_j6_rad=measured_j6_rad,
             max_ee_step_m=MAX_EE_STEP_M,
             max_j6_step_rad=MAX_J6_STEP_RAD,
+            previous_rotvec=clip_rotvec,
+            max_ee_rot_step_rad=None if clip_rotvec is None else MAX_EE_ROT_STEP_RAD,
         )
+        sent_rotvec = (
+            float(act["ee.wx"]),
+            float(act["ee.wy"]),
+            float(act["ee.wz"]),
+        )
+        trace_record["pose_clip"] = {
+            "hold_locked_ee_pose": HOLD_LOCKED_EE_POSE,
+            "locked_rotvec": list(locked_rotvec) if locked_rotvec is not None else None,
+            "measured_rotvec": list(measured_rotvec),
+            "raw_rotvec": list(raw_rotvec),
+            "sent_rotvec": list(sent_rotvec),
+            "geodesic_to_measured_rad": rotation_geodesic_angle_rad(
+                measured_rotvec, raw_rotvec
+            ),
+            "sent_geodesic_to_measured_rad": rotation_geodesic_angle_rad(
+                measured_rotvec, sent_rotvec
+            ),
+            "max_ee_rot_step_rad": MAX_EE_ROT_STEP_RAD,
+        }
         robot_action = ee_mode_processor((act, obs))
         vector = action_vector(robot_action)
         try:
@@ -620,6 +932,7 @@ def run_episode(
             )
         except Exception as exc:
             trace_record["safety"] = {"passed": False, "reasons": [str(exc)]}
+            trace_record["ik"] = getattr(ik_checker, "last_trace", None)
             trace_record["outcome"] = "pre_send_rejected"
             write_trace(trace_writer, trace_record)
             if execute_actions:
@@ -629,6 +942,7 @@ def run_episode(
             "passed": bool(gated.passed),
             "reasons": list(gated.reasons),
         }
+        trace_record["ik"] = getattr(ik_checker, "last_trace", None)
         if not gated.passed:
             trace_record["outcome"] = "thin_safety_gate_rejected"
             write_trace(trace_writer, trace_record)
@@ -770,13 +1084,23 @@ def main():
     logging.warning("运行模式: %s", mode_name)
     logging.info(
         "拒绝阈值: workspace=%s..%s, xyz_step=%.3f m, J6_step=%.3f rad, "
-        "IK_joint_step=%.3f rad, observation_age=%.1f ms",
+        "rot_step=%.3f rad, IK_joint_step=%.3f rad, observation_age=%.1f ms, "
+        "hold_locked_ee_pose=%s, gripper_chunk_lookahead=%s, "
+        "gripper_chunk_close_score=%.1f, gripper_chunk_open_score=%.1f, "
+        "motion_chunk_lookahead=%s, motion_chunk_min_z_drop=%.3f m",
         WORKSPACE_MIN_M,
         WORKSPACE_MAX_M,
         MAX_EE_STEP_M,
         MAX_J6_STEP_RAD,
+        MAX_EE_ROT_STEP_RAD,
         MAX_IK_JOINT_STEP_RAD,
         MAX_OBSERVATION_AGE_MS,
+        HOLD_LOCKED_EE_POSE,
+        USE_GRIPPER_CHUNK_LOOKAHEAD,
+        GRIPPER_CHUNK_CLOSE_SCORE,
+        GRIPPER_CHUNK_OPEN_SCORE,
+        USE_MOTION_CHUNK_LOOKAHEAD,
+        MOTION_CHUNK_MIN_Z_DROP_M,
     )
 
     # 1. 以训练数据集的 FPS 为唯一控制时间基准。

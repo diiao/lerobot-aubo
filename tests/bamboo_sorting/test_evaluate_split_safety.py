@@ -7,7 +7,10 @@ import struct
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+
+from lerobot.utils.rotation import Rotation
 
 
 SCRIPT_PATH = (
@@ -52,6 +55,124 @@ def test_gripper_hysteresis_is_explicit(raw, previous, expected, next_state) -> 
 
     assert command == expected
     assert state is next_state
+
+
+def test_gripper_chunk_lookahead_closes_when_later_step_commits() -> None:
+    action = {
+        "ee.j6_target": -3.0,
+        "ee.x": 0.54,
+        "ee.y": -0.38,
+        "ee.z": 0.09,
+        "ee.wx": 0.0,
+        "ee.wy": 0.0,
+        "ee.wz": 0.0,
+        "ee.gripper_pos": -3.0,
+    }
+    chunk = [-3.4] * 20 + [12.0, 40.0, 51.0, 55.0, 58.0]
+    held, mode = evaluate_split.apply_gripper_chunk_lookahead(
+        action, chunk, close_score=50.0, open_score=8.0
+    )
+    command, state = evaluate_split.discretize_gripper_command(
+        held["ee.gripper_pos"], suction_on=False
+    )
+
+    assert mode == "close"
+    assert command == 100.0
+    assert state is True
+    assert action["ee.gripper_pos"] == -3.0
+
+
+def test_gripper_chunk_lookahead_does_not_override_open_chunk() -> None:
+    action = {"ee.gripper_pos": -3.0}
+    held, mode = evaluate_split.apply_gripper_chunk_lookahead(
+        action, [-4.0, -3.0, -2.0], close_score=50.0, open_score=8.0
+    )
+
+    assert mode == "pass"
+    assert held["ee.gripper_pos"] == -3.0
+
+
+def test_live07_pick_chunk_closes_at_default_score() -> None:
+    action = {"ee.gripper_pos": -4.3}
+    chunk = [-4.0] * 20 + [10.0, 18.1, 23.9, 26.7, 34.6]
+    held, mode = evaluate_split.apply_gripper_chunk_lookahead(
+        action,
+        chunk,
+        close_score=evaluate_split.GRIPPER_CHUNK_CLOSE_SCORE,
+        open_score=evaluate_split.GRIPPER_CHUNK_OPEN_SCORE,
+    )
+
+    assert evaluate_split.GRIPPER_CHUNK_CLOSE_SCORE == 20.0
+    assert mode == "close"
+    assert held["ee.gripper_pos"] == 100.0
+
+
+def test_live08_chunk_flicker_holds_closed_instead_of_chatter() -> None:
+    action = {"ee.gripper_pos": -4.54}
+    held, mode = evaluate_split.apply_gripper_chunk_lookahead(
+        action,
+        [-4.54] * 24 + [18.3],
+        close_score=20.0,
+        open_score=8.0,
+    )
+    command, state = evaluate_split.discretize_gripper_command(
+        held["ee.gripper_pos"], suction_on=True
+    )
+
+    assert mode == "hold"
+    assert command == 100.0
+    assert state is True
+
+
+def test_motion_chunk_lookahead_follows_planned_descent_when_suction_off() -> None:
+    action = {
+        "ee.j6_target": -2.85,
+        "ee.x": 0.58,
+        "ee.y": -0.53,
+        "ee.z": 0.22,
+        "ee.wx": 0.0,
+        "ee.wy": 0.0,
+        "ee.wz": 0.0,
+        "ee.gripper_pos": -3.0,
+    }
+    chunk = [[-2.85, 0.58, -0.53, 0.22, 0.0, 0.0, 0.0, -3.0]] * 20
+    chunk.append([-2.55, 0.54, -0.37, 0.09, 0.0, 0.0, 0.0, -3.0])
+    held, overrode = evaluate_split.apply_motion_chunk_lookahead(
+        action, chunk, min_z_drop_m=0.02, suction_on=False
+    )
+
+    assert overrode is True
+    assert held["ee.z"] == 0.09
+    assert held["ee.x"] == 0.54
+    assert held["ee.j6_target"] == -2.55
+
+
+def test_motion_chunk_lookahead_skips_when_vacuum_is_on() -> None:
+    action = {"ee.j6_target": -2.0, "ee.x": 0.5, "ee.y": -0.4, "ee.z": 0.22}
+    chunk = [[-2.0, 0.5, -0.4, 0.09, 0.0, 0.0, 0.0, 100.0]]
+    held, overrode = evaluate_split.apply_motion_chunk_lookahead(
+        action, chunk, min_z_drop_m=0.02, suction_on=True
+    )
+
+    assert overrode is False
+    assert held["ee.z"] == 0.22
+
+
+def test_live08_place_release_when_chunk_drops_below_open_score() -> None:
+    action = {"ee.gripper_pos": -1.04}
+    held, mode = evaluate_split.apply_gripper_chunk_lookahead(
+        action,
+        [-1.04] * 25,
+        close_score=20.0,
+        open_score=8.0,
+    )
+    command, state = evaluate_split.discretize_gripper_command(
+        held["ee.gripper_pos"], suction_on=True
+    )
+
+    assert mode == "pass"
+    assert command == 0.0
+    assert state is False
 
 
 def test_action_vector_uses_action_schema_order() -> None:
@@ -117,8 +238,13 @@ def test_ik_checker_allows_reach_joint_steps_but_rejects_unreachable() -> None:
     )
 
     assert reachable(action) is True
+    assert reachable.last_trace["errno"] == 0
+    assert reachable.last_trace["passed"] is True
     assert unreachable(action) is False
+    assert unreachable.last_trace["errno"] == 1
     assert flipped(action) is False
+    assert flipped.last_trace["failed_joints"] == ["J1"]
+    assert flipped.last_trace["max_abs_delta_rad"] == pytest.approx(1.2)
 
 
 def test_start_pose_gate_accepts_small_error_and_rejects_large_error() -> None:
@@ -225,6 +351,117 @@ def test_observation_j6_is_converted_from_degrees_to_action_radians() -> None:
     assert j6_rad == pytest.approx(math.radians(-185.32))
 
 
+def test_large_orientation_jump_is_geodesic_clipped_to_measured_pose() -> None:
+    action = {
+        "ee.j6_target": -3.0,
+        "ee.x": 0.10,
+        "ee.y": -0.70,
+        "ee.z": 0.15,
+        "ee.wx": 0.0,
+        "ee.wy": 0.0,
+        "ee.wz": math.radians(7.0),
+        "ee.gripper_pos": 0.0,
+    }
+    previous = (0.0, 0.0, 0.0)
+    clipped = evaluate_split.clip_absolute_action_to_measured_limits(
+        action,
+        previous_tcp_m=(0.10, -0.70, 0.15),
+        previous_j6_rad=-3.0,
+        max_ee_step_m=0.008,
+        max_j6_step_rad=0.03,
+        previous_rotvec=previous,
+        max_ee_rot_step_rad=0.03,
+    )
+    sent = (clipped["ee.wx"], clipped["ee.wy"], clipped["ee.wz"])
+    geodesic = evaluate_split.rotation_geodesic_angle_rad(previous, sent)
+
+    assert geodesic == pytest.approx(0.03, abs=1e-5)
+    assert geodesic < math.radians(7.0)
+    assert clipped["ee.x"] == pytest.approx(0.10)
+
+
+def test_equivalent_rotvec_branch_is_aligned_to_measured_representation() -> None:
+    previous = (0.0, 0.0, math.radians(197.0))
+    principal = Rotation.from_rotvec(np.array(previous)).as_rotvec()
+    action = {
+        "ee.j6_target": -3.0,
+        "ee.x": 0.10,
+        "ee.y": -0.70,
+        "ee.z": 0.15,
+        "ee.wx": float(principal[0]),
+        "ee.wy": float(principal[1]),
+        "ee.wz": float(principal[2]),
+        "ee.gripper_pos": 0.0,
+    }
+    clipped = evaluate_split.clip_absolute_action_to_measured_limits(
+        action,
+        previous_tcp_m=(0.10, -0.70, 0.15),
+        previous_j6_rad=-3.0,
+        max_ee_step_m=0.008,
+        max_j6_step_rad=0.03,
+        previous_rotvec=previous,
+        max_ee_rot_step_rad=0.03,
+    )
+    sent = np.array([clipped["ee.wx"], clipped["ee.wy"], clipped["ee.wz"]])
+
+    assert evaluate_split.rotation_geodesic_angle_rad(previous, sent) == pytest.approx(
+        0.0, abs=1e-6
+    )
+    np.testing.assert_allclose(sent, previous, atol=1e-6)
+    assert abs(float(np.linalg.norm(sent)) - abs(previous[2])) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_live02_terminal_orientation_drift_is_clipped_before_ik() -> None:
+    measured = (-2.9182, 0.0127, -1.3068)
+    action = {
+        "ee.j6_target": -2.033267021179199,
+        "ee.x": 0.44116705656051636,
+        "ee.y": -0.4426851272583008,
+        "ee.z": 0.19424687325954437,
+        "ee.wx": -2.819065809249878,
+        "ee.wy": 0.012301926501095295,
+        "ee.wz": -1.2201869487762451,
+        "ee.gripper_pos": 0.0,
+    }
+    raw_geodesic = evaluate_split.rotation_geodesic_angle_rad(
+        measured, (action["ee.wx"], action["ee.wy"], action["ee.wz"])
+    )
+    clipped = evaluate_split.clip_absolute_action_to_measured_limits(
+        action,
+        previous_tcp_m=(0.4422, -0.4422, 0.1931),
+        previous_j6_rad=-2.0209,
+        max_ee_step_m=0.008,
+        max_j6_step_rad=0.03,
+        previous_rotvec=measured,
+        max_ee_rot_step_rad=evaluate_split.MAX_EE_ROT_STEP_RAD,
+    )
+    sent = (clipped["ee.wx"], clipped["ee.wy"], clipped["ee.wz"])
+    sent_geodesic = evaluate_split.rotation_geodesic_angle_rad(measured, sent)
+
+    assert raw_geodesic == pytest.approx(math.radians(7.34), abs=0.05)
+    assert sent_geodesic <= evaluate_split.MAX_EE_ROT_STEP_RAD
+    assert sent_geodesic == pytest.approx(evaluate_split.MAX_EE_ROT_STEP_RAD, abs=1e-5)
+
+
+def test_locked_ee_pose_ignores_model_orientation_drift() -> None:
+    locked = (-3.11, 0.012, -1.86)
+    action = {
+        "ee.j6_target": -2.0,
+        "ee.x": 0.45,
+        "ee.y": -0.44,
+        "ee.z": 0.19,
+        "ee.wx": -2.82,
+        "ee.wy": 0.012,
+        "ee.wz": -1.22,
+        "ee.gripper_pos": 0.0,
+    }
+    held = evaluate_split.apply_locked_ee_pose(action, locked)
+
+    assert (held["ee.wx"], held["ee.wy"], held["ee.wz"]) == locked
+    assert held["ee.x"] == action["ee.x"]
+    assert held["ee.j6_target"] == action["ee.j6_target"]
+
+
 class _BytesSocket:
     def __init__(self, payload: bytes):
         self.payload = bytearray(payload)
@@ -312,6 +549,9 @@ def test_dry_run_loop_never_calls_robot_send_action(monkeypatch) -> None:
                 "ee.x": 0.1,
                 "ee.y": -0.7,
                 "ee.z": 0.15,
+                "ee.wx": 0.0,
+                "ee.wy": 0.0,
+                "ee.wz": 0.0,
                 "gripper_pos": 0.0,
             }
 
@@ -386,6 +626,9 @@ def test_send_failure_does_not_commit_hysteresis_state_and_stops_servo(monkeypat
                 "ee.x": 0.1,
                 "ee.y": -0.7,
                 "ee.z": 0.15,
+                "ee.wx": 0.0,
+                "ee.wy": 0.0,
+                "ee.wz": 0.0,
                 "gripper_pos": 0.0,
             }
 
@@ -466,3 +709,7 @@ def test_send_failure_does_not_commit_hysteresis_state_and_stops_servo(monkeypat
     assert record["actuator"]["commanded_state_after"] is False
     assert record["actuator"]["success"] is False
     assert record["outcome"] == "actuator_error"
+    assert record["pose_clip"]["max_ee_rot_step_rad"] == evaluate_split.MAX_EE_ROT_STEP_RAD
+    assert record["pose_clip"]["sent_rotvec"] == [0.0, 0.0, 0.0]
+    assert record["pose_clip"]["hold_locked_ee_pose"] is True
+    assert record["pose_clip"]["locked_rotvec"] == [0.0, 0.0, 0.0]

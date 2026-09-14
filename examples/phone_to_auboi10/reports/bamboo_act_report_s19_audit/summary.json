@@ -1,0 +1,149 @@
+{
+  "purpose": "Read-only recorded-batch audit; no robot or camera was connected.",
+  "dataset_path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19",
+  "manifest_path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_manifest.json",
+  "batch_name": "bamboo_act_report_s19",
+  "strip_count": 1,
+  "layout": "single",
+  "grasp": "pick_place_one",
+  "start_mode": "normal",
+  "planned_success_episodes": 3,
+  "actual_episodes": 3,
+  "actual_frames": 2320,
+  "fps": 25,
+  "local_train_episodes": [
+    0,
+    1
+  ],
+  "local_val_episodes": [
+    2
+  ],
+  "validation_holdout": "last_local_episode_in_this_batch",
+  "validation_limitation": "This is a within-batch holdout, not an independent recording-session split.",
+  "physical_grasp": {
+    "offline_proof": false,
+    "disclaimer": "gripper_pos is a software command latch, not vacuum or grasp feedback. Offline audit cannot prove the strip was actually held; the operator must confirm real grasp, carry, and place success.",
+    "operator_confirmation_required": true
+  },
+  "passed": true,
+  "errors": [],
+  "warnings": [],
+  "episodes": [
+    {
+      "episode_index": 0,
+      "frames": 767,
+      "gripper_unique": [
+        0.0,
+        100.0
+      ],
+      "gripper_on_frames": [
+        378
+      ],
+      "gripper_off_frames": [
+        686
+      ],
+      "gripper_switch_count": 2,
+      "suction_periods_s": [
+        12.32
+      ],
+      "lift_5mm_s": [
+        1.8
+      ],
+      "max_ee_step_m": 0.003468245966359973
+    },
+    {
+      "episode_index": 1,
+      "frames": 804,
+      "gripper_unique": [
+        0.0,
+        100.0
+      ],
+      "gripper_on_frames": [
+        387
+      ],
+      "gripper_off_frames": [
+        717
+      ],
+      "gripper_switch_count": 2,
+      "suction_periods_s": [
+        13.2
+      ],
+      "lift_5mm_s": [
+        1.8
+      ],
+      "max_ee_step_m": 0.0037857594434171915
+    },
+    {
+      "episode_index": 2,
+      "frames": 749,
+      "gripper_unique": [
+        0.0,
+        100.0
+      ],
+      "gripper_on_frames": [
+        355
+      ],
+      "gripper_off_frames": [
+        669
+      ],
+      "gripper_switch_count": 2,
+      "suction_periods_s": [
+        12.56
+      ],
+      "lift_5mm_s": [
+        1.64
+      ],
+      "max_ee_step_m": 0.003949459176510572
+    }
+  ],
+  "videos": [
+    {
+      "episode_index": 0,
+      "camera": "observation.images.handeye",
+      "path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19/videos/observation.images.handeye/chunk-000/file-000.mp4",
+      "decoded_file_frames": 2320,
+      "from_timestamp": 0.0,
+      "to_timestamp": 30.68
+    },
+    {
+      "episode_index": 0,
+      "camera": "observation.images.fixed",
+      "path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19/videos/observation.images.fixed/chunk-000/file-000.mp4",
+      "decoded_file_frames": 2320,
+      "from_timestamp": 0.0,
+      "to_timestamp": 30.68
+    },
+    {
+      "episode_index": 1,
+      "camera": "observation.images.handeye",
+      "path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19/videos/observation.images.handeye/chunk-000/file-000.mp4",
+      "decoded_file_frames": 2320,
+      "from_timestamp": 30.68,
+      "to_timestamp": 62.839999999999996
+    },
+    {
+      "episode_index": 1,
+      "camera": "observation.images.fixed",
+      "path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19/videos/observation.images.fixed/chunk-000/file-000.mp4",
+      "decoded_file_frames": 2320,
+      "from_timestamp": 30.68,
+      "to_timestamp": 62.839999999999996
+    },
+    {
+      "episode_index": 2,
+      "camera": "observation.images.handeye",
+      "path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19/videos/observation.images.handeye/chunk-000/file-000.mp4",
+      "decoded_file_frames": 2320,
+      "from_timestamp": 62.839999999999996,
+      "to_timestamp": 92.8
+    },
+    {
+      "episode_index": 2,
+      "camera": "observation.images.fixed",
+      "path": "/home/rentao/program/lerobot-aubo/examples/phone_to_auboi10/datasets/bamboo_act_report_s19/videos/observation.images.fixed/chunk-000/file-000.mp4",
+      "decoded_file_frames": 2320,
+      "from_timestamp": 62.839999999999996,
+      "to_timestamp": 92.8
+    }
+  ]
+}
