@@ -104,6 +104,17 @@ from .rl_contract import (
     RLReadinessReportV1,
     RLTransitionV1,
 )
+from .rl_episode_contract import (
+    EPISODE_TERMINATION_REASONS,
+    REPLAY_SPLIT_NAMES,
+    RESET_REASONS,
+    RESET_RECORD_SCHEMA_VERSION,
+    RL_EPISODE_MANIFEST_SCHEMA_VERSION,
+    RL_REPLAY_MANIFEST_SCHEMA_VERSION,
+    ResetRecordV1,
+    RLEpisodeManifestV1,
+    RLReplayManifestV1,
+)
 from .smolvla_adapter import (
     DEFAULT_IMAGE_HEIGHT,
     DEFAULT_IMAGE_WIDTH,
@@ -190,6 +201,15 @@ __all__ = [
     "RLReadinessReportV1",
     "RLTransitionV1",
     "RewardSchemaV1",
+    "EPISODE_TERMINATION_REASONS",
+    "REPLAY_SPLIT_NAMES",
+    "RESET_REASONS",
+    "RESET_RECORD_SCHEMA_VERSION",
+    "RL_EPISODE_MANIFEST_SCHEMA_VERSION",
+    "RL_REPLAY_MANIFEST_SCHEMA_VERSION",
+    "RLEpisodeManifestV1",
+    "RLReplayManifestV1",
+    "ResetRecordV1",
     "DEFAULT_IMAGE_HEIGHT",
     "DEFAULT_IMAGE_WIDTH",
     "SmolVLAOfflineForwardAdapter",
