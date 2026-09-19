@@ -2,7 +2,7 @@
 
 > 文档日期：2026-09-08
 >
-> 审核修订：2026-09-19（`ACTComparisonClosureV1`；ACT 对照已闭环，研究资源回归 SmolVLA 主线）
+> 审核修订：2026-09-19（`ACTComparisonClosureV1`；`RLExtensionGateV1`）
 >
 > 项目目录：`/home/rentao/program/lerobot-aubo`
 >
@@ -14,7 +14,7 @@
 >
 > 本次修订前 HEAD：`1382f444bd7318b3997d08632b597f1306765e5c`
 >
-> 当前状态：Depth No-Go 已确认；`CameraSetV1={global_rgb, grasp_rgb}` 已冻结；ACT 对照已完成且不再追加训练/真机实验；C0 仍关闭，需单独遥操作授权
+> 当前状态：Depth No-Go 已确认；`CameraSetV1={global_rgb, grasp_rgb}` 已冻结；ACT 对照已闭环；SmolVLA 是唯一主线；RL 仅作为后期分级扩展，尚未获得训练或真机探索授权；C0 仍关闭
 >
 > 安全边界：本文不构成连接设备、采集数据、训练、推理、夹爪输出或真机运动授权。
 
@@ -127,6 +127,22 @@ ROI 证据：`artifacts/rgb_gate/roi_preview_20260909T151900Z/`（`global_rgb.jp
 
 详细证据边界见 `docs/ACT_COMPARISON_CLOSURE_2026-09-19.md`。
 
+### 0.6 2026-09-19 RL 可行性与路线决策
+
+本课题可以引入 reinforcement learning（RL，强化学习），但不能从当前状态直接跳到真机在线试错。
+`RLExtensionGateV1` 将“使用奖励信息”分为三个不同层次：
+
+1. **SARM + RA-BC（近期推荐）**：先从示教视频学习任务阶段/进度，再按正向进展对 SmolVLA 的行为克隆
+   样本加权。它使用奖励模型，但本质仍是 reward-aligned behavior cloning（奖励对齐行为克隆），不是 RL；
+2. **HIL-SERL/SAC（后期独立 RL 对照）**：使用示教、奖励分类器、replay buffer、actor–critic 更新和人工
+   接管进行在线 RL。当前 LeRobot 实现使用独立 SAC 策略栈，不是 SmolVLA 的直接强化微调；
+3. **SmolVLA-RL（研究扩展）**：在 SmolVLA 动作块策略上增加 value/critic、离线或在线 return、replay
+   以及受约束更新。当前仓库没有可直接使用的完整通路，必须作为新接口研发，不能写成已具备能力。
+
+执行顺序冻结为：`SmolVLA BC 基线 -> 奖励模型 shadow 验证 -> RA-BC 离线消融 -> 仿真/离线 RL ->`
+`可选 HIL 真机 RL`。只要前一阶段未通过，后一阶段保持关闭。详细门禁和实现差距见
+`docs/AUBO_I10_SMOLVLA_RL_EXTENSION_PLAN_2026-09-19.md`。
+
 ## 1. 课题身份、研究目标与主路线
 
 ### 1.1 不可退让的课题身份
@@ -148,7 +164,7 @@ SmolVLA 是主模型，大 VLA 只作后期扩展，不是毕业关键路径。
 Depth No-Go 后的主决策路径固定为：
 
 ```text
-语言指令 + C0 前冻结的 CameraSetV1（两路或三路 RGB）+ 本体状态
+语言指令 + 已冻结的 CameraSetV1（global_rgb + grasp_rgb）+ 本体状态
         → 轻量 SmolVLA
         → 连续绝对末端动作块
         → 薄安全否决（工作空间/步长/速度/过期/非有限/必要时 IK 成败）
@@ -167,7 +183,10 @@ Kinematics，逆运动学）只在笛卡尔动作必须转换为关节状态时�
 | 方法 | 研究角色 | 路线地位 |
 |---|---|---|
 | 历史 ACT 实验 | 已完成的无语言任务型模仿学习系统对照与负结果；保留复现材料 | **已闭环，不再追加训练或真机实验** |
-| **多视 RGB SmolVLA** | `CameraSetV1` + 语言；相机集合在 C0 前冻结为两路或三路 | **当前必做主线** |
+| **多视 RGB SmolVLA** | 已冻结的两路 `CameraSetV1` + 语言 | **当前必做主线** |
+| SARM + RA-BC | 用视频任务进度对 SmolVLA 示教损失加权 | **主线基线稳定后的优先奖励学习消融；不是 RL** |
+| HIL-SERL/SAC | 示教初始化、奖励分类器、在线 replay 与人工接管 | 后期独立 RL 对照；完成 AUBO 环境适配和全部门禁前禁止真机运行 |
+| SmolVLA-RL | 保留语言条件 VLA 主体的离线/在线强化微调 | 研究扩展；当前无完整现成实现，不是毕业关键路径 |
 | Depth-as-image SmolVLA | 将 metric 深度作为图像输入 | **因 Depth No-Go 停止** |
 | `SpatialTokenAdapter` | 将 `X/Y/Z/valid` 编码为空间 token | **因 Depth No-Go 停止** |
 | 2D 目标 mask/可供性辅助头 | VLA 内部的端到端辅助监督，不单独驱动机器人 | 标签合格后可选消融 |
@@ -188,8 +207,8 @@ PCA、OBB、点云分割、规则选点、Mech-Vision 和其他传统几何抓�
    相对固定空语言或打乱语言是否改变目标选择与任务成功率；
 3. **深度可行性负结果**：当前 NANO 是否满足在线 VLA 的最低 4.5 Hz 必要条件；本版本已经得到
    Depth No-Go，不再开展模型层面的 RGB-D 优劣比较；
-4. **视角贡献问题**：若 `CameraSetV1` 冻结为三路，在相同 SmolVLA、语言、状态、动作和场景下，
-   使用同一数据比较三路输入与移除腕部 RGB 的两路输入；若冻结为两路，本版本不开展该消融；
+4. **视角贡献问题**：`CameraSetV1` 已冻结为两路，本版本不开展腕部 RGB 消融；如未来升级相机版本，
+   必须重新采集并建立独立实验，不能回填当前 V1 数据；
 5. **辅助监督**：只有具备目标木条 mask 等独立标签并完成消融，才允许宣称 2D 辅助头有独立贡献。
 
 “闭合前 TCP 关键帧”自动生成的姿态标签只能作为弱正则，不能写成核心创新证据。
@@ -237,10 +256,9 @@ PCA、OBB、点云分割、规则选点、Mech-Vision 和其他传统几何抓�
 
 每个时间步至少包含：
 
-- 冻结 `CameraSetV1` 中的全部 RGB：必含 `global_rgb`、`grasp_rgb`；纯 2D 门通过时另含
-  `wrist_rgb`；
+- 冻结 `CameraSetV1` 中的全部 RGB：严格为 `global_rgb`、`grasp_rgb`；本版本不得加入 `wrist_rgb`；
 - 正式数据版本内相机字段集合固定。采集失败必须显式记录并按冻结规则拒绝或截断样本，禁止用重复帧
-  补齐，也禁止把缺少 `wrist_rgb` 的 episode 静默混入三视角数据；
+  补齐，也禁止把额外或缺失相机字段的 episode 静默混入；
 - 六关节状态、当前基座坐标系 TCP 位姿；
 - 夹爪最后命令状态，并明确它不是实际夹持反馈；
 - `instruction_id`、`instruction_text`、`instruction_language` 和指令契约版本；
@@ -463,8 +481,7 @@ PolicyPredictionV1
 
 - 建立原始采集格式到 LeRobot observation/action 的版本化桥接；
 - 按 C0 前已经冻结的 `CameraSetV1` 打通 RGB + 语言 + 本体状态的 SmolVLA 前向、训练和离线回放；
-- 若 `CameraSetV1` 为三路，在同一记录数据上移除 `wrist_rgb` 形成两视角受控消融输入；正式主线仍为
-  冻结的三视角，不建立第二套采集协议；
+- `CameraSetV1` 已冻结为两路，本版本不建立腕部 RGB 输入或三/两视角消融分支；
 - 不实现 `wrist_depth_m`、metric XYZ、Depth-as-image 或 `SpatialTokenAdapter`；
 - 按 `ActionSchemaV1` 复用绝对末端动作，验证角度连续性、J6 语义、夹爪双态和动作块时序；
 - 实现只拒绝、不修正动作的 `ThinSafetyGate`；
@@ -593,6 +610,31 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
 两者不能相互替代。只有 `L_correct` 的配对结果和 95% 置信区间优于控制组，且目标选择随指令改变，
 才可声明语言条件有效。
 
+### 阶段 D-R：奖励建模与分级 RL 扩展，第 4～8 个月（不阻塞主线）
+
+该阶段必须在普通 SmolVLA 行为克隆基线完成离线验收后开始，并按以下门禁推进：
+
+1. **R0 契约门**：冻结 `RewardSchemaV1`、episode 终止条件、人工接管语义、reset 流程、replay 数据结构、
+   训练/测试 split 和授权字段。成功只由“抓取后完成指定区域放置”的独立结果标签定义；`uncertain` 不给
+   正奖励；安全拒绝、人工急停和碰撞风险单独记录为 safety cost，禁止与任务奖励混为一个可被钻空子的分数；
+2. **R1 奖励模型 shadow 门**：SARM/二分类 reward model 只能读取 `CameraSetV1` 中版本化选择的视角、
+   语言和必要状态，先在完全独立的人工标注集上报告准确率、精确率、召回率、F1、误报率和校准；
+   当前 SARM 实现只有一个 `image_key`，因此必须预先冻结选用 `global_rgb` 还是 `grasp_rgb`，不得静默
+   丢弃另一路后宣称为多视角奖励模型。阈值在最终测试前冻结；未通过时继续人工结果标注，不得驱动
+   episode 终止或策略更新；
+3. **R2 RA-BC 离线消融**：在同一 SmolVLA 初始化、数据 split、训练步数和随机种子下比较普通 BC 与
+   RA-BC。先检查权重分布、零权重比例和关键抓放阶段覆盖，再做离线动作指标；只有独立验证改善且没有
+   丢失夹爪/放置阶段，才进入受控真机比较；
+4. **R3 仿真/空执行器 RL 门**：验证 reward、done、reset、人工接管、replay、actor–learner 通信、动作
+   语义和 `ThinSafetyGate`。策略动作被安全门拒绝后不得伪装为已执行 transition；
+5. **R4 可选 HIL 真机 RL**：必须新建 AUBO Gym 环境适配器，保持 `CameraSetV1`、语言字段和独立安全
+   否决；人工接管只提供纠正数据，不替代急停、工作空间限制或现场监护。每次真机 RL 会话需要单独授权；
+6. **R5 SmolVLA-RL 研究扩展**：只有在 chunk-action critic、离线 replay、行为约束/KL 约束、离线策略
+   评估和 fail-closed 执行链均有测试证据后才立项。不得直接把现有 SAC learner 接到 SmolVLA 输出上。
+
+R2 是近期最现实的奖励学习实验；R4/R5 均为可选扩展。它们不能延迟 C0/C1 数据契约、SmolVLA 基线、
+语言消融和首版论文主实验。
+
 ### 阶段 E：逐级监督真机验证，第 6～8 个月
 
 策略真机验证按以下顺序逐级通过：
@@ -634,6 +676,8 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
 |---|---|---|
 | SmolVLA 系统是否达到课题任务要求 | 冻结模型在独立单根、两根、3～5 根场景的重复试验 | 当前系统在冻结任务边界内的能力、失败类型与不确定性 |
 | 语言是否真正影响决策 | 同架构 `L_correct` vs `L_fixed` vs `L_shuffled`，加冻结模型的指令反事实 | 正确语言监督及推理语言依赖的贡献 |
+| 奖励加权是否改善示教学习 | 同一 SmolVLA、同一数据与 split 的普通 BC vs SARM RA-BC | 奖励对齐样本加权的贡献；不能称为 RL 收益 |
+| RL 是否带来额外闭环改善 | 仅在 R0–R4 全通过后，冻结 BC 策略 vs HIL-RL 策略的配对场景 | 当前 RL 系统级增益；若策略架构不同，不归因于 SmolVLA 强化微调 |
 | 二维辅助头是否有用 | 相同主模型和 mask 数据上的有/无二维目标 mask/可供性辅助头 | 辅助监督的贡献 |
 | 当前 NANO 能否支持在线深度 | 官方规格 + 冻结参数下的受控采集延迟和有效点证据 | 仅得出当前同步契约的 Depth No-Go，不外推为深度对抓取无用 |
 
@@ -661,7 +705,11 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
 - 遮挡、平行混淆、交叉错选、抓空和掉落统计；
 - 将深度有效帧率、采集延迟、有效点比例和恢复核对作为阶段 A3 负结果附件单独报告，不混入模型性能
   指标；
-- 多指令阶段的正确/空白/错配指令性能差及目标区混淆矩阵。
+- 多指令阶段的正确/空白/错配指令性能差及目标区混淆矩阵；
+- 奖励模型的 precision、recall、F1、误报率、校准误差与 `uncertain` 比例；
+- RA-BC 的样本权重分布、零/满权重比例、分阶段覆盖率及相对普通 BC 的配对结果；
+- 若开展 RL：episode return、成功率、样本效率、人工接管率、接管持续时间、安全拒绝率、safety cost、
+  reset 失败率和策略更新前后行为漂移。
 
 ### 4.3 目标值与阶段门分离
 
@@ -683,6 +731,10 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
 ## 5. 固定边界与当前未决事实
 
 - 主导技术始终是语言条件的轻量具身 VLA；ACT 对照已于 2026-09-19 闭环且不再追加实验，大 VLA 非毕业关键路径；
+- RL 只能作为 SmolVLA 基线之后的分级扩展；SARM + RA-BC 必须称为奖励对齐模仿学习，HIL-SERL/SAC
+  必须称为独立 RL 策略，未经新接口验证不得称为“SmolVLA 强化学习”；
+- 人工接管、奖励模型通过或仿真成功均不构成 AUBO 真机 RL 授权；RL 训练、RL actor 真机 rollout、
+  自动 reset、夹爪 IO 和策略执行继续使用彼此独立的授权范围；
 - 2026-09-09 已确认当前 NANO 在本实验同步契约下为 Depth No-Go；深度不进入正式 VLA 输入，
   也不建立第二条几何系统；
 - 传统方法不参与目标识别、抓取选择或轨迹规划。只保留手眼标定、坐标变换、工作空间/步长/速度硬限位、
@@ -701,6 +753,14 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
 - 本文写入不授权修改代码、连接设备、采集、训练、推理、夹爪输出或真机运动。
 
 ## 6. 关联文档
+
+本仓库内的当前决策记录：
+
+- `docs/ACT_COMPARISON_CLOSURE_2026-09-19.md`：ACT 对照闭环、证据范围与禁止外推的结论；
+- `docs/AUBO_I10_SMOLVLA_RL_EXTENSION_PLAN_2026-09-19.md`：奖励学习、RA-BC、HIL-SERL 和
+  SmolVLA-RL 的分级门禁；
+- `docs/prompts/KIMI_RL_R0_CONTRACT_PROMPT_2026-09-19.md`：可交给 Kimi 的首个纯离线代码任务，完成后
+  必须由 Codex 复核，不得由 Kimi 直接提交。
 
 以下资料本次不复制，仍保留在原规划仓库 `/home/rentao/lerobot-project/docs/`：
 
