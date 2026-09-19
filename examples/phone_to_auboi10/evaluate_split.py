@@ -124,18 +124,15 @@ AUTOMATIC_RETURN_AUTHORIZED = env_flag("AUTOMATIC_RETURN_AUTHORIZED", default=Fa
 # (which already includes J6 yaw), fights that split and leaves closed-loop
 # observations out of distribution. Hold the first measured pose instead.
 HOLD_LOCKED_EE_POSE = env_flag("HOLD_LOCKED_EE_POSE", default=True)
-# Ensemble + n_action_steps=1 only executes chunk[0]. At pick height chunk[0]
-# stays ≈ -3 while later steps rise. live06 crossed 50, live07 peaked at 36.5
-# and never closed. Approach (z>0.12) max(chunk) was 5.5, so 20 is above
-# approach noise and at the hysteresis "open" edge. Hysteresis 60/20 unchanged.
-USE_GRIPPER_CHUNK_LOOKAHEAD = env_flag("USE_GRIPPER_CHUNK_LOOKAHEAD", default=True)
+# Pure-ACT baseline: do not replace the selected gripper output using later
+# chunk values.  This task-specific lookahead remains opt-in for a separately
+# named ablation only.  The actuator-side 60/20 hysteresis remains unchanged.
+USE_GRIPPER_CHUNK_LOOKAHEAD = env_flag("USE_GRIPPER_CHUNK_LOOKAHEAD", default=False)
 GRIPPER_CHUNK_CLOSE_SCORE = float(os.environ.get("GRIPPER_CHUNK_CLOSE_SCORE", "20"))
-# live09 90° hover: selected xyz stayed at z≈0.22. Same ACT chunk issue as
-# the gripper: ensemble/chunk[0] holds the approach, later steps may already
-# plan the descent. Follow the lowest-z step of the raw chunk while suction
-# is off; 8 mm clip still rate-limits. Skip when vacuum is on so lift/place
-# are not pulled back down.
-USE_MOTION_CHUNK_LOOKAHEAD = env_flag("USE_MOTION_CHUNK_LOOKAHEAD", default=True)
+# Pure-ACT baseline: execute the selected ACT motion output.  Selecting the
+# lowest-z pose from a future chunk is task-specific and therefore opt-in for
+# a separately named ablation; the generic 8 mm safety limiter still applies.
+USE_MOTION_CHUNK_LOOKAHEAD = env_flag("USE_MOTION_CHUNK_LOOKAHEAD", default=False)
 MOTION_CHUNK_MIN_Z_DROP_M = float(os.environ.get("MOTION_CHUNK_MIN_Z_DROP_M", "0.02"))
 # live08 pick/place chatter: max(chunk) flickered 13–23 and 12–59. Feeding
 # 100 or the raw -3 skipped the 20–60 hold band. Open only when the whole
@@ -155,13 +152,14 @@ FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CA
 # 起始关节角（度），与 record.py 一致。
 # 每轮推理完后可在单独授权时按 r 自动归位到此 + 松吸盘。
 START_JOINT_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
-# Derived from all 91,497 labels in bamboo_act_report_full, with conservative
-# margins around the demonstrated extrema. This is a safety envelope, not a
+# Derived from all 180,294 labels in bamboo_act_report_extended137_v1.  The
+# demonstrated J6 target range is [-4.365706, -1.490041] rad; retain the prior
+# approximately 0.10 rad margins.  This is a task safety envelope, not a
 # trajectory heuristic.
 WORKSPACE_MIN_M = (0.0, -0.85, 0.05)
 WORKSPACE_MAX_M = (0.67, -0.25, 0.30)
-J6_TARGET_MIN_RAD = -4.47
-J6_TARGET_MAX_RAD = -1.57
+J6_TARGET_MIN_RAD = float(os.environ.get("J6_TARGET_MIN_RAD", "-4.47"))
+J6_TARGET_MAX_RAD = float(os.environ.get("J6_TARGET_MAX_RAD", "-1.39"))
 
 
 @dataclass
@@ -267,6 +265,13 @@ def validate_runtime_settings() -> None:
         raise ValueError(f"MAX_EE_STEP_M 必须在 [0.001, 0.05] m，当前为 {MAX_EE_STEP_M}")
     if not 0 < MAX_J6_STEP_RAD <= 0.4:
         raise ValueError(f"MAX_J6_STEP_RAD 必须在 (0, 0.4] rad，当前为 {MAX_J6_STEP_RAD}")
+    if not math.isfinite(J6_TARGET_MIN_RAD) or not math.isfinite(J6_TARGET_MAX_RAD):
+        raise ValueError("J6_TARGET_MIN_RAD 和 J6_TARGET_MAX_RAD 必须是有限数")
+    if J6_TARGET_MIN_RAD >= J6_TARGET_MAX_RAD:
+        raise ValueError(
+            "J6_TARGET_MIN_RAD 必须小于 J6_TARGET_MAX_RAD，"
+            f"当前为 [{J6_TARGET_MIN_RAD}, {J6_TARGET_MAX_RAD}]"
+        )
     if not 0 < MAX_EE_ROT_STEP_RAD <= 0.4:
         raise ValueError(
             "MAX_EE_ROT_STEP_RAD 必须在 (0, 0.4] rad，"
@@ -1084,6 +1089,7 @@ def main():
     logging.warning("运行模式: %s", mode_name)
     logging.info(
         "拒绝阈值: workspace=%s..%s, xyz_step=%.3f m, J6_step=%.3f rad, "
+        "J6_range=[%.3f, %.3f] rad, "
         "rot_step=%.3f rad, IK_joint_step=%.3f rad, observation_age=%.1f ms, "
         "hold_locked_ee_pose=%s, gripper_chunk_lookahead=%s, "
         "gripper_chunk_close_score=%.1f, gripper_chunk_open_score=%.1f, "
@@ -1092,6 +1098,8 @@ def main():
         WORKSPACE_MAX_M,
         MAX_EE_STEP_M,
         MAX_J6_STEP_RAD,
+        J6_TARGET_MIN_RAD,
+        J6_TARGET_MAX_RAD,
         MAX_EE_ROT_STEP_RAD,
         MAX_IK_JOINT_STEP_RAD,
         MAX_OBSERVATION_AGE_MS,

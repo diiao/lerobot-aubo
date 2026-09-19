@@ -23,8 +23,11 @@ from lerobot.datasets.compute_stats import aggregate_stats
 STATE_KEY = "observation.state"
 STATE_INPUT_CONTRACT_FILENAME = "act_state_input_contract.json"
 FULL_STATE_VARIANT = "full"
+FULL_ZERO_GRIPPER_STATE_VARIANT = "full_zero_gripper"
 DROP_GRIPPER_STATE_VARIANT = "drop_gripper"
-SUPPORTED_STATE_VARIANTS = frozenset({FULL_STATE_VARIANT, DROP_GRIPPER_STATE_VARIANT})
+SUPPORTED_STATE_VARIANTS = frozenset(
+    {FULL_STATE_VARIANT, FULL_ZERO_GRIPPER_STATE_VARIANT, DROP_GRIPPER_STATE_VARIANT}
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,9 @@ class ActStateInputContract:
     model_names: tuple[str, ...]
     removed_name: str | None = None
     removed_index: int | None = None
+    overridden_name: str | None = None
+    overridden_index: int | None = None
+    overridden_value: float | None = None
 
     @property
     def source_width(self) -> int:
@@ -46,7 +52,7 @@ class ActStateInputContract:
         return len(self.model_names)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": "AuboActStateInputContractV1",
             "variant": self.variant,
             "state_key": STATE_KEY,
@@ -55,6 +61,16 @@ class ActStateInputContract:
             "removed_name": self.removed_name,
             "removed_index": self.removed_index,
         }
+        if self.overridden_name is not None:
+            payload.update(
+                {
+                    "schema_version": "AuboActStateInputContractV2",
+                    "overridden_name": self.overridden_name,
+                    "overridden_index": self.overridden_index,
+                    "overridden_value": self.overridden_value,
+                }
+            )
+        return payload
 
 
 def write_state_input_contract(path: Path, contract: ActStateInputContract) -> Path:
@@ -73,7 +89,8 @@ def load_state_input_contract(path: Path) -> ActStateInputContract:
 
     source = path / STATE_INPUT_CONTRACT_FILENAME
     payload = json.loads(source.read_text(encoding="utf-8"))
-    if payload.get("schema_version") != "AuboActStateInputContractV1":
+    schema_version = payload.get("schema_version")
+    if schema_version not in {"AuboActStateInputContractV1", "AuboActStateInputContractV2"}:
         raise ValueError("state input contract has an unsupported schema_version")
     if payload.get("state_key") != STATE_KEY:
         raise ValueError(f"state input contract must target {STATE_KEY}")
@@ -88,10 +105,24 @@ def load_state_input_contract(path: Path) -> ActStateInputContract:
         raise ValueError(f"state input contract has unsupported variant {variant!r}")
     removed_name = payload.get("removed_name")
     removed_index = payload.get("removed_index")
+    overridden_name = payload.get("overridden_name")
+    overridden_index = payload.get("overridden_index")
+    overridden_value = payload.get("overridden_value")
+    if schema_version == "AuboActStateInputContractV1" and any(
+        value is not None for value in (overridden_name, overridden_index, overridden_value)
+    ):
+        raise ValueError("V1 state input contract cannot declare an observation override")
     if variant == FULL_STATE_VARIANT:
-        if model_names != source_names or removed_name is not None or removed_index is not None:
+        if (
+            model_names != source_names
+            or removed_name is not None
+            or removed_index is not None
+            or overridden_name is not None
+            or overridden_index is not None
+            or overridden_value is not None
+        ):
             raise ValueError("full state input contract is internally inconsistent")
-    else:
+    elif variant == DROP_GRIPPER_STATE_VARIANT:
         if removed_name != "gripper_pos" or not isinstance(removed_index, int):
             raise ValueError("drop_gripper contract must declare the removed gripper_pos index")
         if removed_index < 0 or removed_index >= len(source_names):
@@ -99,12 +130,32 @@ def load_state_input_contract(path: Path) -> ActStateInputContract:
         expected_names = source_names[:removed_index] + source_names[removed_index + 1 :]
         if source_names[removed_index] != "gripper_pos" or model_names != expected_names:
             raise ValueError("drop_gripper state input contract is internally inconsistent")
+        if any(value is not None for value in (overridden_name, overridden_index, overridden_value)):
+            raise ValueError("drop_gripper contract cannot also override an observation")
+    else:
+        if schema_version != "AuboActStateInputContractV2":
+            raise ValueError("full_zero_gripper requires a V2 state input contract")
+        if model_names != source_names or removed_name is not None or removed_index is not None:
+            raise ValueError("full_zero_gripper must preserve the full state shape")
+        if (
+            overridden_name != "gripper_pos"
+            or not isinstance(overridden_index, int)
+            or overridden_index < 0
+            or overridden_index >= len(model_names)
+            or model_names[overridden_index] != "gripper_pos"
+            or not isinstance(overridden_value, (int, float))
+            or float(overridden_value) != 0.0
+        ):
+            raise ValueError("full_zero_gripper must override gripper_pos with 0")
     return ActStateInputContract(
         variant=variant,
         source_names=tuple(source_names),
         model_names=tuple(model_names),
         removed_name=removed_name,
         removed_index=removed_index,
+        overridden_name=overridden_name,
+        overridden_index=overridden_index,
+        overridden_value=float(overridden_value) if overridden_value is not None else None,
     )
 
 
@@ -158,6 +209,15 @@ def build_state_input_contract(
             f"{STATE_KEY} must contain exactly one gripper_pos for the ablation; found {len(matches)}"
         )
     removed_index = matches[0]
+    if variant == FULL_ZERO_GRIPPER_STATE_VARIANT:
+        return ActStateInputContract(
+            variant,
+            source_names,
+            source_names,
+            overridden_name="gripper_pos",
+            overridden_index=removed_index,
+            overridden_value=0.0,
+        )
     model_names = source_names[:removed_index] + source_names[removed_index + 1 :]
     return ActStateInputContract(
         variant=variant,
@@ -189,6 +249,30 @@ def _drop_last_axis(value: Any, *, index: int, expected_width: int) -> Any:
     raise TypeError(f"unsupported state container: {type(value).__name__}")
 
 
+def _override_last_axis(value: Any, *, index: int, expected_width: int, replacement: float) -> Any:
+    shape = getattr(value, "shape", None)
+    width = shape[-1] if shape is not None and len(shape) else len(value)
+    if width != expected_width:
+        raise ValueError(f"state input width must be {expected_width}; got {width}")
+    if isinstance(value, torch.Tensor):
+        result = value.clone()
+        result[..., index] = replacement
+        return result
+    if isinstance(value, np.ndarray):
+        result = value.copy()
+        result[..., index] = replacement
+        return result
+    if isinstance(value, tuple):
+        result = list(value)
+        result[index] = replacement
+        return tuple(result)
+    if isinstance(value, list):
+        result = list(value)
+        result[index] = replacement
+        return result
+    raise TypeError(f"unsupported state container: {type(value).__name__}")
+
+
 def apply_state_input_contract(
     batch: Mapping[str, Any],
     contract: ActStateInputContract,
@@ -206,12 +290,20 @@ def apply_state_input_contract(
             raise ValueError(
                 f"state input width must be {contract.source_width} for full contract; got {width}"
             )
-        return result
-    result[STATE_KEY] = _drop_last_axis(
-        state,
-        index=contract.removed_index,
-        expected_width=contract.source_width,
-    )
+    else:
+        state = _drop_last_axis(
+            state,
+            index=contract.removed_index,
+            expected_width=contract.source_width,
+        )
+    if contract.overridden_index is not None:
+        state = _override_last_axis(
+            state,
+            index=contract.overridden_index,
+            expected_width=contract.model_width,
+            replacement=float(contract.overridden_value),
+        )
+    result[STATE_KEY] = state
     return result
 
 

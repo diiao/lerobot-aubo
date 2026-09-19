@@ -24,6 +24,14 @@ assert SPEC is not None and SPEC.loader is not None
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
 
+EVALUATE_SCRIPT_PATH = SCRIPT_PATH.with_name("evaluate_split.py")
+EVALUATE_SPEC = importlib.util.spec_from_file_location(
+    "evaluate_split_for_audit_consistency_test", EVALUATE_SCRIPT_PATH
+)
+assert EVALUATE_SPEC is not None and EVALUATE_SPEC.loader is not None
+evaluate_split = importlib.util.module_from_spec(EVALUATE_SPEC)
+EVALUATE_SPEC.loader.exec_module(evaluate_split)
+
 
 def test_temporal_ensemble_matches_act_ensembler() -> None:
     from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
@@ -81,6 +89,51 @@ def test_action_continuity_uses_adjacent_commands() -> None:
     np.testing.assert_allclose(values["xyz_step_l2_m"], [0.005, 0.012])
     np.testing.assert_allclose(values["j6_step_abs_rad"], [0.1, 0.2])
     np.testing.assert_allclose(values["rotation_step_geodesic_deg"], [90.0, 90.0])
+
+
+def test_episode_fixed_latent_is_stable_across_batch_boundaries() -> None:
+    cache: dict[int, torch.Tensor] = {}
+
+    first = audit.episode_fixed_latent_batch(
+        torch.tensor([69, 69, 74]),
+        8,
+        seed=42,
+        device=torch.device("cpu"),
+        cache=cache,
+    )
+    second = audit.episode_fixed_latent_batch(
+        torch.tensor([74, 69]),
+        8,
+        seed=42,
+        device=torch.device("cpu"),
+        cache=cache,
+    )
+
+    torch.testing.assert_close(first[0], first[1])
+    torch.testing.assert_close(first[0], second[1])
+    torch.testing.assert_close(first[2], second[0])
+    assert not torch.equal(first[0], first[2])
+
+
+def test_episode_fixed_latent_changes_with_seed() -> None:
+    episode_indices = torch.tensor([69])
+
+    seed_1 = audit.episode_fixed_latent_batch(
+        episode_indices,
+        8,
+        seed=1,
+        device=torch.device("cpu"),
+        cache={},
+    )
+    seed_2 = audit.episode_fixed_latent_batch(
+        episode_indices,
+        8,
+        seed=2,
+        device=torch.device("cpu"),
+        cache={},
+    )
+
+    assert not torch.equal(seed_1, seed_2)
 
 
 def test_finds_all_on_and_off_transitions() -> None:
@@ -234,3 +287,103 @@ def test_local_dataset_loaders_pass_repo_id_and_root_explicitly(tmp_path: Path, 
             "delta_timestamps": {"action": [0.0]},
         },
     )
+
+
+def test_current_client_guard_replay_separates_raw_reject_from_post_clip_pass() -> None:
+    action_names = list(audit.ACTION_FIELD_NAMES)
+    state_names = [
+        "J1",
+        "J2",
+        "J3",
+        "J4",
+        "J5",
+        "J6",
+        "ee.x",
+        "ee.y",
+        "ee.z",
+        "ee.wx",
+        "ee.wy",
+        "ee.wz",
+        "gripper_pos",
+    ]
+    selected = np.asarray(
+        [[-2.8, 0.20, -0.70, 0.15, 0.1, 0.2, 0.3, 0.0]], dtype=np.float32
+    )
+    chunks = np.repeat(selected[:, None, :], 25, axis=1)
+    state = np.asarray(
+        [[0.0, 0.0, 0.0, 0.0, 0.0, -185.0, 0.10, -0.70, 0.15, 0.0, 0.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    rows = audit.replay_current_client_guard(
+        selected,
+        chunks,
+        state,
+        action_names=action_names,
+        state_names=state_names,
+        fps=25,
+    )
+    summary = audit.summarize_client_guard_replay(rows)
+
+    assert rows[0]["raw_gate_reasons"] == ["step:0", "speed:0", "j6_step:0"]
+    assert rows[0]["final_gate_reasons"] == []
+    assert summary["raw_gate_reject_count"] == 1
+    assert summary["post_transform_gate_pass_count"] == 1
+    assert summary["transform_counts"]["measured_xyz_step_clip"] == 1
+    assert summary["transform_counts"]["measured_j6_step_clip"] == 1
+    assert summary["limitations"]["ik_replayed"] is False
+
+
+def test_client_guard_replay_defaults_match_evaluate_split() -> None:
+    assert audit.CLIENT_USE_GRIPPER_CHUNK_LOOKAHEAD is evaluate_split.USE_GRIPPER_CHUNK_LOOKAHEAD
+    assert audit.CLIENT_USE_MOTION_CHUNK_LOOKAHEAD is evaluate_split.USE_MOTION_CHUNK_LOOKAHEAD
+    assert audit.CLIENT_WORKSPACE_MIN_M == evaluate_split.WORKSPACE_MIN_M
+    assert audit.CLIENT_WORKSPACE_MAX_M == evaluate_split.WORKSPACE_MAX_M
+    assert audit.CLIENT_MAX_EE_STEP_M == evaluate_split.MAX_EE_STEP_M
+    assert audit.CLIENT_MAX_J6_STEP_RAD == evaluate_split.MAX_J6_STEP_RAD
+    assert audit.CLIENT_J6_TARGET_MIN_RAD == evaluate_split.J6_TARGET_MIN_RAD
+    assert audit.CLIENT_J6_TARGET_MAX_RAD == evaluate_split.J6_TARGET_MAX_RAD
+
+
+def test_current_client_guard_replay_records_chunk_lookahead_overrides() -> None:
+    action_names = list(audit.ACTION_FIELD_NAMES)
+    state_names = [
+        "J1",
+        "J2",
+        "J3",
+        "J4",
+        "J5",
+        "J6",
+        "ee.x",
+        "ee.y",
+        "ee.z",
+        "ee.wx",
+        "ee.wy",
+        "ee.wz",
+        "gripper_pos",
+    ]
+    selected = np.asarray(
+        [[-3.2, 0.10, -0.70, 0.18, 0.0, 0.0, 0.0, -3.0]], dtype=np.float32
+    )
+    chunks = np.repeat(selected[:, None, :], 25, axis=1)
+    chunks[0, -1, 0:4] = [-3.2, 0.11, -0.69, 0.09]
+    chunks[0, -1, 7] = 25.0
+    state = np.asarray(
+        [[0.0, 0.0, 0.0, 0.0, 0.0, -185.0, 0.10, -0.70, 0.18, 0.0, 0.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+
+    rows = audit.replay_current_client_guard(
+        selected,
+        chunks,
+        state,
+        action_names=action_names,
+        state_names=state_names,
+        fps=25,
+        use_gripper_chunk_lookahead=True,
+        use_motion_chunk_lookahead=True,
+    )
+
+    assert rows[0]["motion_chunk_lookahead_overrode"] is True
+    assert rows[0]["gripper_chunk_lookahead_mode"] == "close"
+    assert rows[0]["suction_on"] is True

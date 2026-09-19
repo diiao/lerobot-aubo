@@ -2,7 +2,7 @@ import torch
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.act.configuration_act import ACTConfig
-from lerobot.policies.act.modeling_act import ACTPolicy
+from lerobot.policies.act.modeling_act import ACTPolicy, masked_action_l1_loss
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_STATE
 
 
@@ -67,3 +67,44 @@ def test_act_vae_select_action_accepts_none_action_placeholder():
 
     assert action.shape == (1, 2)
     assert torch.isfinite(action).all()
+
+
+def test_masked_action_l1_loss_without_weights_matches_original_act_objective():
+    target = torch.tensor([[[1.0, 3.0], [9.0, 9.0]]])
+    prediction = torch.zeros_like(target)
+    is_pad = torch.tensor([[False, True]])
+
+    weighted, unweighted = masked_action_l1_loss(target, prediction, is_pad)
+    original = ((target - prediction).abs() * (~is_pad).unsqueeze(-1)).mean()
+
+    torch.testing.assert_close(weighted, original)
+    torch.testing.assert_close(unweighted, original)
+
+
+def test_masked_action_l1_loss_normalizes_transition_weight_and_ignores_padding():
+    target = torch.tensor([[[1.0, 4.0], [100.0, 100.0]]])
+    prediction = torch.zeros_like(target)
+    is_pad = torch.tensor([[False, True]])
+    weights = torch.tensor([[[1.0, 3.0], [1.0, 99.0]]])
+
+    weighted, unweighted = masked_action_l1_loss(
+        target, prediction, is_pad, weights
+    )
+
+    # Valid weights [1, 3] are normalized to sum to two. The padded row has no effect.
+    assert weighted.item() == 1.625
+    assert unweighted.item() == 1.25
+
+
+def test_masked_action_l1_loss_all_padding_is_finite_zero():
+    target = torch.ones((1, 2, 2))
+    prediction = torch.zeros_like(target)
+    is_pad = torch.ones((1, 2), dtype=torch.bool)
+    weights = torch.full_like(target, 20.0)
+
+    weighted, unweighted = masked_action_l1_loss(
+        target, prediction, is_pad, weights
+    )
+
+    assert weighted.item() == 0.0
+    assert unweighted.item() == 0.0

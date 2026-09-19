@@ -15,7 +15,9 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
+from collections import Counter
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +34,8 @@ from lerobot.bamboo_sorting.act_input_contract import (
     build_state_input_contract,
     load_state_input_contract,
 )
+from lerobot.bamboo_sorting.contracts import ACTION_FIELD_NAMES
+from lerobot.bamboo_sorting.thin_safety_gate import ThinSafetyGate, ThinSafetyGateLimits
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy, ACTTemporalEnsembler
 from lerobot.policies.factory import make_pre_post_processors
@@ -44,12 +48,32 @@ SUCTION_ON_THRESHOLD = 60.0
 SUCTION_OFF_THRESHOLD = 20.0
 QUEUE_N_ACTION_STEPS = 4
 TEMPORAL_ENSEMBLE_COEFF = 0.01
+LATENT_MODE_ZERO = "zero"
+LATENT_MODE_EPISODE_SAMPLE = "episode_sample"
+LATENT_MODES = (LATENT_MODE_ZERO, LATENT_MODE_EPISODE_SAMPLE)
 TRANSITION_WINDOW = 10
 CONTACT_OFFSETS = (-10, -5, 0, 1, 5, 10)
 ROTATION_THRESHOLDS_DEG = (5.0, 10.0, 20.0, 30.0, 60.0, 90.0)
 XYZ_THRESHOLDS_M = (0.001, 0.005, 0.008, 0.01, 0.03)
 J6_THRESHOLDS_RAD = (0.01, 0.03, 0.05, 0.1, 0.2)
 CAMERA_KEYS = ("observation.images.handeye", "observation.images.fixed")
+
+# Current evaluate_split.py defaults.  Keeping them explicit in the report makes
+# drift visible; tests compare the replay against the client helpers.
+CLIENT_WORKSPACE_MIN_M = (0.0, -0.85, 0.05)
+CLIENT_WORKSPACE_MAX_M = (0.67, -0.25, 0.30)
+CLIENT_MAX_EE_STEP_M = 0.008
+CLIENT_MAX_J6_STEP_RAD = 0.03
+CLIENT_MAX_OBSERVATION_AGE_MS = 2000.0
+CLIENT_MAX_ACTION_CHUNK_AGE_MS = 2000.0
+CLIENT_J6_TARGET_MIN_RAD = -4.47
+CLIENT_J6_TARGET_MAX_RAD = -1.39
+CLIENT_GRIPPER_CHUNK_CLOSE_SCORE = 20.0
+CLIENT_GRIPPER_CHUNK_OPEN_SCORE = 8.0
+CLIENT_GRIPPER_CHUNK_HOLD_SCORE = 40.0
+CLIENT_MOTION_CHUNK_MIN_Z_DROP_M = 0.02
+CLIENT_USE_GRIPPER_CHUNK_LOOKAHEAD = False
+CLIENT_USE_MOTION_CHUNK_LOOKAHEAD = False
 
 
 def parse_episode_list(value: str | None, total_episodes: int) -> list[int]:
@@ -137,6 +161,274 @@ def deployed_hybrid_actions(
     result = temporal_ensemble.copy()
     result[:, gripper_index] = gripper_source[:, gripper_index]
     return result
+
+
+def _clip_vector_step(target: np.ndarray, anchor: np.ndarray, limit: float) -> tuple[np.ndarray, bool]:
+    """Clip one Cartesian vector toward an anchor, matching evaluate_split.py."""
+    delta = target - anchor
+    distance = float(np.linalg.norm(delta))
+    effective_limit = limit * (1.0 - 1e-6)
+    if distance > effective_limit and distance > 0.0:
+        return anchor + delta * (effective_limit / distance), True
+    return target, False
+
+
+def replay_current_client_guard(
+    selected_actions: np.ndarray,
+    raw_chunks: np.ndarray,
+    state: np.ndarray,
+    *,
+    action_names: list[str],
+    state_names: list[str],
+    fps: int,
+    use_gripper_chunk_lookahead: bool = CLIENT_USE_GRIPPER_CHUNK_LOOKAHEAD,
+    use_motion_chunk_lookahead: bool = CLIENT_USE_MOTION_CHUNK_LOOKAHEAD,
+) -> list[dict[str, Any]]:
+    """Replay the current default client transforms and its non-IK safety gate.
+
+    The replay uses saved expert observations as measured anchors.  Timing is set
+    to zero age and IK is deliberately disabled because neither can be recovered
+    from a dataset frame without a live RPC round trip or a robot-side IK service.
+    Every such limitation is recorded in the final report.
+    """
+    if list(action_names) != list(ACTION_FIELD_NAMES):
+        raise ValueError(
+            "action names do not match ActionSchemaV1: "
+            f"dataset={action_names}, schema={list(ACTION_FIELD_NAMES)}"
+        )
+    if selected_actions.ndim != 2 or raw_chunks.ndim != 3 or state.ndim != 2:
+        raise ValueError("selected_actions/raw_chunks/state dimensions are invalid")
+    if not (len(selected_actions) == len(raw_chunks) == len(state)):
+        raise ValueError("selected_actions/raw_chunks/state must have equal frame counts")
+
+    action_index = {name: action_names.index(name) for name in action_names}
+    state_index = {name: state_names.index(name) for name in state_names}
+    tcp_state_indices = [state_index[name] for name in ("ee.x", "ee.y", "ee.z")]
+    rot_state_indices = [state_index[name] for name in ("ee.wx", "ee.wy", "ee.wz")]
+    gripper_state_index = state_index["gripper_pos"]
+    j6_state_index = state_index["J6"]
+    gripper_action_index = action_index["ee.gripper_pos"]
+
+    gate = ThinSafetyGate(
+        ThinSafetyGateLimits(
+            workspace_min_m=CLIENT_WORKSPACE_MIN_M,
+            workspace_max_m=CLIENT_WORKSPACE_MAX_M,
+            max_ee_step_m=CLIENT_MAX_EE_STEP_M,
+            max_ee_speed_mps=CLIENT_MAX_EE_STEP_M * fps,
+            max_j6_step_rad=CLIENT_MAX_J6_STEP_RAD,
+            max_observation_age_ms=CLIENT_MAX_OBSERVATION_AGE_MS,
+            max_chunk_age_ms=CLIENT_MAX_ACTION_CHUNK_AGE_MS,
+            control_fps=fps,
+            require_previous_tcp=True,
+            require_ik=False,
+        )
+    )
+    suction_on = bool(state[0, gripper_state_index] > SUCTION_ON_THRESHOLD)
+    locked_rotvec = state[0, rot_state_indices].astype(np.float64)
+    processor_last_pos: np.ndarray | None = None
+    rows: list[dict[str, Any]] = []
+
+    for frame_pos, selected in enumerate(selected_actions):
+        action = {name: float(selected[index]) for index, name in enumerate(action_names)}
+        chunk = raw_chunks[frame_pos]
+        measured_tcp = state[frame_pos, tcp_state_indices].astype(np.float64)
+        measured_j6 = math.radians(float(state[frame_pos, j6_state_index]))
+
+        motion_lookahead = False
+        if use_motion_chunk_lookahead and not suction_on:
+            min_z_index = int(np.argmin(chunk[:, action_index["ee.z"]]))
+            planned = chunk[min_z_index]
+            if action["ee.z"] - float(planned[action_index["ee.z"]]) >= CLIENT_MOTION_CHUNK_MIN_Z_DROP_M:
+                for name in ("ee.j6_target", "ee.x", "ee.y", "ee.z"):
+                    action[name] = float(planned[action_index[name]])
+                motion_lookahead = True
+
+        gripper_lookahead_mode = "disabled"
+        if use_gripper_chunk_lookahead:
+            chunk_max = float(np.max(chunk[:, gripper_action_index]))
+            if chunk_max > CLIENT_GRIPPER_CHUNK_CLOSE_SCORE:
+                action["ee.gripper_pos"] = 100.0
+                gripper_lookahead_mode = "close"
+            elif chunk_max < CLIENT_GRIPPER_CHUNK_OPEN_SCORE:
+                gripper_lookahead_mode = "pass"
+            else:
+                action["ee.gripper_pos"] = CLIENT_GRIPPER_CHUNK_HOLD_SCORE
+                gripper_lookahead_mode = "hold"
+
+        raw_gripper = float(action["ee.gripper_pos"])
+        if raw_gripper > SUCTION_ON_THRESHOLD:
+            next_suction_on = True
+        elif raw_gripper < SUCTION_OFF_THRESHOLD:
+            next_suction_on = False
+        else:
+            next_suction_on = suction_on
+        action["ee.gripper_pos"] = 100.0 if next_suction_on else 0.0
+
+        raw_vector = tuple(float(action[name]) for name in action_names)
+        raw_gate = gate.evaluate(
+            [raw_vector],
+            now_monotonic_s=1.0,
+            observation_sync_timestamp_s=1.0,
+            chunk_created_monotonic_s=1.0,
+            previous_tcp_m=measured_tcp,
+            previous_j6_rad=measured_j6,
+        )
+        raw_xyz_step = math.dist(
+            tuple(raw_vector[action_index[name]] for name in ("ee.x", "ee.y", "ee.z")),
+            measured_tcp,
+        )
+        raw_j6_step = abs(float(action["ee.j6_target"]) - measured_j6)
+
+        # Current default HOLD_LOCKED_EE_POSE=1.
+        for value, name in zip(locked_rotvec, ("ee.wx", "ee.wy", "ee.wz"), strict=True):
+            action[name] = float(value)
+
+        target_tcp = np.asarray([action[name] for name in ("ee.x", "ee.y", "ee.z")], dtype=np.float64)
+        target_tcp, measured_xyz_clipped = _clip_vector_step(
+            target_tcp, measured_tcp, CLIENT_MAX_EE_STEP_M
+        )
+        for value, name in zip(target_tcp, ("ee.x", "ee.y", "ee.z"), strict=True):
+            action[name] = float(value)
+        j6_delta = float(action["ee.j6_target"]) - measured_j6
+        measured_j6_clipped = abs(j6_delta) > CLIENT_MAX_J6_STEP_RAD * (1.0 - 1e-6)
+        if measured_j6_clipped:
+            action["ee.j6_target"] = measured_j6 + math.copysign(
+                CLIENT_MAX_J6_STEP_RAD * (1.0 - 1e-6), j6_delta
+            )
+
+        # AuboEEBoundsAndSafety runs after the measured-pose limiter.  It clips
+        # workspace first, then applies a stateful last-command step limiter.
+        bounded_tcp = np.clip(
+            np.asarray([action[name] for name in ("ee.x", "ee.y", "ee.z")]),
+            CLIENT_WORKSPACE_MIN_M,
+            CLIENT_WORKSPACE_MAX_M,
+        )
+        workspace_clipped = not np.allclose(bounded_tcp, target_tcp, rtol=0.0, atol=0.0)
+        if processor_last_pos is None:
+            processor_last_pos = measured_tcp.copy()
+        processor_delta = bounded_tcp - processor_last_pos
+        processor_distance = float(np.linalg.norm(processor_delta))
+        processor_step_clipped = processor_distance > CLIENT_MAX_EE_STEP_M
+        if processor_step_clipped and processor_distance > 0.0:
+            bounded_tcp = processor_last_pos + processor_delta * (
+                CLIENT_MAX_EE_STEP_M / processor_distance
+            )
+        processor_last_pos = bounded_tcp.copy()
+        for value, name in zip(bounded_tcp, ("ee.x", "ee.y", "ee.z"), strict=True):
+            action[name] = float(value)
+
+        final_vector = tuple(float(action[name]) for name in action_names)
+        envelope_rejected = not (
+            CLIENT_J6_TARGET_MIN_RAD
+            <= float(action["ee.j6_target"])
+            <= CLIENT_J6_TARGET_MAX_RAD
+        )
+        final_gate = gate.evaluate(
+            [final_vector],
+            now_monotonic_s=1.0,
+            observation_sync_timestamp_s=1.0,
+            chunk_created_monotonic_s=1.0,
+            previous_tcp_m=measured_tcp,
+            previous_j6_rad=measured_j6,
+        )
+        final_reasons = list(final_gate.reasons)
+        if envelope_rejected:
+            final_reasons.insert(0, "task_j6_envelope")
+        final_xyz_step = math.dist(
+            tuple(final_vector[action_index[name]] for name in ("ee.x", "ee.y", "ee.z")),
+            measured_tcp,
+        )
+        final_j6_step = abs(float(action["ee.j6_target"]) - measured_j6)
+        rows.append(
+            {
+                "frame_pos": frame_pos,
+                "raw_gate_reasons": list(raw_gate.reasons),
+                "final_gate_reasons": final_reasons,
+                "raw_xyz_step_m": raw_xyz_step,
+                "final_xyz_step_m": final_xyz_step,
+                "raw_j6_step_rad": raw_j6_step,
+                "final_j6_step_rad": final_j6_step,
+                "measured_xyz_clipped": measured_xyz_clipped,
+                "measured_j6_clipped": measured_j6_clipped,
+                "workspace_clipped": workspace_clipped,
+                "processor_step_clipped": processor_step_clipped,
+                "motion_chunk_lookahead_overrode": motion_lookahead,
+                "gripper_chunk_lookahead_mode": gripper_lookahead_mode,
+                "suction_on": next_suction_on,
+            }
+        )
+        if not final_reasons:
+            suction_on = next_suction_on
+    return rows
+
+
+def summarize_client_guard_replay(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate frame-level client replay evidence without hiding rejections."""
+    raw_reasons = Counter(reason for row in rows for reason in row["raw_gate_reasons"])
+    final_reasons = Counter(reason for row in rows for reason in row["final_gate_reasons"])
+    gripper_modes = Counter(row["gripper_chunk_lookahead_mode"] for row in rows)
+
+    def first_rejection_by_episode(reason_key: str) -> list[dict[str, Any]]:
+        first: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            reasons = row[reason_key]
+            episode_index = row.get("episode_index")
+            if reasons and episode_index is not None and episode_index not in first:
+                first[int(episode_index)] = {
+                    "episode_index": int(episode_index),
+                    "frame_pos": int(row["frame_pos"]),
+                    "reasons": list(reasons),
+                }
+        return [first[index] for index in sorted(first)]
+
+    return {
+        "frames": len(rows),
+        "raw_gate_pass_count": sum(not row["raw_gate_reasons"] for row in rows),
+        "raw_gate_reject_count": sum(bool(row["raw_gate_reasons"]) for row in rows),
+        "raw_gate_reason_counts": dict(sorted(raw_reasons.items())),
+        "post_transform_gate_pass_count": sum(not row["final_gate_reasons"] for row in rows),
+        "post_transform_gate_reject_count": sum(bool(row["final_gate_reasons"]) for row in rows),
+        "post_transform_gate_reason_counts": dict(sorted(final_reasons.items())),
+        "first_raw_rejection_by_episode": first_rejection_by_episode("raw_gate_reasons"),
+        "first_post_transform_rejection_by_episode": first_rejection_by_episode(
+            "final_gate_reasons"
+        ),
+        "raw_xyz_step_m": distribution_report(
+            np.asarray([row["raw_xyz_step_m"] for row in rows]), XYZ_THRESHOLDS_M
+        ),
+        "post_transform_xyz_step_m": distribution_report(
+            np.asarray([row["final_xyz_step_m"] for row in rows]), XYZ_THRESHOLDS_M
+        ),
+        "raw_j6_step_rad": distribution_report(
+            np.asarray([row["raw_j6_step_rad"] for row in rows]), J6_THRESHOLDS_RAD
+        ),
+        "post_transform_j6_step_rad": distribution_report(
+            np.asarray([row["final_j6_step_rad"] for row in rows]), J6_THRESHOLDS_RAD
+        ),
+        "transform_counts": {
+            "measured_xyz_step_clip": sum(row["measured_xyz_clipped"] for row in rows),
+            "measured_j6_step_clip": sum(row["measured_j6_clipped"] for row in rows),
+            "workspace_clip": sum(row["workspace_clipped"] for row in rows),
+            "processor_last_command_step_clip": sum(
+                row["processor_step_clipped"] for row in rows
+            ),
+            "motion_chunk_lookahead_override": sum(
+                row["motion_chunk_lookahead_overrode"] for row in rows
+            ),
+            "gripper_chunk_lookahead_modes": dict(sorted(gripper_modes.items())),
+        },
+        "limitations": {
+            "teacher_forced_observations": True,
+            "observation_age_replayed": False,
+            "chunk_age_replayed": False,
+            "ik_replayed": False,
+            "reason": (
+                "Saved frames contain neither live RPC latency nor the controller-side "
+                "inverse-kinematics service. Timing is evaluated at zero age and the gate "
+                "uses require_ik=False; these items remain unresolved live preflight gates."
+            ),
+        },
+    }
 
 
 def binary_metrics(
@@ -493,6 +785,39 @@ def make_inference_observation(
     return raw_observation
 
 
+def episode_fixed_latent_batch(
+    episode_indices: torch.Tensor,
+    latent_dim: int,
+    *,
+    seed: int,
+    device: torch.device,
+    cache: dict[int, torch.Tensor],
+) -> torch.Tensor:
+    """Return one deterministic sampled latent per episode, independent of batching."""
+
+    if episode_indices.ndim != 1:
+        raise ValueError("episode_indices must be a one-dimensional batch")
+    if latent_dim <= 0:
+        raise ValueError("latent_dim must be positive")
+    if seed < 0:
+        raise ValueError("latent seed must be non-negative")
+
+    rows = []
+    for raw_episode_index in episode_indices.detach().cpu().tolist():
+        episode_index = int(raw_episode_index)
+        if episode_index not in cache:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed * 1_000_003 + episode_index)
+            cache[episode_index] = torch.randn(
+                latent_dim,
+                dtype=torch.float32,
+                device=device,
+                generator=generator,
+            )
+        rows.append(cache[episode_index])
+    return torch.stack(rows)
+
+
 def load_episode_video_meta(dataset_path: Path) -> dict[int, dict[str, Any]]:
     import pyarrow.parquet as pq
 
@@ -803,6 +1128,13 @@ def audit(args: argparse.Namespace) -> Path:
     device = select_device(args.device)
     policy = ACTPolicy.from_pretrained(model_path).to(device).eval()
     policy.config.device = str(device)
+    policy.model.sample_latent_at_inference = args.latent_mode == LATENT_MODE_EPISODE_SAMPLE
+    latent_cache: dict[int, torch.Tensor] = {}
+    evidence["latent_inference"] = {
+        "mode": args.latent_mode,
+        "seed": args.latent_seed if args.latent_mode == LATENT_MODE_EPISODE_SAMPLE else None,
+        "scope": "one_fixed_z_per_episode" if args.latent_mode == LATENT_MODE_EPISODE_SAMPLE else "zero",
+    }
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy.config,
         pretrained_path=model_path,
@@ -820,6 +1152,16 @@ def audit(args: argparse.Namespace) -> Path:
     records: list[dict[str, Any]] = []
     with torch.inference_mode():
         for batch in loader:
+            latent_batch = None
+            if args.latent_mode == LATENT_MODE_EPISODE_SAMPLE:
+                latent_batch = episode_fixed_latent_batch(
+                    batch["episode_index"],
+                    policy.config.latent_dim,
+                    seed=args.latent_seed,
+                    device=device,
+                    cache=latent_cache,
+                )
+                policy.model._infer_z = latent_batch
             processed = preprocessor(
                 make_inference_observation(
                     batch,
@@ -830,6 +1172,8 @@ def audit(args: argparse.Namespace) -> Path:
             action_chunks = postprocessor(policy.predict_action_chunk(processed)).cpu().numpy()
             forced_release_chunks = None
             if model_gripper_index is not None:
+                if latent_batch is not None:
+                    policy.model._infer_z = latent_batch
                 forced_processed = preprocessor(
                     make_inference_observation(
                         batch,
@@ -867,6 +1211,7 @@ def audit(args: argparse.Namespace) -> Path:
     stored: dict[str, dict[str, Any]] = {}
     all_target_events: list[dict[str, Any]] = []
     frame_lookup: dict[tuple[int, int], dict[str, Any]] = {}
+    client_guard_rows: list[dict[str, Any]] = []
     gripper_index = action_names.index("ee.gripper_pos")
 
     for episode_index in episodes:
@@ -903,6 +1248,17 @@ def audit(args: argparse.Namespace) -> Path:
                 ),
             }
         }
+        episode_guard_rows = replay_current_client_guard(
+            predicted_by_mode["normal"]["ensemble_latest_gripper"],
+            chunks,
+            state,
+            action_names=action_names,
+            state_names=state_names,
+            fps=int(metadata.fps),
+        )
+        for row in episode_guard_rows:
+            row["episode_index"] = episode_index
+        client_guard_rows.extend(episode_guard_rows)
         if forced_chunks is not None:
             forced_queue = deployed_queue_actions(forced_chunks, QUEUE_N_ACTION_STEPS)
             forced_ensemble = deployed_temporal_ensemble_actions(
@@ -1111,6 +1467,26 @@ def audit(args: argparse.Namespace) -> Path:
         },
         "target_suction_events": summarize_target_suction_events(all_target_events),
         "comparison": comparison_out,
+        "current_client_guard_replay": {
+            "selected_server_deployment": "ensemble_latest_gripper",
+            "client_defaults": {
+                "hold_locked_ee_pose": True,
+                "use_motion_chunk_lookahead": CLIENT_USE_MOTION_CHUNK_LOOKAHEAD,
+                "motion_chunk_min_z_drop_m": CLIENT_MOTION_CHUNK_MIN_Z_DROP_M,
+                "use_gripper_chunk_lookahead": CLIENT_USE_GRIPPER_CHUNK_LOOKAHEAD,
+                "gripper_chunk_close_score": CLIENT_GRIPPER_CHUNK_CLOSE_SCORE,
+                "gripper_chunk_open_score": CLIENT_GRIPPER_CHUNK_OPEN_SCORE,
+                "workspace_min_m": CLIENT_WORKSPACE_MIN_M,
+                "workspace_max_m": CLIENT_WORKSPACE_MAX_M,
+                "max_ee_step_m": CLIENT_MAX_EE_STEP_M,
+                "max_j6_step_rad": CLIENT_MAX_J6_STEP_RAD,
+                "j6_target_min_rad": CLIENT_J6_TARGET_MIN_RAD,
+                "j6_target_max_rad": CLIENT_J6_TARGET_MAX_RAD,
+                "max_observation_age_ms": CLIENT_MAX_OBSERVATION_AGE_MS,
+                "max_action_chunk_age_ms": CLIENT_MAX_ACTION_CHUNK_AGE_MS,
+            },
+            **summarize_client_guard_replay(client_guard_rows),
+        },
         "contact_sheets": contact_files,
         "transition_file": "transitions.csv",
     }
@@ -1128,6 +1504,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", help="例如 cuda 或 cpu；默认自动选择")
     parser.add_argument("--report-dir", help="新报告目录；已存在时会拒绝覆盖")
+    parser.add_argument(
+        "--latent-mode",
+        choices=LATENT_MODES,
+        default=LATENT_MODE_ZERO,
+        help="zero 使用 ACT 原始 z=0；episode_sample 为每个 episode 固定采样一个 z",
+    )
+    parser.add_argument("--latent-seed", type=int, default=0)
     return parser.parse_args()
 
 

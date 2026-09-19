@@ -22,6 +22,8 @@ import torch
 from lerobot.bamboo_sorting.act_input_contract import (
     ActStateInputContract,
     EpisodeSplit,
+    FULL_STATE_VARIANT,
+    FULL_ZERO_GRIPPER_STATE_VARIANT,
     adapt_features_and_stats,
     aggregate_selected_episode_stats,
     apply_state_input_contract,
@@ -33,8 +35,9 @@ from lerobot.configs.types import FeatureType
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.policies.act.configuration_act import ACTConfig
-from lerobot.policies.act.modeling_act import ACTPolicy
+from lerobot.policies.act.modeling_act import ACTION_LOSS_WEIGHTS, ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
+from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.utils import init_logging
 
 _DATASET_PATH = Path(os.environ.get("DATASET_PATH", "./datasets/bamboo_newview_full")).expanduser()
@@ -60,12 +63,36 @@ _VAL_MAX_BATCHES = int(os.environ.get("VAL_MAX_BATCHES", "0"))
 MAX_VAL_BATCHES = None if _VAL_MAX_BATCHES == 0 else _VAL_MAX_BATCHES
 VAL_FRACTION = 0.2
 STATE_INPUT_VARIANT = os.environ.get("STATE_INPUT_VARIANT", "full").strip()
+ZERO_GRIPPER_STATE_OBS = os.environ.get("ZERO_GRIPPER_STATE_OBS", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 _EPISODE_SPLIT_PATH = os.environ.get("EPISODE_SPLIT_PATH", "").strip()
 EPISODE_SPLIT_PATH = Path(_EPISODE_SPLIT_PATH).expanduser() if _EPISODE_SPLIT_PATH else None
 
 # Standard ACT CVAE objective is the baseline. Set USE_VAE=0 only for a
 # controlled comparison trained from scratch with the same episode split.
 USE_VAE = os.environ.get("USE_VAE", "1").strip().lower() not in ("", "0", "false", "no")
+GRIPPER_TRANSITION_LOSS_WEIGHT = float(
+    os.environ.get("GRIPPER_TRANSITION_LOSS_WEIGHT", "1.0")
+)
+GRIPPER_OFF_THRESHOLD = 20.0
+GRIPPER_ON_THRESHOLD = 60.0
+
+
+def resolve_state_input_variant() -> str:
+    """Translate the legacy flag into a checkpoint-enforced input contract."""
+
+    if not ZERO_GRIPPER_STATE_OBS:
+        return STATE_INPUT_VARIANT
+    if STATE_INPUT_VARIANT != FULL_STATE_VARIANT:
+        raise ValueError(
+            "ZERO_GRIPPER_STATE_OBS=1 requires STATE_INPUT_VARIANT=full; "
+            "use one explicit state intervention at a time"
+        )
+    return FULL_ZERO_GRIPPER_STATE_VARIANT
 
 
 def validate_runtime_settings() -> None:
@@ -88,6 +115,93 @@ def validate_runtime_settings() -> None:
         raise ValueError("VAL_SEED must be a non-negative integer")
     if _VAL_MAX_BATCHES < 0:
         raise ValueError("VAL_MAX_BATCHES must be zero (full validation) or a positive integer")
+    if not np.isfinite(GRIPPER_TRANSITION_LOSS_WEIGHT):
+        raise ValueError("GRIPPER_TRANSITION_LOSS_WEIGHT must be finite")
+    if GRIPPER_TRANSITION_LOSS_WEIGHT < 1.0:
+        raise ValueError("GRIPPER_TRANSITION_LOSS_WEIGHT must be at least 1.0")
+
+
+def validate_gripper_transition_experiment(
+    state_variant: str, transition_weight: float
+) -> None:
+    """Keep the keyframe experiment isolated from state-input interventions."""
+
+    if transition_weight > 1.0 and state_variant != FULL_STATE_VARIANT:
+        raise ValueError(
+            "GRIPPER_TRANSITION_LOSS_WEIGHT>1 requires STATE_INPUT_VARIANT=full; "
+            "do not combine keyframe weighting with a state-input intervention"
+        )
+
+
+def build_gripper_transition_loss_weights(
+    batch: dict[str, torch.Tensor],
+    *,
+    state_gripper_index: int,
+    action_gripper_index: int,
+    transition_weight: float,
+) -> torch.Tensor | None:
+    """Weight only genuine gripper on/off transitions in a raw action chunk."""
+
+    if not np.isfinite(transition_weight) or transition_weight < 1.0:
+        raise ValueError("transition_weight must be finite and at least 1.0")
+    if transition_weight == 1.0:
+        return None
+    actions = batch[ACTION]
+    state = batch[OBS_STATE]
+    action_is_pad = batch["action_is_pad"]
+    if actions.ndim != 3 or state.ndim != 2:
+        raise ValueError("expected batched state [B,D] and action chunks [B,K,A]")
+    if action_is_pad.shape != actions.shape[:2]:
+        raise ValueError("action_is_pad must match the action batch/time dimensions")
+    if not 0 <= state_gripper_index < state.shape[-1]:
+        raise IndexError("state gripper index is out of range")
+    if not 0 <= action_gripper_index < actions.shape[-1]:
+        raise IndexError("action gripper index is out of range")
+
+    gripper = actions[..., action_gripper_index]
+    previous = torch.cat(
+        (state[:, state_gripper_index].unsqueeze(1), gripper[:, :-1]),
+        dim=1,
+    )
+    turns_on = (previous < GRIPPER_OFF_THRESHOLD) & (gripper > GRIPPER_ON_THRESHOLD)
+    turns_off = (previous > GRIPPER_ON_THRESHOLD) & (gripper < GRIPPER_OFF_THRESHOLD)
+    transitions = (turns_on | turns_off) & ~action_is_pad
+
+    weights = torch.ones_like(actions)
+    gripper_weights = torch.where(
+        transitions,
+        torch.as_tensor(transition_weight, dtype=actions.dtype, device=actions.device),
+        torch.ones((), dtype=actions.dtype, device=actions.device),
+    )
+    weights[..., action_gripper_index] = gripper_weights
+    return weights
+
+
+def prepare_policy_batch(
+    batch: dict[str, torch.Tensor],
+    preprocessor,
+    state_contract: ActStateInputContract,
+    *,
+    state_gripper_index: int,
+    action_gripper_index: int,
+    transition_weight: float,
+) -> dict[str, torch.Tensor]:
+    """Apply the state contract and attach raw-label-derived loss weights."""
+
+    loss_weights = build_gripper_transition_loss_weights(
+        batch,
+        state_gripper_index=state_gripper_index,
+        action_gripper_index=action_gripper_index,
+        transition_weight=transition_weight,
+    )
+    processed = preprocessor(apply_state_input_contract(batch, state_contract))
+    if loss_weights is not None:
+        processed = dict(processed)
+        processed[ACTION_LOSS_WEIGHTS] = loss_weights.to(
+            device=processed[ACTION].device,
+            dtype=processed[ACTION].dtype,
+        )
+    return processed
 
 
 def seed_everything(seed: int) -> torch.Generator:
@@ -180,13 +294,16 @@ def evaluate_loss(
     dataloader,
     max_batches: int | None,
     state_contract: ActStateInputContract,
-) -> float:
-    """Measure held-out loss with dropout disabled and no parameter updates."""
+    state_gripper_index: int,
+    action_gripper_index: int,
+) -> tuple[float, float]:
+    """Measure weighted and original ACT held-out objectives."""
 
     was_training = policy.training
     policy.eval()
     preprocessor.reset()
     total = 0.0
+    unweighted_total = 0.0
     count = 0
     try:
         cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
@@ -197,16 +314,26 @@ def evaluate_loss(
             for batch_idx, batch in enumerate(dataloader):
                 if max_batches is not None and batch_idx >= max_batches:
                     break
-                batch = apply_state_input_contract(batch, state_contract)
-                batch = preprocessor(batch)
-                loss, _ = policy.forward(batch)
+                batch = prepare_policy_batch(
+                    batch,
+                    preprocessor,
+                    state_contract,
+                    state_gripper_index=state_gripper_index,
+                    action_gripper_index=action_gripper_index,
+                    transition_weight=GRIPPER_TRANSITION_LOSS_WEIGHT,
+                )
+                loss, loss_dict = policy.forward(batch)
                 total += float(loss.item())
+                unweighted_objective = loss_dict["l1_loss_unweighted"]
+                if "kld_loss" in loss_dict:
+                    unweighted_objective += loss_dict["kld_loss"] * policy.config.kl_weight
+                unweighted_total += unweighted_objective
                 count += 1
     finally:
         policy.train(was_training)
     if count == 0:
         raise RuntimeError("验证集没有可用 batch")
-    return total / count
+    return total / count, unweighted_total / count
 
 
 def sha256_file(path: Path) -> str:
@@ -277,9 +404,13 @@ def write_experiment_manifest(
         "episode_split_path": str(episode_split.path) if episode_split is not None else None,
         "episode_split_sha256": sha256_file(episode_split.path) if episode_split is not None else None,
         "state_input_contract": state_contract.as_dict(),
+        "zero_gripper_state_observation": (
+            state_contract.variant == FULL_ZERO_GRIPPER_STATE_VARIANT
+        ),
         "normalization_stats_scope": "train_episodes",
         "validation_scope": "full" if MAX_VAL_BATCHES is None else f"first_{MAX_VAL_BATCHES}_batches",
         "validation_mode": "eval",
+        "checkpoint_selection_metric": "weighted_validation_objective",
         "seed": SEED,
         "validation_seed": VAL_SEED,
         "batch_size": BATCH_SIZE,
@@ -289,6 +420,14 @@ def write_experiment_manifest(
         "chunk_size": chunk_size,
         "n_action_steps": n_action_steps,
         "use_vae": USE_VAE,
+        "gripper_transition_loss": {
+            "enabled": GRIPPER_TRANSITION_LOSS_WEIGHT > 1.0,
+            "weight": GRIPPER_TRANSITION_LOSS_WEIGHT,
+            "off_threshold": GRIPPER_OFF_THRESHOLD,
+            "on_threshold": GRIPPER_ON_THRESHOLD,
+            "scope": "gripper_action_transition_tokens_only",
+            "normalization": "mean_one_over_non_padding_action_elements",
+        },
         "train_script_sha256": sha256_file(Path(__file__)),
         "act_source_path": str(act_source),
         "act_source_sha256": sha256_file(act_source),
@@ -301,6 +440,7 @@ def write_experiment_manifest(
 
 def main():
     validate_runtime_settings()
+    resolved_state_input_variant = resolve_state_input_variant()
     train_generator = seed_everything(SEED)
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
@@ -327,7 +467,17 @@ def main():
         )
         train_episodes = list(episode_split.train_episodes)
         val_episodes = list(episode_split.val_episodes)
-    state_contract = build_state_input_contract(metadata.features, STATE_INPUT_VARIANT)
+    state_contract = build_state_input_contract(metadata.features, resolved_state_input_variant)
+    validate_gripper_transition_experiment(
+        state_contract.variant, GRIPPER_TRANSITION_LOSS_WEIGHT
+    )
+    state_names = metadata.features[OBS_STATE]["names"]
+    action_names = metadata.features[ACTION]["names"]
+    try:
+        state_gripper_index = state_names.index("gripper_pos")
+        action_gripper_index = action_names.index("ee.gripper_pos")
+    except ValueError as exc:
+        raise RuntimeError("13D keyframe training requires gripper_pos in state and action") from exc
     # Express the ACT horizon in physical time, then convert using the dataset
     # FPS. New 25 Hz recordings therefore use a 25-frame (~1 s) chunk and
     # replan after 4 frames (~0.16 s).
@@ -346,6 +496,7 @@ def main():
     print(f"episode_split={episode_split.path if episode_split is not None else 'default_tail_split'}")
     print(f"seed={SEED}")
     print(f"validation_seed={VAL_SEED}")
+    print(f"gripper_transition_loss_weight={GRIPPER_TRANSITION_LOSS_WEIGHT:g}")
     print(
         "validation="
         + ("all held-out frames" if MAX_VAL_BATCHES is None else f"first {MAX_VAL_BATCHES} batches")
@@ -426,30 +577,46 @@ def main():
     print(
         f"Starting pure ACT training: steps={TRAINING_STEPS}, "
         f"chunk={chunk_size}, execute={n_action_steps}, use_vae={USE_VAE}, "
-        f"state={state_contract.variant}"
+        f"state={state_contract.variant}, "
+        f"zero_gripper_obs={state_contract.variant == FULL_ZERO_GRIPPER_STATE_VARIANT}, "
+        f"gripper_transition_weight={GRIPPER_TRANSITION_LOSS_WEIGHT:g}"
     )
     while step < TRAINING_STEPS:
         for batch in train_loader:
-            batch = apply_state_input_contract(batch, state_contract)
-            batch = preprocessor(batch)
-            loss, _ = policy.forward(batch)
+            batch = prepare_policy_batch(
+                batch,
+                preprocessor,
+                state_contract,
+                state_gripper_index=state_gripper_index,
+                action_gripper_index=action_gripper_index,
+                transition_weight=GRIPPER_TRANSITION_LOSS_WEIGHT,
+            )
+            loss, loss_dict = policy.forward(batch)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=10.0)
             optimizer.step()
             optimizer.zero_grad()
 
             if step % LOG_FREQ == 0:
-                print(f"step {step:>6d} | train_loss={loss.item():.5f}")
+                message = f"step {step:>6d} | train_loss={loss.item():.5f}"
+                if GRIPPER_TRANSITION_LOSS_WEIGHT > 1.0:
+                    message += f" | unweighted_l1={loss_dict['l1_loss_unweighted']:.5f}"
+                print(message)
 
             if step > 0 and step % VAL_FREQ == 0:
-                val_loss = evaluate_loss(
+                val_loss, val_unweighted_loss = evaluate_loss(
                     policy,
                     preprocessor,
                     val_loader,
                     MAX_VAL_BATCHES,
                     state_contract,
+                    state_gripper_index,
+                    action_gripper_index,
                 )
-                print(f"step {step:>6d} | val_loss={val_loss:.5f}")
+                message = f"step {step:>6d} | val_loss={val_loss:.5f}"
+                if GRIPPER_TRANSITION_LOSS_WEIGHT > 1.0:
+                    message += f" | val_unweighted={val_unweighted_loss:.5f}"
+                print(message)
                 if val_loss < best_val:
                     best_val = val_loss
                     save_checkpoint(
@@ -482,14 +649,19 @@ def main():
             if step >= TRAINING_STEPS:
                 break
 
-    final_val = evaluate_loss(
+    final_val, final_unweighted_val = evaluate_loss(
         policy,
         preprocessor,
         val_loader,
         MAX_VAL_BATCHES,
         state_contract,
+        state_gripper_index,
+        action_gripper_index,
     )
-    print(f"final validation | val_loss={final_val:.5f}")
+    message = f"final validation | val_loss={final_val:.5f}"
+    if GRIPPER_TRANSITION_LOSS_WEIGHT > 1.0:
+        message += f" | val_unweighted={final_unweighted_val:.5f}"
+    print(message)
     if final_val < best_val:
         best_val = final_val
         save_checkpoint(

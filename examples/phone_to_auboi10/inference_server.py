@@ -20,6 +20,7 @@ import os
 import pickle
 import socket
 import struct
+import traceback
 from pathlib import Path
 
 import cv2
@@ -41,7 +42,7 @@ from lerobot.utils.utils import init_logging
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "./models/bamboo_newview_act/best")
 HOST = "0.0.0.0"  # 监听所有接口；客户端经 Tailscale IP (100.88.143.45) 连入
-PORT = 5555
+PORT = int(os.environ.get("SERVER_PORT", "5555"))
 DEFAULT_TEMPORAL_ENSEMBLE_COEFF = 0.01
 DEFAULT_ENSEMBLE_GRIPPER_MODE = "ensemble"
 GRIPPER_ACTION_INDEX = ACTION_FIELD_NAMES.index("ee.gripper_pos")
@@ -130,6 +131,19 @@ class InferenceServer:
         logging.info(f"加载策略与处理器: {MODEL_PATH}")
         self.policy = ACTPolicy.from_pretrained(MODEL_PATH)
         self.policy.eval()
+        self.sample_latent = os.environ.get("ACT_LATENT_SAMPLE", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self.latent_search_k = int(os.environ.get("ACT_LATENT_SEARCH", "0"))
+        if self.latent_search_k < 0:
+            raise ValueError("ACT_LATENT_SEARCH must be >= 0")
+        self.policy.model.sample_latent_at_inference = self.sample_latent
+        self._latent_search_committed = False
+        self._latent_search_attempted = False
+        self._last_search_gripper = None
         self.device = torch.device(self.policy.config.device)
         expected_state_shape = tuple(self.policy.config.input_features[STATE_KEY].shape)
         self.state_input_contract = resolve_checkpoint_state_contract(
@@ -166,7 +180,23 @@ class InferenceServer:
             )
         else:
             self.ensemble = False
+            raw_n_action_steps = os.environ.get("N_ACTION_STEPS")
+            if raw_n_action_steps:
+                n_action_steps = int(raw_n_action_steps)
+                chunk_size = int(self.policy.config.chunk_size)
+                if n_action_steps < 1 or n_action_steps > chunk_size:
+                    raise ValueError(
+                        f"N_ACTION_STEPS must be in [1, {chunk_size}], got {n_action_steps}"
+                    )
+                self.policy.config.n_action_steps = n_action_steps
+                logging.info("queue n_action_steps override=%s chunk_size=%s", n_action_steps, chunk_size)
         self.n_action_steps = self.policy.config.n_action_steps
+        self.chunk_blend_steps = int(os.environ.get("CHUNK_BLEND_STEPS", "0"))
+        if self.chunk_blend_steps < 0:
+            raise ValueError("CHUNK_BLEND_STEPS must be >= 0")
+        if self.chunk_blend_steps > self.n_action_steps:
+            raise ValueError("CHUNK_BLEND_STEPS cannot exceed n_action_steps")
+        self._last_selected = None
         self.prediction_sequence = 0
         self.queue_action_index = 0
 
@@ -175,6 +205,9 @@ class InferenceServer:
         logging.info(
             f"纯 ACT 就绪: device={self.device}, n_action_steps={self.n_action_steps}, "
             f"ensemble={self.ensemble}, "
+            f"chunk_blend_steps={self.chunk_blend_steps}, "
+            f"latent_sample={self.sample_latent}, "
+            f"latent_search_k={self.latent_search_k}, "
             f"ensemble_gripper_mode={self.ensemble_gripper_mode}, "
             f"state_contract={self.state_input_contract.variant if self.state_input_contract else 'legacy_full'}"
         )
@@ -185,6 +218,10 @@ class InferenceServer:
         self.postprocessor.reset()
         self.prediction_sequence = 0
         self.queue_action_index = 0
+        self._last_selected = None
+        self._latent_search_committed = False
+        self._latent_search_attempted = False
+        self._last_search_gripper = None
 
     def _select_action_with_evidence(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor | None, int]:
         """Mirror ACT selection while retaining the pre-ensemble/pre-queue model chunk."""
@@ -204,15 +241,44 @@ class InferenceServer:
             predicted_chunk = self.policy.predict_action_chunk(batch)[
                 :, : self.policy.config.n_action_steps
             ]
-            self.policy._action_queue.extend(predicted_chunk.transpose(0, 1))
+            queued = predicted_chunk.transpose(0, 1).clone()
+            if (
+                self.chunk_blend_steps > 0
+                and self._last_selected is not None
+                and queued.shape[0] > 0
+            ):
+                blend = min(self.chunk_blend_steps, int(queued.shape[0]))
+                last = self._last_selected
+                for index in range(blend):
+                    alpha = (index + 1) / (blend + 1)
+                    queued[index] = (1.0 - alpha) * last + alpha * queued[index]
+            self.policy._action_queue.extend(queued)
             self.queue_action_index = 0
         selected_index = self.queue_action_index
         selected = self.policy._action_queue.popleft()
         self.queue_action_index += 1
+        self._last_selected = selected.detach().clone()
         return selected, predicted_chunk, selected_index
 
+    def _to_numpy(self, value) -> np.ndarray:
+        if torch.is_tensor(value):
+            return value.detach().cpu().numpy()
+        if hasattr(value, "detach") and hasattr(value, "cpu"):
+            return value.detach().cpu().numpy()
+        if isinstance(value, dict):
+            return self._to_numpy(value.get("action", next(iter(value.values()))))
+        try:
+            return np.asarray(value)
+        except (TypeError, RuntimeError, ValueError):
+            if hasattr(value, "action"):
+                return self._to_numpy(value.action)
+            raise
+
     def _postprocess_numpy(self, action: torch.Tensor) -> np.ndarray:
-        return self.postprocessor(action.clone()).detach().cpu().numpy()
+        processed = self.postprocessor(self._to_numpy(action) if not torch.is_tensor(action) else action.clone())
+        if isinstance(processed, dict):
+            processed = processed.get("action", next(iter(processed.values())))
+        return np.asarray(self._to_numpy(processed), dtype=np.float32)
 
     def predict_with_trace(self, obs_raw: dict) -> tuple[np.ndarray, dict]:
         """obs_raw: {observation.state: np, observation.images.*: jpg bytes, task, robot_type}"""
@@ -252,14 +318,84 @@ class InferenceServer:
                 if predicted_chunk_normalized is not None
                 else None
             )
+            state_vec = np.asarray(self._to_numpy(obs_np[STATE_KEY]), dtype=np.float64).reshape(-1)
+            if self.state_input_contract is not None:
+                z_index = self.state_input_contract.model_names.index("ee.z")
+                x_index = self.state_input_contract.model_names.index("ee.x")
+            else:
+                z_index, x_index = 8, 6
+            current_xyz = state_vec[x_index : x_index + 3]
+            current_z = float(state_vec[z_index])
+            if (
+                self.sample_latent
+                and self.latent_search_k > 0
+                and not self._latent_search_committed
+                and not self._latent_search_attempted
+                and predicted_chunk_denormalized is not None
+                and current_z <= 0.12
+            ):
+                current_g = float(
+                    np.max(predicted_chunk_denormalized[0, :, GRIPPER_ACTION_INDEX])
+                )
+                self._last_search_gripper = current_g
+                self._latent_search_attempted = True
+                if current_g < 20.0:
+                    best_g = current_g
+                    best_z = getattr(self.policy.model, "_infer_z", None)
+                    best_chunk = predicted_chunk_normalized
+                    original_z = best_z
+                    for _ in range(self.latent_search_k):
+                        self.policy.model._infer_z = None
+                        candidate = self.policy.predict_action_chunk(batch)
+                        candidate_denorm = self._postprocess_numpy(candidate)
+                        score = float(
+                            np.max(np.asarray(candidate_denorm)[..., GRIPPER_ACTION_INDEX])
+                        )
+                        if score > best_g:
+                            best_g = score
+                            best_z = self.policy.model._infer_z
+                            best_chunk = candidate
+                    self._last_search_gripper = best_g
+                    if best_g >= 60.0 and best_z is not None:
+                        self.policy.model._infer_z = best_z
+                        self._latent_search_committed = True
+                        self._last_search_gripper = best_g
+                        if self.ensemble:
+                            self.policy.temporal_ensembler.reset()
+                            selected_normalized = self.policy.temporal_ensembler.update(
+                                best_chunk
+                            )
+                            if self.ensemble_gripper_mode == "latest":
+                                selected_normalized = selected_normalized.clone()
+                                selected_normalized[:, GRIPPER_ACTION_INDEX] = best_chunk[
+                                    :, 0, GRIPPER_ACTION_INDEX
+                                ]
+                        else:
+                            selected_normalized = best_chunk[:, 0]
+                        predicted_chunk_normalized = best_chunk
+                        selected_denormalized = self._postprocess_numpy(
+                            selected_normalized
+                        )
+                        predicted_chunk_denormalized = self._postprocess_numpy(
+                            predicted_chunk_normalized
+                        )
+                    else:
+                        self.policy.model._infer_z = original_z
 
-        selected_normalized_np = selected_normalized.detach().cpu().numpy()
+        selected_normalized_np = self._to_numpy(selected_normalized)
+        selected_denormalized = np.asarray(self._to_numpy(selected_denormalized), dtype=np.float32)
+        if predicted_chunk_denormalized is not None:
+            predicted_chunk_denormalized = np.asarray(
+                self._to_numpy(predicted_chunk_denormalized), dtype=np.float32
+            )
         trace = {
             "schema_version": "aubo_act_server_trace_v1",
             "prediction_sequence": self.prediction_sequence,
             "model_inference_performed": predicted_chunk_normalized is not None,
             "temporal_ensemble_enabled": bool(self.ensemble),
             "ensemble_gripper_mode": self.ensemble_gripper_mode,
+            "latent_search_committed": bool(self._latent_search_committed),
+            "latent_search_gripper": self._last_search_gripper,
             "queue_action_index": int(selected_index),
             "selected_normalized_action": selected_normalized_np.squeeze(0).tolist(),
             "selected_denormalized_action": selected_denormalized.squeeze(0).tolist(),
@@ -306,7 +442,7 @@ class InferenceServer:
                         send_msg(conn, {"error": f"unknown cmd: {cmd}"})
                 except Exception as e:
                     logging.exception("处理请求失败")
-                    send_msg(conn, {"error": str(e)})
+                    send_msg(conn, {"error": f"{e}\n{traceback.format_exc()}"})
 
     def serve_forever(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
