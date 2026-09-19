@@ -12,6 +12,7 @@ import torch
 from lerobot.bamboo_sorting.act_input_contract import (
     DROP_GRIPPER_STATE_VARIANT,
     FULL_STATE_VARIANT,
+    FULL_ZERO_GRIPPER_STATE_VARIANT,
     STATE_KEY,
     adapt_features_and_stats,
     aggregate_selected_episode_stats,
@@ -80,6 +81,20 @@ def test_full_contract_validates_width_without_mutating_batch() -> None:
         apply_state_input_contract({STATE_KEY: state[:3]}, contract)
 
 
+def test_full_zero_gripper_contract_preserves_width_and_masks_without_mutating() -> None:
+    contract = build_state_input_contract(_features(), FULL_ZERO_GRIPPER_STATE_VARIANT)
+    original = torch.tensor([[1.0, 2.0, 3.0, 100.0]])
+    result = apply_state_input_contract({STATE_KEY: original}, contract)
+
+    assert contract.source_width == 4
+    assert contract.model_width == 4
+    assert contract.overridden_name == "gripper_pos"
+    assert contract.overridden_index == 3
+    assert contract.overridden_value == 0.0
+    assert result[STATE_KEY].tolist() == [[1.0, 2.0, 3.0, 0.0]]
+    assert original.tolist() == [[1.0, 2.0, 3.0, 100.0]]
+
+
 def test_drop_contract_rejects_ambiguous_or_wrong_width_state() -> None:
     features = _features()
     features[STATE_KEY]["names"][-1] = "not_a_gripper"
@@ -138,12 +153,42 @@ def test_episode_split_rejects_wrong_dataset_snapshot(tmp_path: Path) -> None:
         load_episode_split(split_path, dataset_info_path=info_path, total_episodes=2)
 
 
-@pytest.mark.parametrize("variant", [FULL_STATE_VARIANT, DROP_GRIPPER_STATE_VARIANT])
+@pytest.mark.parametrize(
+    "variant",
+    [FULL_STATE_VARIANT, FULL_ZERO_GRIPPER_STATE_VARIANT, DROP_GRIPPER_STATE_VARIANT],
+)
 def test_checkpoint_contract_round_trip(tmp_path: Path, variant: str) -> None:
     contract = build_state_input_contract(_features(), variant)
     destination = write_state_input_contract(tmp_path, contract)
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    expected_schema = (
+        "AuboActStateInputContractV2"
+        if variant == FULL_ZERO_GRIPPER_STATE_VARIANT
+        else "AuboActStateInputContractV1"
+    )
+    assert payload["schema_version"] == expected_schema
     assert destination.name == "act_state_input_contract.json"
     assert load_state_input_contract(tmp_path) == contract
+
+
+def test_checkpoint_contract_loads_existing_v1_full_model(tmp_path: Path) -> None:
+    payload = {
+        "schema_version": "AuboActStateInputContractV1",
+        "variant": "full",
+        "state_key": STATE_KEY,
+        "source_names": ["J1", "ee.x", "ee.wz", "gripper_pos"],
+        "model_names": ["J1", "ee.x", "ee.wz", "gripper_pos"],
+        "removed_name": None,
+        "removed_index": None,
+    }
+    (tmp_path / "act_state_input_contract.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    contract = load_state_input_contract(tmp_path)
+
+    assert contract.variant == FULL_STATE_VARIANT
+    assert contract.overridden_name is None
 
 
 def test_checkpoint_contract_rejects_inconsistent_drop(tmp_path: Path) -> None:

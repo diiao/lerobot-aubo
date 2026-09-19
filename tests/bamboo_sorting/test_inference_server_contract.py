@@ -103,6 +103,8 @@ def test_queue_selection_retains_chunk_only_when_model_runs() -> None:
 
     server.policy = Policy()
     server.queue_action_index = 0
+    server.chunk_blend_steps = 0
+    server._last_selected = None
 
     first, first_chunk, first_index = server._select_action_with_evidence({})
     second, second_chunk, second_index = server._select_action_with_evidence({})

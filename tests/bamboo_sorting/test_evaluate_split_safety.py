@@ -31,6 +31,18 @@ def test_dry_run_flag_defaults_true(monkeypatch) -> None:
     assert evaluate_split.env_flag("DRY_RUN", default=True) is True
 
 
+def test_pure_act_defaults_disable_task_specific_chunk_lookahead() -> None:
+    assert evaluate_split.USE_GRIPPER_CHUNK_LOOKAHEAD is False
+    assert evaluate_split.USE_MOTION_CHUNK_LOOKAHEAD is False
+
+
+def test_extended137_j6_envelope_covers_demonstrated_max() -> None:
+    assert evaluate_split.J6_TARGET_MAX_RAD == -1.39
+    evaluate_split.assert_task_action_envelope(
+        (-1.490041, 0.1, -0.7, 0.15, 0.0, 0.0, 0.0, 0.0)
+    )
+
+
 def test_real_execution_requires_independent_authorization(monkeypatch) -> None:
     monkeypatch.setattr(evaluate_split, "DRY_RUN", False)
     monkeypatch.setattr(evaluate_split, "POLICY_EXECUTION_AUTHORIZED", False)

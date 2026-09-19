@@ -38,6 +38,51 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
+ACTION_LOSS_WEIGHTS = "action_loss_weights"
+
+
+def masked_action_l1_loss(
+    target: Tensor,
+    prediction: Tensor,
+    action_is_pad: Tensor,
+    loss_weights: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Return the training L1 loss and its unweighted reference value.
+
+    Optional element-wise weights are normalized over non-padding action
+    elements. This keeps the total loss scale identical to the standard ACT
+    objective when every weight is one, while allowing rare action tokens to
+    receive more gradient without changing the inference graph.
+    """
+
+    elementwise_l1 = F.l1_loss(target, prediction, reduction="none")
+    if action_is_pad.shape != target.shape[:-1]:
+        raise ValueError(
+            "action_is_pad shape must match action batch/time dimensions: "
+            f"got {tuple(action_is_pad.shape)} for action {tuple(target.shape)}"
+        )
+    valid = (~action_is_pad).unsqueeze(-1)
+    unweighted = (elementwise_l1 * valid).mean()
+    if loss_weights is None:
+        return unweighted, unweighted
+    if loss_weights.shape != target.shape:
+        raise ValueError(
+            "action loss weights must match action shape: "
+            f"got {tuple(loss_weights.shape)} and {tuple(target.shape)}"
+        )
+    if not torch.isfinite(loss_weights).all() or torch.any(loss_weights <= 0):
+        raise ValueError("action loss weights must be finite and strictly positive")
+
+    expanded_valid = valid.expand_as(elementwise_l1)
+    valid_weights = loss_weights * expanded_valid
+    valid_weight_sum = valid_weights.sum().clamp_min(
+        torch.finfo(valid_weights.dtype).tiny
+    )
+    normalizer = expanded_valid.sum() / valid_weight_sum
+    weighted = (elementwise_l1 * valid_weights * normalizer).mean()
+    return weighted, unweighted
+
+
 class ACTPolicy(PreTrainedPolicy):
     """
     Action Chunking Transformer Policy as per Learning Fine-Grained Bimanual Manipulation with Low-Cost
@@ -95,6 +140,7 @@ class ACTPolicy(PreTrainedPolicy):
             self.temporal_ensembler.reset()
         else:
             self._action_queue = deque([], maxlen=self.config.n_action_steps)
+        self.model._infer_z = None
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
@@ -141,11 +187,17 @@ class ACTPolicy(PreTrainedPolicy):
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
-        l1_loss = (
-            F.l1_loss(batch[ACTION], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
-        ).mean()
+        l1_loss, unweighted_l1_loss = masked_action_l1_loss(
+            batch[ACTION],
+            actions_hat,
+            batch["action_is_pad"],
+            batch.get(ACTION_LOSS_WEIGHTS),
+        )
 
-        loss_dict = {"l1_loss": l1_loss.item()}
+        loss_dict = {
+            "l1_loss": l1_loss.item(),
+            "l1_loss_unweighted": unweighted_l1_loss.item(),
+        }
         if self.config.use_vae:
             # Calculate Dₖₗ(latent_pdf || standard_normal). Note: After computing the KL-divergence for
             # each dimension independently, we sum over the latent dimension to get the total
@@ -452,12 +504,23 @@ class ACT(nn.Module):
             # Sample the latent with the reparameterization trick.
             latent_sample = mu + log_sigma_x2.div(2).exp() * torch.randn_like(mu)
         else:
-            # When not using the VAE encoder, we set the latent to be all zeros.
             mu = log_sigma_x2 = None
-            # TODO(rcadene, alexander-soare): remove call to `.to` to speedup forward ; precompute and use buffer
-            latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32).to(
-                batch[OBS_STATE].device
-            )
+            device = batch[OBS_STATE].device
+            if getattr(self, "sample_latent_at_inference", False) and not self.training:
+                cached = getattr(self, "_infer_z", None)
+                if cached is None or cached.shape[0] != batch_size or cached.device != device:
+                    self._infer_z = torch.randn(
+                        [batch_size, self.config.latent_dim],
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                latent_sample = self._infer_z
+            else:
+                latent_sample = torch.zeros(
+                    [batch_size, self.config.latent_dim],
+                    dtype=torch.float32,
+                    device=device,
+                )
 
         # Prepare transformer encoder inputs.
         encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]
