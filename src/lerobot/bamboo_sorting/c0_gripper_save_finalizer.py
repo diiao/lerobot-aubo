@@ -106,6 +106,7 @@ C0_GRIPPER_SAVE_FINALIZATION_RESULT_SCHEMA_VERSION: Final = (
 _STATE_ATTR: Final = "_c0_r4b_state"
 _SNAPSHOT_SHA_ATTR: Final = "_c0_r4b_snapshot_sha256"
 _TOKEN_FINGERPRINT_ATTR: Final = "_c0_r4b_token_fingerprint"
+_RESULT_FINGERPRINT_ATTR: Final = "_c0_r4b_result_fingerprint"
 STATE_IDLE: Final = "idle"
 STATE_SAVE_UNCERTAIN: Final = "save_uncertain"
 STATE_SAVED_PENDING_AUDIT: Final = "saved_pending_audit"
@@ -170,6 +171,19 @@ def _token_fingerprint(token: C0GripperEpisodeSavePendingAuditV1) -> str:
             "frame_count": token.frame_count,
             "dataset_root": token.dataset_root,
             "candidate_frame_indices": list(token.candidate_frame_indices),
+        }
+    )
+
+
+def _result_fingerprint(result: C0GripperSaveFinalizationResultV1) -> str:
+    """Digest binding one complete() result to the journal that produced it."""
+
+    if not isinstance(result, C0GripperSaveFinalizationResultV1):
+        raise TypeError("result must be a C0GripperSaveFinalizationResultV1")
+    return _canonical_sha256(
+        {
+            "schema_version": "C0GripperSaveFinalizationResultFingerprintV1",
+            "record": result.to_manifest_record(),
         }
     )
 
@@ -671,6 +685,139 @@ class C0GripperSaveFinalizationResultV1:
         return copy.deepcopy(record)
 
 
+def c0_gripper_journal_save_state(journal: C0GripperPendingCaptureJournalV1) -> str:
+    """Read-only current R4B save state. Never writes, never saves, never audits."""
+
+    if not isinstance(journal, C0GripperPendingCaptureJournalV1):
+        raise TypeError("journal must be a C0GripperPendingCaptureJournalV1")
+    return _journal_state(journal)
+
+
+def require_c0_gripper_journal_save_state(
+    journal: C0GripperPendingCaptureJournalV1, *, expected: str
+) -> str:
+    """Fail-closed read of the journal's R4B save state."""
+
+    if expected not in _KNOWN_STATES:
+        raise C0GripperSaveFinalizationError(
+            f"unknown expected save state {expected!r}; refusing to guess"
+        )
+    state = c0_gripper_journal_save_state(journal)
+    if state != expected:
+        raise C0GripperSaveFinalizationError(
+            f"journal save state is {state!r}; expected {expected!r}"
+        )
+    return state
+
+
+def require_c0_gripper_pending_token_bound_to_journal(
+    *,
+    journal: C0GripperPendingCaptureJournalV1,
+    pending: C0GripperEpisodeSavePendingAuditV1,
+) -> None:
+    """Prove ``pending`` is the token pinned by this journal's begin phase.
+
+    Compares the deterministic token fingerprint and the save-time journal
+    snapshot digest. Does not write, save, or re-run the R2 dataset audit.
+    """
+
+    if not isinstance(pending, C0GripperEpisodeSavePendingAuditV1):
+        raise TypeError("pending must be a C0GripperEpisodeSavePendingAuditV1")
+    state = c0_gripper_journal_save_state(journal)
+    if state not in {STATE_SAVED_PENDING_AUDIT, STATE_FINALIZED}:
+        raise C0GripperSaveFinalizationError(
+            f"journal save state is {state!r}; token binding requires "
+            f"{STATE_SAVED_PENDING_AUDIT!r} or {STATE_FINALIZED!r}"
+        )
+    if pending.episode_id != journal.episode_id or pending.episode_index != journal.episode_index:
+        raise C0GripperSaveFinalizationError(
+            "pending token identity does not match the journal"
+        )
+    if not math.isfinite(pending.fps) or float(pending.fps) != float(journal.fps):
+        raise C0GripperSaveFinalizationError(
+            f"pending token fps {pending.fps} != journal fps {journal.fps}"
+        )
+    if _token_fingerprint(pending) != getattr(journal, _TOKEN_FINGERPRINT_ATTR, None):
+        raise C0GripperSaveFinalizationError(
+            "pending token is not the one produced by this journal's save; "
+            "refusing a reconstructed or foreign token"
+        )
+    current_snapshot = _journal_snapshot_sha256(journal, frame_count=pending.frame_count)
+    if current_snapshot != getattr(journal, _SNAPSHOT_SHA_ATTR, None):
+        raise C0GripperSaveFinalizationError(
+            "journal evidence does not match the save-time snapshot digest; "
+            "refusing a journal that is not the one that was saved"
+        )
+
+
+def require_c0_gripper_finalized_evidence_bound(
+    *,
+    journal: C0GripperPendingCaptureJournalV1,
+    pending: C0GripperEpisodeSavePendingAuditV1,
+    result: C0GripperSaveFinalizationResultV1,
+) -> None:
+    """Prove journal, pending token, and result are one save/audit chain.
+
+    Read-only: does not write, save, or re-run the R2 dataset audit.
+    """
+
+    if not isinstance(result, C0GripperSaveFinalizationResultV1):
+        raise TypeError("result must be a C0GripperSaveFinalizationResultV1")
+    require_c0_gripper_journal_save_state(journal, expected=STATE_FINALIZED)
+    require_c0_gripper_pending_token_bound_to_journal(journal=journal, pending=pending)
+    if str(pending.dataset_root) != str(result.dataset_report.dataset_root):
+        raise C0GripperSaveFinalizationError(
+            "pending token dataset_root does not match finalization result "
+            "dataset_report.dataset_root; refusing a mixed save/audit chain"
+        )
+    pending_attempts = journal.controller_attempts
+    committed_attempts = result.sidecar.attempts
+    if len(pending_attempts) != len(committed_attempts):
+        raise C0GripperSaveFinalizationError(
+            "journal pending attempts and finalized committed attempts differ in count"
+        )
+    for pending_attempt, committed_attempt in zip(
+        pending_attempts, committed_attempts, strict=True
+    ):
+        if pending_attempt.attempt_index != committed_attempt.attempt_index:
+            raise C0GripperSaveFinalizationError(
+                "committed attempt_index does not match the journal pending attempt"
+            )
+        if pending_attempt.candidate_frame_index != committed_attempt.candidate_frame_index:
+            raise C0GripperSaveFinalizationError(
+                "committed candidate_frame_index does not match the journal pending attempt"
+            )
+        if dataclasses.asdict(pending_attempt.event) != dataclasses.asdict(
+            committed_attempt.event
+        ):
+            raise C0GripperSaveFinalizationError(
+                "committed attempt event does not match the journal pending attempt"
+            )
+        if pending_attempt.source_trace_sha256 != committed_attempt.source_trace_sha256:
+            raise C0GripperSaveFinalizationError(
+                "committed source_trace_sha256 does not match the journal pending attempt"
+            )
+        if pending_attempt.dataset_frame_committed is not False:
+            raise C0GripperSaveFinalizationError(
+                "journal pending attempts must remain dataset_frame_committed=False"
+            )
+        if committed_attempt.dataset_frame_committed is not True:
+            raise C0GripperSaveFinalizationError(
+                "finalized committed attempts must have dataset_frame_committed=True"
+            )
+    pinned = getattr(journal, _RESULT_FINGERPRINT_ATTR, None)
+    if not isinstance(pinned, str) or not pinned:
+        raise C0GripperSaveFinalizationError(
+            "journal has no finalization result fingerprint; refusing an unbound "
+            "finalized journal"
+        )
+    if _result_fingerprint(result) != pinned:
+        raise C0GripperSaveFinalizationError(
+            "finalization result fingerprint does not match the journal's pinned "
+            "result; refusing a reconstructed or foreign result"
+        )
+
+
 def begin_c0_gripper_episode_finalization(
     *,
     journal: C0GripperPendingCaptureJournalV1,
@@ -853,5 +1000,6 @@ def complete_c0_gripper_episode_finalization(
         dataset_report=report,
         binding_report=binding_report,
     )
+    setattr(journal, _RESULT_FINGERPRINT_ATTR, _result_fingerprint(result))
     _set_journal_state(journal, STATE_FINALIZED)
     return result

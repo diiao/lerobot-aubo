@@ -21,8 +21,8 @@ import pytest
 
 from lerobot.bamboo_sorting.contracts import INSTRUCTION_LANGUAGE, INSTRUCTION_SCHEMA_VERSION, INSTRUCTION_SPECS
 from lerobot.bamboo_sorting.lerobot_bridge import (
-    CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
-    build_cameras_set_v1_lerobot_features,
+    CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
+    build_camera_set_v2_lerobot_features,
     observation_to_lerobot_frame,
     sha256_file,
     write_scene_manifest,
@@ -47,7 +47,7 @@ def _payload(**changes: object) -> dict[str, object]:
 
 
 def test_bridge_emits_two_rgb_language_and_action_contract() -> None:
-    features = build_cameras_set_v1_lerobot_features()
+    features = build_camera_set_v2_lerobot_features()
     frame = observation_to_lerobot_frame(_payload())
 
     assert set(features) >= {
@@ -59,7 +59,7 @@ def test_bridge_emits_two_rgb_language_and_action_contract() -> None:
     }
     assert "observation.images.wrist_rgb" not in features
     assert frame["task"] == "Pick one strip and place it in the collection area."
-    assert frame["bridge_version"] == CAMERASET_V1_LEROBOT_BRIDGE_VERSION
+    assert frame["bridge_version"] == CAMERASET_V2_LEROBOT_BRIDGE_VERSION
 
 
 @pytest.mark.parametrize("forbidden_key", ["handeye", "fixed", "wrist_rgb", "wrist_depth_m"])

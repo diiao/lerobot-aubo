@@ -1,0 +1,50 @@
+{
+  "c0_eligible": true,
+  "camera_streams": [
+    "global_rgb",
+    "grasp_rgb"
+  ],
+  "capture_profiles": {
+    "global_rgb": {
+      "device": "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0",
+      "fourcc": "MJPG",
+      "fps": 30.0,
+      "height": 480,
+      "model_color_layout": "RGB_uint8",
+      "observed_height": 480,
+      "observed_width": 640,
+      "width": 640
+    },
+    "grasp_rgb": {
+      "device": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
+      "fourcc": "MJPG",
+      "fps": 25.0,
+      "height": 480,
+      "model_color_layout": "RGB_uint8",
+      "observed_height": 480,
+      "observed_width": 640,
+      "width": 640
+    }
+  },
+  "decision": "two_rgb",
+  "evidence_sha256": {
+    "legacy_camera_set_v1": "9d57ed90803d35dedcd33920bfa9dec9370a59f04a9e757e510d8ba44795fc6b",
+    "mech_eye_2d_isolated_report": "5366e2be064bbad6225cabcda69828d13a3ecb78ad016b157f19599a5d170a2b",
+    "physical_mount_erratum": "7dd03a21def81392326141f65b05bdaa692a9cdcb8f12c4690ba21622637dc11",
+    "rgb_aubo_state_concurrent_report": "42edaf7e37517dceae8fdf7bbeb12b4771a17490f79a51d6781e668232a3b913",
+    "run06_dynamic_grasp_rgb_video": "8e4c8256d37dc372b076261535a5ef2d89b7bdaa1e7d15e0f7ab180180f468c2"
+  },
+  "frozen_at_utc": "2026-09-20T14:13:49Z",
+  "global_roi_evidence_ref": "artifacts/rgb_gate/roi_preview_20260909T151900Z/global_rgb.jpg#sha256:8425e7b74f19bf5892a6f175e3e721556961b1e80efbb632b6eb2269fd043621",
+  "grasp_roi_evidence_ref": "artifacts/rgb_gate/roi_preview_20260909T151900Z/grasp_rgb.jpg#sha256:46d93ee2135f00e436079b39e8e38f0d088f56ca35c338fe051ebed254e517d1",
+  "immutable": true,
+  "physical_roles": {
+    "global_rgb": "external stationary GENERAL WEBCAM global view covering the accepted pile, motion, and collection ROI",
+    "grasp_rgb": "eye-in-hand Sonix USB2.0_CAM1 view rigidly mounted on the wrist and moving with the robot"
+  },
+  "schema_version": "CameraSetV2",
+  "timestamp_methods": {
+    "global_rgb": "host_receive_monotonic_after_opencv_read",
+    "grasp_rgb": "host_receive_monotonic_after_opencv_read"
+  }
+}

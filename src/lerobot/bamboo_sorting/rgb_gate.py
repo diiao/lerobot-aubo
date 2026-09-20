@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Frozen Phase A2 RGB gate rules and immutable ``CameraSetV1`` contract.
+"""Frozen Phase A2 RGB gates plus immutable CameraSetV1/V2 records.
 
 This module is deliberately hardware-free. Hardware runners must reduce raw
 samples to the metrics below before applying the pre-registered thresholds.
@@ -35,7 +35,12 @@ from types import MappingProxyType
 from typing import Final
 
 RGB_GATE_SCHEMA_VERSION: Final = "RgbGateV1"
-CAMERA_SET_SCHEMA_VERSION: Final = "CameraSetV1"
+CAMERA_SET_V1_SCHEMA_VERSION: Final = "CameraSetV1"
+CAMERA_SET_V2_SCHEMA_VERSION: Final = "CameraSetV2"
+# Historical compatibility name. New formal capture code must use
+# CURRENT_CAMERA_SET_SCHEMA_VERSION explicitly.
+CAMERA_SET_SCHEMA_VERSION: Final = CAMERA_SET_V1_SCHEMA_VERSION
+CURRENT_CAMERA_SET_SCHEMA_VERSION: Final = CAMERA_SET_V2_SCHEMA_VERSION
 RGB_GATE_MIN_EFFECTIVE_FPS: Final = 9.0
 RGB_GATE_MAX_DROP_RATE: Final = 0.01
 RGB_GATE_MAX_DUPLICATE_RATE: Final = 0.01
@@ -339,8 +344,14 @@ class CameraSetV1Record:
     c0_eligible: bool = True
 
     def __post_init__(self) -> None:
-        if self.schema_version != CAMERA_SET_SCHEMA_VERSION:
-            raise ValueError(f"schema_version must be {CAMERA_SET_SCHEMA_VERSION!r}")
+        if self.schema_version not in {
+            CAMERA_SET_V1_SCHEMA_VERSION,
+            CAMERA_SET_V2_SCHEMA_VERSION,
+        }:
+            raise ValueError(
+                "schema_version must be "
+                f"{CAMERA_SET_V1_SCHEMA_VERSION!r} or {CAMERA_SET_V2_SCHEMA_VERSION!r}"
+            )
         if self.decision is CameraSetDecision.TWO_RGB:
             expected_streams = FIXED_RGB_STREAMS
         elif self.decision is CameraSetDecision.THREE_RGB:
@@ -395,7 +406,7 @@ class CameraSetV1Record:
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must be a non-empty string")
         if not self.immutable or not self.c0_eligible:
-            raise ValueError("A frozen CameraSetV1 must be immutable and C0-eligible")
+            raise ValueError("A frozen camera set must be immutable and C0-eligible")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -420,22 +431,23 @@ DEFAULT_CAMERA_SET_V1_PATH: Final = Path("configs/aubo_i10/CameraSetV1.json")
 FROZEN_CAMERA_SET_V1_SHA256: Final = (
     "9d57ed90803d35dedcd33920bfa9dec9370a59f04a9e757e510d8ba44795fc6b"
 )
+DEFAULT_CAMERA_SET_V2_PATH: Final = Path("configs/aubo_i10/CameraSetV2.json")
+FROZEN_CAMERA_SET_V2_SHA256: Final = (
+    "20de7adfd6ed9734c3a4329d86ab7e0ad08df9c6758d878d3c1302e2ac6423b4"
+)
+CURRENT_CAMERA_SET_SHA256: Final = FROZEN_CAMERA_SET_V2_SHA256
 
 
-def load_camera_set_v1(path: Path | None = None) -> tuple[CameraSetV1Record, str]:
-    """Load the immutable CameraSetV1 record and return it with its SHA-256."""
-
-    if path is None:
-        path = Path(__file__).resolve().parents[3] / DEFAULT_CAMERA_SET_V1_PATH
-    else:
-        path = Path(path)
-    if path.name != "CameraSetV1.json":
-        raise ValueError("The frozen record filename must be CameraSetV1.json")
+def _load_camera_set(
+    path: Path, *, expected_filename: str, expected_schema_version: str
+) -> tuple[CameraSetV1Record, str]:
+    if path.name != expected_filename:
+        raise ValueError(f"The frozen record filename must be {expected_filename}")
     payload = path.read_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     data = json.loads(payload)
     if not isinstance(data, dict):
-        raise ValueError("CameraSetV1.json must contain a JSON object")
+        raise ValueError(f"{expected_filename} must contain a JSON object")
     record = CameraSetV1Record(
         schema_version=str(data["schema_version"]),
         frozen_at_utc=str(data["frozen_at_utc"]),
@@ -450,19 +462,64 @@ def load_camera_set_v1(path: Path | None = None) -> tuple[CameraSetV1Record, str
         immutable=bool(data.get("immutable", True)),
         c0_eligible=bool(data.get("c0_eligible", True)),
     )
+    if record.schema_version != expected_schema_version:
+        raise ValueError(
+            f"{expected_filename} schema_version must be {expected_schema_version!r}"
+        )
     if record.decision is CameraSetDecision.TWO_RGB and WRIST_RGB in record.camera_streams:
-        raise ValueError("A two-RGB CameraSetV1 cannot contain wrist_rgb")
+        raise ValueError(f"A two-RGB {expected_schema_version} cannot contain wrist_rgb")
     return record, digest
 
 
-def freeze_camera_set_v1(path: Path, record: CameraSetV1Record) -> str:
-    """Create CameraSetV1 once, never overwrite it, and return its SHA-256."""
+def load_camera_set_v1(path: Path | None = None) -> tuple[CameraSetV1Record, str]:
+    """Load the immutable CameraSetV1 record and return it with its SHA-256."""
 
+    if path is None:
+        path = Path(__file__).resolve().parents[3] / DEFAULT_CAMERA_SET_V1_PATH
+    else:
+        path = Path(path)
+    return _load_camera_set(
+        path,
+        expected_filename="CameraSetV1.json",
+        expected_schema_version=CAMERA_SET_V1_SCHEMA_VERSION,
+    )
+
+
+def load_camera_set_v2(path: Path | None = None) -> tuple[CameraSetV1Record, str]:
+    """Load the corrected immutable CameraSetV2 record and return its SHA-256."""
+
+    if path is None:
+        path = Path(__file__).resolve().parents[3] / DEFAULT_CAMERA_SET_V2_PATH
+    else:
+        path = Path(path)
+    record, digest = _load_camera_set(
+        path,
+        expected_filename="CameraSetV2.json",
+        expected_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+    )
+    if digest != FROZEN_CAMERA_SET_V2_SHA256:
+        raise ValueError("CameraSetV2.json does not match the frozen SHA-256")
+    return record, digest
+
+
+def _freeze_camera_set(
+    path: Path,
+    record: CameraSetV1Record,
+    *,
+    expected_filename: str,
+    expected_schema_version: str,
+) -> str:
     path = Path(path)
-    if path.name != "CameraSetV1.json":
-        raise ValueError("The frozen record filename must be CameraSetV1.json")
+    if path.name != expected_filename:
+        raise ValueError(f"The frozen record filename must be {expected_filename}")
+    if record.schema_version != expected_schema_version:
+        raise ValueError(
+            f"{expected_filename} requires schema_version {expected_schema_version!r}"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(record.to_dict(), indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+    payload = (
+        json.dumps(record.to_dict(), indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode()
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -473,3 +530,25 @@ def freeze_camera_set_v1(path: Path, record: CameraSetV1Record) -> str:
         path.unlink(missing_ok=True)
         raise
     return hashlib.sha256(payload).hexdigest()
+
+
+def freeze_camera_set_v1(path: Path, record: CameraSetV1Record) -> str:
+    """Create CameraSetV1 once, never overwrite it, and return its SHA-256."""
+
+    return _freeze_camera_set(
+        path,
+        record,
+        expected_filename="CameraSetV1.json",
+        expected_schema_version=CAMERA_SET_V1_SCHEMA_VERSION,
+    )
+
+
+def freeze_camera_set_v2(path: Path, record: CameraSetV1Record) -> str:
+    """Create CameraSetV2 once, never overwrite it, and return its SHA-256."""
+
+    return _freeze_camera_set(
+        path,
+        record,
+        expected_filename="CameraSetV2.json",
+        expected_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+    )

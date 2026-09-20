@@ -38,11 +38,11 @@ from .contracts import (
     INSTRUCTION_SPECS,
     validate_instruction_fields,
 )
-from .lerobot_bridge import CAMERASET_V1_LEROBOT_BRIDGE_VERSION
+from .lerobot_bridge import CAMERASET_V2_LEROBOT_BRIDGE_VERSION
 from .rgb_gate import (
-    CAMERA_SET_SCHEMA_VERSION,
+    CAMERA_SET_V2_SCHEMA_VERSION,
     FIXED_RGB_STREAMS,
-    FROZEN_CAMERA_SET_V1_SHA256,
+    FROZEN_CAMERA_SET_V2_SHA256,
     ROBOT_STATE,
 )
 
@@ -59,7 +59,7 @@ C0_HUMAN_OUTCOMES: Final = frozenset({"success", "failure", "uncertain"})
 C0_SPLIT_NAMES: Final = frozenset({"train", "validation", "test"})
 C0_EXPECTED_EPISODE_COUNT: Final = 10
 
-C0_CAPTURE_PROFILE_ID: Final = "CameraSetV1Dataset25HzV1"
+C0_CAPTURE_PROFILE_ID: Final = "CameraSetV2Dataset25HzV1"
 C0_DATASET_FPS: Final = 25.0
 GRIPPER_STATE_SEMANTICS: Final = "last_commanded_binary_not_physical_feedback"
 
@@ -114,7 +114,7 @@ class C0SensorTimestampV1:
     """Timing evidence for one C0 sample from one frozen sensor stream.
 
     The class is intentionally independent of the legacy three-RGB
-    ``EmbodiedObservationV1``. It permits only the two CameraSetV1 RGB streams
+    ``EmbodiedObservationV1``. It permits only the two CameraSetV2 RGB streams
     and robot state, so wrist RGB, depth, ``handeye`` and ``fixed`` cannot enter
     C0 through this contract.
     """
@@ -235,18 +235,18 @@ class C0EpisodeManifestV1:
 
         if self.split_name not in C0_SPLIT_NAMES:
             raise ValueError(f"split_name must be one of {sorted(C0_SPLIT_NAMES)}")
-        if self.camera_set_schema_version != CAMERA_SET_SCHEMA_VERSION:
+        if self.camera_set_schema_version != CAMERA_SET_V2_SCHEMA_VERSION:
             raise ValueError(
-                f"camera_set_schema_version must be {CAMERA_SET_SCHEMA_VERSION!r}"
+                f"camera_set_schema_version must be {CAMERA_SET_V2_SCHEMA_VERSION!r}"
             )
         _require_sha256("camera_set_sha256", self.camera_set_sha256)
-        if self.camera_set_sha256 != FROZEN_CAMERA_SET_V1_SHA256:
+        if self.camera_set_sha256 != FROZEN_CAMERA_SET_V2_SHA256:
             raise ValueError(
-                "camera_set_sha256 must equal the frozen CameraSetV1 SHA-256"
+                "camera_set_sha256 must equal the frozen CameraSetV2 SHA-256"
             )
-        if self.bridge_version != CAMERASET_V1_LEROBOT_BRIDGE_VERSION:
+        if self.bridge_version != CAMERASET_V2_LEROBOT_BRIDGE_VERSION:
             raise ValueError(
-                f"bridge_version must be {CAMERASET_V1_LEROBOT_BRIDGE_VERSION!r}"
+                f"bridge_version must be {CAMERASET_V2_LEROBOT_BRIDGE_VERSION!r}"
             )
         if self.action_schema_version != ACTION_SCHEMA_VERSION:
             raise ValueError(

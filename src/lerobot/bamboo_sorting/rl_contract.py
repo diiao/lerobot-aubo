@@ -33,8 +33,8 @@ from types import MappingProxyType
 from typing import Final
 
 from .contracts import ACTION_SCHEMA_VERSION, INSTRUCTION_SPECS, validate_action_vector
-from .lerobot_bridge import CAMERASET_V1_LEROBOT_BRIDGE_VERSION
-from .rgb_gate import CAMERA_SET_SCHEMA_VERSION, FROZEN_CAMERA_SET_V1_SHA256
+from .lerobot_bridge import CAMERASET_V2_LEROBOT_BRIDGE_VERSION
+from .rgb_gate import CAMERA_SET_V2_SCHEMA_VERSION, FROZEN_CAMERA_SET_V2_SHA256
 
 RL_OBSERVATION_REF_SCHEMA_VERSION: Final = "RLObservationRefV1"
 REWARD_SCHEMA_VERSION: Final = "RewardSchemaV1"
@@ -105,11 +105,11 @@ def _require_sha256(name: str, value: object) -> None:
 
 @dataclass(frozen=True)
 class RLObservationRefV1:
-    """Reference-and-hash binding to one formal two-RGB CameraSetV1 model input.
+    """Reference-and-hash binding to one formal two-RGB CameraSetV2 model input.
 
     The transition pipeline stores only this identity: observation and content
     hashes, never numpy image payloads. Wrist RGB and depth streams are frozen
-    out of CameraSetV1 and therefore cannot appear here.
+    out of CameraSetV2 and therefore cannot appear here.
     """
 
     schema_version: str
@@ -140,16 +140,16 @@ class RLObservationRefV1:
         if instruction.is_control:
             raise ValueError("Control instructions cannot anchor RL observation refs")
 
-        if self.camera_set_schema_version != CAMERA_SET_SCHEMA_VERSION:
+        if self.camera_set_schema_version != CAMERA_SET_V2_SCHEMA_VERSION:
             raise ValueError(
-                f"camera_set_schema_version must be {CAMERA_SET_SCHEMA_VERSION!r}; "
+                f"camera_set_schema_version must be {CAMERA_SET_V2_SCHEMA_VERSION!r}; "
                 f"wrist_rgb/depth camera sets are not valid RL inputs"
             )
-        if self.camera_set_sha256 != FROZEN_CAMERA_SET_V1_SHA256:
-            raise ValueError("camera_set_sha256 must equal FROZEN_CAMERA_SET_V1_SHA256")
-        if self.bridge_version != CAMERASET_V1_LEROBOT_BRIDGE_VERSION:
+        if self.camera_set_sha256 != FROZEN_CAMERA_SET_V2_SHA256:
+            raise ValueError("camera_set_sha256 must equal FROZEN_CAMERA_SET_V2_SHA256")
+        if self.bridge_version != CAMERASET_V2_LEROBOT_BRIDGE_VERSION:
             raise ValueError(
-                f"bridge_version must be {CAMERASET_V1_LEROBOT_BRIDGE_VERSION!r}"
+                f"bridge_version must be {CAMERASET_V2_LEROBOT_BRIDGE_VERSION!r}"
             )
         _require_sha256("model_input_sha256", self.model_input_sha256)
 

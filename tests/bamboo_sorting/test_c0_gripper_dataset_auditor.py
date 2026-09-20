@@ -45,13 +45,13 @@ from lerobot.bamboo_sorting.contracts import (
     INSTRUCTION_SPECS,
 )
 from lerobot.bamboo_sorting.lerobot_bridge import (
-    CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
-    build_cameras_set_v1_lerobot_features,
+    CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
+    build_camera_set_v2_lerobot_features,
 )
 from lerobot.bamboo_sorting.observation_contract import OBSERVATION_STATE_FIELD_NAMES
 from lerobot.bamboo_sorting.rgb_gate import (
-    CAMERA_SET_SCHEMA_VERSION,
-    FROZEN_CAMERA_SET_V1_SHA256,
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
 )
 
 EPISODE_ID = "c0-gripper-dataset-episode-00"
@@ -89,9 +89,9 @@ def _episode_manifest(frame_count: int = FRAME_COUNT, human_outcome: str = "succ
         scene_id="c0-scene-00",
         session_id="c0-session-01",
         split_name="train",
-        camera_set_schema_version=CAMERA_SET_SCHEMA_VERSION,
-        camera_set_sha256=FROZEN_CAMERA_SET_V1_SHA256,
-        bridge_version=CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        camera_set_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+        camera_set_sha256=FROZEN_CAMERA_SET_V2_SHA256,
+        bridge_version=CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         action_schema_version=ACTION_SCHEMA_VERSION,
         instruction_schema_version=INSTRUCTION_SCHEMA_VERSION,
         instruction_id=instruction.instruction_id,
@@ -214,7 +214,7 @@ def _write_info(
         (meta_dir / "info.json").write_text(raw_content, encoding="utf-8")
         return
     if features is None:
-        features = build_cameras_set_v1_lerobot_features()
+        features = build_camera_set_v2_lerobot_features()
     # Normalize tuples to lists exactly as a JSON round trip would store them.
     features = json.loads(json.dumps(features))
     info = {
@@ -228,7 +228,7 @@ def _write_info(
 
 
 def _valid_features() -> dict:
-    return json.loads(json.dumps(build_cameras_set_v1_lerobot_features()))
+    return json.loads(json.dumps(build_camera_set_v2_lerobot_features()))
 
 
 def _write_valid_dataset(root: Path, **row_overrides) -> None:

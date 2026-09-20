@@ -141,8 +141,12 @@ def main() -> int:
     streams = THREE_RGB_STREAMS if decision is CameraSetDecision.THREE_RGB else FIXED_RGB_STREAMS
     profiles = _profile_map(concurrent_report, streams)
     roles = {
-        "global_rgb": "fixed global view covering the accepted pile, motion, and collection ROI",
-        "grasp_rgb": "fixed close oblique view covering the accepted pile and lift-verification ROI",
+        "global_rgb": (
+            "external stationary global view covering the accepted pile, motion, and collection ROI"
+        ),
+        "grasp_rgb": (
+            "eye-in-hand Sonix RGB view rigidly mounted on the wrist and moving with the robot"
+        ),
     }
     if "wrist_rgb" in streams:
         roles["wrist_rgb"] = "wrist-mounted Mech-Eye pure 2D view; no 3D computation"

@@ -39,10 +39,10 @@ from lerobot.bamboo_sorting.contracts import (
     INSTRUCTION_SCHEMA_VERSION,
     INSTRUCTION_SPECS,
 )
-from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V1_LEROBOT_BRIDGE_VERSION
+from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V2_LEROBOT_BRIDGE_VERSION
 from lerobot.bamboo_sorting.rgb_gate import (
-    CAMERA_SET_SCHEMA_VERSION,
-    FROZEN_CAMERA_SET_V1_SHA256,
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
 )
 
 EPISODE_ID = "c0-gripper-episode-00"
@@ -158,9 +158,9 @@ def _episode_manifest(**changes) -> C0EpisodeManifestV1:
         "scene_id": "c0-scene-00",
         "session_id": "c0-session-01",
         "split_name": "train",
-        "camera_set_schema_version": CAMERA_SET_SCHEMA_VERSION,
-        "camera_set_sha256": FROZEN_CAMERA_SET_V1_SHA256,
-        "bridge_version": CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        "camera_set_schema_version": CAMERA_SET_V2_SCHEMA_VERSION,
+        "camera_set_sha256": FROZEN_CAMERA_SET_V2_SHA256,
+        "bridge_version": CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         "action_schema_version": ACTION_SCHEMA_VERSION,
         "instruction_schema_version": INSTRUCTION_SCHEMA_VERSION,
         "instruction_id": instruction.instruction_id,

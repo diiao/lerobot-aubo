@@ -14,7 +14,7 @@
 >
 > 本次修订前 HEAD：`1382f444bd7318b3997d08632b597f1306765e5c`
 >
-> 当前状态：Depth No-Go 已确认；`CameraSetV1={global_rgb, grasp_rgb}` 已冻结；ACT 对照已闭环；SmolVLA 是唯一主线；RL 仅作为后期分级扩展，尚未获得训练或真机探索授权；C0 仍关闭
+> 当前状态：Depth No-Go 已确认；物理机位已纠正并冻结 `CameraSetV2={global_rgb, grasp_rgb}`；历史 V1 保留但不再适用于 C0；ACT 对照已闭环；SmolVLA 是唯一主线；RL 仅作为后期分级扩展，尚未获得训练或真机探索授权；C0 仍关闭
 >
 > 安全边界：本文不构成连接设备、采集数据、训练、推理、夹爪输出或真机运动授权。
 
@@ -61,9 +61,9 @@ Mech-Eye API 的 `capture_2d_and_3d()` 会等待 2D/3D 采集、相机端 3D 计
 
 ### 0.3 路线变更
 
-- 正式策略输入改为 `CameraSetV1 + language + proprioception`；其中 `proprioception`（本体感知）包括
+- 正式策略输入改为 `CameraSetV2 + language + proprioception`；其中 `proprioception`（本体感知）包括
   关节状态、TCP 状态和可审计的夹爪命令状态；
-- `CameraSetV1` 必须在 C0 前一次性冻结：Mech-Eye **纯 2D、无 3D 计算**的隔离和并发门均通过时，
+- 历史 `CameraSetV1` 在 C0 前一次性冻结：Mech-Eye **纯 2D、无 3D 计算**的隔离和并发门均通过时，
   冻结为 `global_rgb + grasp_rgb + wrist_rgb`；否则冻结为 `global_rgb + grasp_rgb`。联合 RGB-D 的慢速
   结果不能用来证明纯 2D 不可用，也不能反过来假定纯 2D 已满足 10 Hz；
 - `wrist_rgb` 不得在正式 episode 间保持“有时有、有时无”的长期可选状态。冻结后三视角是主线时，
@@ -108,6 +108,18 @@ wrist_rgb = 退出本版本
 ROI 证据：`artifacts/rgb_gate/roi_preview_20260909T151900Z/`（`global_rgb.jpg` /
 `grasp_rgb.jpg`）。本版本不再做三视角实验。C0 试采须另一次现场遥操作授权，不得因相机集合已冻结而自动开始。
 
+**2026-09-20 物理机位勘误：**现场确认后，GENERAL WEBCAM（历史 ACT 键
+`handeye`）才是眼在手外的固定全局相机；Sonix USB2.0_CAM1（历史 ACT 键 `fixed`）
+安装在机械手上并随机械臂运动，对应当前 `grasp_rgb`；Mech-Eye 深度相机也安装在
+腕部，但仍因吞吐和延迟门失败而排除在当前策略输入之外。因此，上述单姿态 ROI 预览
+不能证明 `grasp_rgb` 在完整抓取轨迹上的覆盖、对焦、曝光、运动模糊和线缆稳定性。
+`CameraSetV1.json` 作为不可变历史证据保留，不覆盖、不改 SHA-256；其中
+`c0_eligible=true` 不再是当前决策。2026-09-20 的实时双相机预检与已有 run06 完整抓放
+动态视频共同验证了腕部 Sonix 的当前映射和随动可见性，无需为此勘误重复执行一次
+机械臂运动。已冻结 `configs/aubo_i10/CameraSetV2.json`，SHA-256 为
+`20de7adfd6ed9734c3a4329d86ab7e0ad08df9c6758d878d3c1302e2ac6423b4`。配置勘误和证据索引见
+`configs/aubo_i10/CameraSetV1.errata.md`。冻结 V2 不自动授权 C0 采集。
+
 ### 0.5 2026-09-19 ACT 对照闭环决策
 
 前期 ACT 已完成从数据采集、训练、离线审计到受控真机闭环的对照性探索。结果同时包含局部成功和明确
@@ -123,7 +135,7 @@ ROI 证据：`artifacts/rgb_gate/roi_preview_20260909T151900Z/`（`global_rgb.jp
 - 由于不再采集与 SmolVLA 完全同分布的新 ACT 数据，后续不能宣称 SmolVLA 在严格配对实验中统计显著
   优于 ACT；两者只能作为分阶段系统结果讨论；
 - ACT 的数据、checkpoint、日志、审计报告和安全诊断代码不删除、不覆盖，继续作为复现材料；
-- 后续开发只围绕冻结的 `CameraSetV1 + language + proprioception -> SmolVLA` 主线推进。
+- 后续开发只围绕冻结的 `CameraSetV2 + language + proprioception -> SmolVLA` 主线推进。
 
 详细证据边界见 `docs/ACT_COMPARISON_CLOSURE_2026-09-19.md`。
 
@@ -164,7 +176,7 @@ SmolVLA 是主模型，大 VLA 只作后期扩展，不是毕业关键路径。
 Depth No-Go 后的主决策路径固定为：
 
 ```text
-语言指令 + 已冻结的 CameraSetV1（global_rgb + grasp_rgb）+ 本体状态
+语言指令 + 已冻结的 CameraSetV2（global_rgb + grasp_rgb）+ 本体状态
         → 轻量 SmolVLA
         → 连续绝对末端动作块
         → 薄安全否决（工作空间/步长/速度/过期/非有限/必要时 IK 成败）
@@ -183,7 +195,7 @@ Kinematics，逆运动学）只在笛卡尔动作必须转换为关节状态时�
 | 方法 | 研究角色 | 路线地位 |
 |---|---|---|
 | 历史 ACT 实验 | 已完成的无语言任务型模仿学习系统对照与负结果；保留复现材料 | **已闭环，不再追加训练或真机实验** |
-| **多视 RGB SmolVLA** | 已冻结的两路 `CameraSetV1` + 语言 | **当前必做主线** |
+| **多视 RGB SmolVLA** | 已冻结的两路 `CameraSetV2` + 语言 | **当前必做主线** |
 | SARM + RA-BC | 用视频任务进度对 SmolVLA 示教损失加权 | **主线基线稳定后的优先奖励学习消融；不是 RL** |
 | HIL-SERL/SAC | 示教初始化、奖励分类器、在线 replay 与人工接管 | 后期独立 RL 对照；完成 AUBO 环境适配和全部门禁前禁止真机运行 |
 | SmolVLA-RL | 保留语言条件 VLA 主体的离线/在线强化微调 | 研究扩展；当前无完整现成实现，不是毕业关键路径 |
@@ -207,8 +219,8 @@ PCA、OBB、点云分割、规则选点、Mech-Vision 和其他传统几何抓�
    相对固定空语言或打乱语言是否改变目标选择与任务成功率；
 3. **深度可行性负结果**：当前 NANO 是否满足在线 VLA 的最低 4.5 Hz 必要条件；本版本已经得到
    Depth No-Go，不再开展模型层面的 RGB-D 优劣比较；
-4. **视角贡献问题**：`CameraSetV1` 已冻结为两路，本版本不开展腕部 RGB 消融；如未来升级相机版本，
-   必须重新采集并建立独立实验，不能回填当前 V1 数据；
+4. **视角贡献问题**：`CameraSetV2` 已冻结为两路，本版本不开展额外 RGB 视角消融；如未来升级相机版本，
+   必须重新采集并建立独立实验，不能回填当前 V2 数据；
 5. **辅助监督**：只有具备目标木条 mask 等独立标签并完成消融，才允许宣称 2D 辅助头有独立贡献。
 
 “闭合前 TCP 关键帧”自动生成的姿态标签只能作为弱正则，不能写成核心创新证据。
@@ -225,18 +237,19 @@ PCA、OBB、点云分割、规则选点、Mech-Vision 和其他传统几何抓�
 
 正式采集前允许重新调整两台普通 RGB 相机，但一个实验版本内必须锁紧机位并保存标定版本：
 
-- `global_rgb`：固定全局视角，覆盖整个已验收料堆 ROI（Region of Interest，允许采集和操作的感兴趣
-  区域）、主要运动区和收集区；
-- `grasp_rgb`：固定斜视近景，但不是只看一个固定小接触点；其视野必须覆盖**整个允许随机摆放的料堆
-  ROI、夹持抬升区和离桌验证区**，供 VLA 输入和 VLM 抓取验证共同使用；
+- `global_rgb`：GENERAL WEBCAM，历史 ACT 键名为 `handeye`；眼在手外、外部固定，覆盖整个已验收
+  料堆 ROI（Region of Interest，允许采集和操作的感兴趣区域）、主要运动区和收集区；
+- `grasp_rgb`：Sonix USB2.0_CAM1，历史 ACT 键名为 `fixed`；刚性安装在机械手/腕部，
+  随机械臂运动的眼在手上（eye-in-hand）近景。它用于观察接近、对准、夹持、抬升和放置，
+  必须在这些代表姿态而不是只在一个静态姿态验收可见性与图像质量；
 - `wrist_rgb`：腕部 Mech-Eye 的纯 2D 输出，覆盖目标和周边区域；只有纯 2D 隔离测试和三相机并发
-  测试都满足目标控制频率、帧龄和稳定性后，才可写入冻结的 `CameraSetV1`；
+  测试都满足目标控制频率、帧龄和稳定性后，才可写入新的冻结相机集版本；
 - `wrist_depth_m`：已由阶段 A3 判定 Depth No-Go，不进入本版本正式模型；
-- 历史 `handeye`/`fixed` 只是旧数据键名，不得再直接解释为新实验中的物理安装关系。
+- 历史键名不能按英文字面推断机位；必须按上述已确认的物理设备映射。
 
-这已经对“固定近景相机”和“料堆位置随机”作出选择：随机化只能发生在 `grasp_rgb` 已验收的完整 ROI
-内。若静态样本证明该视野无法同时满足随机摆放与抓取验证，则必须在正式采集前重新选机位、镜头或缩小
-允许料堆 ROI，不能边采集边移动相机，也不能事后假设接触区可见。
+料堆随机化范围必须同时满足外部 `global_rgb` 的全局覆盖，以及腕部 `grasp_rgb` 在允许轨迹
+上的近景可见性。若代表姿态/低速运动样本不满足要求，必须在正式采集前调整腕部安装角、镜头、
+曝光或允许操作范围；不能事后用单帧 ROI 预览代替动态可见性证据。
 
 `grasp_rgb` 不能只按“整张图看得到料堆”验收。阶段 A 必须在 VLM 实际接收的缩放/裁剪分辨率上统计：
 
@@ -256,7 +269,7 @@ PCA、OBB、点云分割、规则选点、Mech-Vision 和其他传统几何抓�
 
 每个时间步至少包含：
 
-- 冻结 `CameraSetV1` 中的全部 RGB：严格为 `global_rgb`、`grasp_rgb`；本版本不得加入 `wrist_rgb`；
+- 冻结 `CameraSetV2` 中的全部 RGB：严格为 `global_rgb`、`grasp_rgb`；本版本不得加入 `wrist_rgb`；
 - 正式数据版本内相机字段集合固定。采集失败必须显式记录并按冻结规则拒绝或截断样本，禁止用重复帧
   补齐，也禁止把额外或缺失相机字段的 episode 静默混入；
 - 六关节状态、当前基座坐标系 TCP 位姿；
@@ -399,7 +412,7 @@ PolicyPredictionV1
   `gripper_open/gripper_close` 或等价双态命名；
 - 代码和 run06 中仍存在 `suction`、吸盘与 `0/100` 叙事，必须依据现场照片、接线、视频和原始记录
   逐项重核。允许保留历史原始字段以兼容读取，但禁止未经证据批量改写旧数据语义；
-- 在 C0 前冻结 `CameraSetV1`、各相机物理角色、语言字段、绝对动作字段、授权字段、单位、坐标系和
+- 在 C0 前冻结 `CameraSetV2`、各相机物理角色、语言字段、绝对动作字段、授权字段、单位、坐标系和
   版本号。
 
 #### A2. 相机驱动与同步优先
@@ -407,10 +420,10 @@ PolicyPredictionV1
 2026-09-09 的预览检查不能代替正式门。同日已完成纯 `capture_2d()` 隔离测试和两路 USB + AUBO 只读状态
 并发测试，见 0.4 节。腕部纯 2D 未过 10 Hz 门；两路固定 RGB 同步性能已过门。阶段 A 剩余工程工作只剩：
 
-- `CameraSetV1` 已冻结为两路 USB RGB；后续采集必须使用该集合与机位，不得加入 `wrist_rgb`；
+- `CameraSetV2` 已冻结为两路 USB RGB；后续采集必须使用该集合与机位，不得加入 `wrist_rgb`；
 - C0 仍须单独现场遥操作授权。
 
-#### A2.1 RGB 正式门与 `CameraSetV1` 冻结
+#### A2.1 RGB 正式门与历史 `CameraSetV1` 冻结
 
 所有进入 `CameraSetV1` 的 RGB 流必须在上述并发测试中分别满足：
 
@@ -433,7 +446,7 @@ PolicyPredictionV1
    `CameraSetV1={global_rgb, grasp_rgb, wrist_rgb}`，三视角成为正式主线；
 3. Mech-Eye 纯 2D 任一门失败时，候选为 `CameraSetV1={global_rgb, grasp_rgb}`，`wrist_rgb` 退出本版本。
    2026-09-09 已触发该分支并完成 ROI 验收，`CameraSetV1.json` 已一次性冻结；
-4. `CameraSetV1` 冻结后，所有 SmolVLA 语言组、正式数据和真机评估均使用这一集合。ACT 已于
+4. 经 2026-09-20 物理机位勘误后，所有 SmolVLA 语言组、正式数据和真机评估均使用 `CameraSetV2`。ACT 已于
    2026-09-19 闭环，不再为匹配该集合重新采集或训练；
 5. 冻结后若改变相机集合、机位、分辨率、像素格式或时间戳方法，必须升级 `ObservationSchema` 和数据
    版本并重新过门，禁止混入原版本。
@@ -480,8 +493,8 @@ PolicyPredictionV1
 ### 阶段 B：离线 VLA 桥接与薄安全层，第 2 个月
 
 - 建立原始采集格式到 LeRobot observation/action 的版本化桥接；
-- 按 C0 前已经冻结的 `CameraSetV1` 打通 RGB + 语言 + 本体状态的 SmolVLA 前向、训练和离线回放；
-- `CameraSetV1` 已冻结为两路，本版本不建立腕部 RGB 输入或三/两视角消融分支；
+- 按 C0 前已经冻结的 `CameraSetV2` 打通 RGB + 语言 + 本体状态的 SmolVLA 前向、训练和离线回放；
+- `CameraSetV2` 已冻结为两路，本版本不建立额外 RGB 输入或三/两视角消融分支；
 - 不实现 `wrist_depth_m`、metric XYZ、Depth-as-image 或 `SpatialTokenAdapter`；
 - 按 `ActionSchemaV1` 复用绝对末端动作，验证角度连续性、J6 语义、夹爪双态和动作块时序；
 - 实现只拒绝、不修正动作的 `ThinSafetyGate`；
@@ -513,8 +526,10 @@ PolicyPredictionV1
 
 #### 木条角度规范
 
-以桌面法向为旋转轴，木条长轴与机器人 `base +X` 的夹角记为 `θ`。如果现场更适合用桌面长边作为
-零度方向，也可以更换，但必须在首次正式采集前冻结。
+以桌面法向为旋转轴，木条长轴相对**放置区实物刻度参考线**的夹角记为 `θ`。该参考线来自现场
+放置区上的刻度，不是机器人 `base +X`，也不得通过机器人基座坐标推测。首批 C0 固定角度试采时，
+每个 episode 都沿同一条指定刻度线摆放，并在会话记录中写明实际刻度值或刻度线标识；现场尚未确认
+具体标注前，不得擅自记为 `0°`。
 
 当前木条两端等价，因此 `θ ≡ θ + 180°`，有效范围为 `[0°, 180°)`。只有两端出现不同结构或语义
 后才扩展为 `[0°, 360°)`。
@@ -531,7 +546,7 @@ PolicyPredictionV1
 
 阶段 C 不把全部工作一次摊开，按以下小批次逐级执行：
 
-1. **C0 试采**：仅在 `CameraSetV1` 已冻结后启动，先采 10 个单根 episode，计入单根 40 个；验收
+1. **C0 试采**：仅在 `CameraSetV2` 已冻结后启动，先采 10 个单根 episode，计入单根 40 个；验收
    冻结集合中的全部 RGB、规范语言、状态、绝对动作、夹爪标签、VLM shadow 图像和时间戳；禁止写入
    深度字段或在 episode 间改变相机集合；
 2. **C1 基础动作**：C0 通过后补齐单根 40 和两根 40，完成数据审计和一次固定配置、固定短步数的
@@ -581,12 +596,12 @@ PolicyPredictionV1
 
 按以下顺序训练：
 
-1. 使用冻结 `CameraSetV1` 的主线 SmolVLA，必须输入语言；
+1. 使用冻结 `CameraSetV2` 的主线 SmolVLA，必须输入语言；
 2. 在相同 SmolVLA 架构内完成 `L_correct`、`L_fixed`、`L_shuffled` 语言消融；
 3. 仅在目标 mask 标签合格后训练二维目标 mask/可供性辅助头版本。
 
 ACT 已按 `ACTComparisonClosureV1` 闭环，不在本阶段重新训练，也不占用正式真机评估轮次。由于
-`CameraSetV1` 已冻结为两路，本版本不开展腕部 RGB 视角消融。
+`CameraSetV2` 已冻结为两路，本版本不开展额外 RGB 视角消融。
 
 Depth-as-image、`SpatialTokenAdapter` 和 metric 6-DoF 辅助头从当前训练矩阵移除；记录传感器失败
 证据和负结果，不回退 ACT。X-VLA 只在核心实验于第 6 个月前完成后进行 PEFT
@@ -617,7 +632,7 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
 1. **R0 契约门**：冻结 `RewardSchemaV1`、episode 终止条件、人工接管语义、reset 流程、replay 数据结构、
    训练/测试 split 和授权字段。成功只由“抓取后完成指定区域放置”的独立结果标签定义；`uncertain` 不给
    正奖励；安全拒绝、人工急停和碰撞风险单独记录为 safety cost，禁止与任务奖励混为一个可被钻空子的分数；
-2. **R1 奖励模型 shadow 门**：SARM/二分类 reward model 只能读取 `CameraSetV1` 中版本化选择的视角、
+2. **R1 奖励模型 shadow 门**：SARM/二分类 reward model 只能读取 `CameraSetV2` 中版本化选择的视角、
    语言和必要状态，先在完全独立的人工标注集上报告准确率、精确率、召回率、F1、误报率和校准；
    当前 SARM 实现只有一个 `image_key`，因此必须预先冻结选用 `global_rgb` 还是 `grasp_rgb`，不得静默
    丢弃另一路后宣称为多视角奖励模型。阈值在最终测试前冻结；未通过时继续人工结果标注，不得驱动
@@ -627,7 +642,7 @@ SmolVLA 的每次训练与评估都审计语言输入。固定单任务阶段只
    丢失夹爪/放置阶段，才进入受控真机比较；
 4. **R3 仿真/空执行器 RL 门**：验证 reward、done、reset、人工接管、replay、actor–learner 通信、动作
    语义和 `ThinSafetyGate`。策略动作被安全门拒绝后不得伪装为已执行 transition；
-5. **R4 可选 HIL 真机 RL**：必须新建 AUBO Gym 环境适配器，保持 `CameraSetV1`、语言字段和独立安全
+5. **R4 可选 HIL 真机 RL**：必须新建 AUBO Gym 环境适配器，保持 `CameraSetV2`、语言字段和独立安全
    否决；人工接管只提供纠正数据，不替代急停、工作空间限制或现场监护。每次真机 RL 会话需要单独授权；
 6. **R5 SmolVLA-RL 研究扩展**：只有在 chunk-action critic、离线 replay、行为约束/KL 约束、离线策略
    评估和 fail-closed 执行链均有测试证据后才立项。不得直接把现有 SAC learner 接到 SmolVLA 输出上。
@@ -741,8 +756,8 @@ R2 是近期最现实的奖励学习实验；R4/R5 均为可选扩展。它们�
   过期与非有限输出拒绝，以及笛卡尔接口所必需的 IK 成败检查；
 - Mech-Vision 不成为运行依赖；PCA/OBB、点云分割和规则抓取点不进入主线；
 - 当前硬件描述为两台可重新调整后锁定的普通 RGB 相机、一台腕部 Mech-Eye（在线深度已 No-Go，纯 2D
-  亦未过 10 Hz 门，本版本不进入 `CameraSetV1`）、AUBO i10 和待现场证据重核的气动二指夹爪/双态 IO；
-- Mech-Eye 看不到夹爪；`grasp_rgb` 覆盖已按 2026-09-09 ROI 预览验收，并写入冻结的 `CameraSetV1`；
+  亦未过 10 Hz 门，本版本不进入 `CameraSetV2`）、AUBO i10 和待现场证据重核的气动二指夹爪/双态 IO；
+- Mech-Eye 看不到夹爪；`grasp_rgb` 已按 2026-09-09 ROI 预览与 2026-09-20 物理机位/动态证据验收，并写入冻结的 `CameraSetV2`；
 - `MechMindCamera` 已能完成受控 RGB-D 静态采集、参数恢复核对，以及纯 `capture_2d()` 隔离计时；正式
   在线深度与腕部纯 2D 均未过本版本输入门；
 - 腕部外参使用 `T_ee_camera + T_base_ee(t)`，禁止把 `T_base_camera` 当静态字段；

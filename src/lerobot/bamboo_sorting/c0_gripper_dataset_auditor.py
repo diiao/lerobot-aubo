@@ -74,7 +74,7 @@ from .contracts import ACTION_FIELD_NAMES
 from .lerobot_bridge import (
     FORBIDDEN_VLA_KEYS,
     IMAGE_FEATURE_KEYS,
-    build_cameras_set_v1_lerobot_features,
+    build_camera_set_v2_lerobot_features,
 )
 from .observation_contract import OBSERVATION_STATE_FIELD_NAMES
 
@@ -257,9 +257,9 @@ def _require_feature(
 
 
 def _expected_features() -> dict[str, object]:
-    """Return the frozen CameraSetV1 LeRobot feature schema as parsed from JSON."""
+    """Return the frozen CameraSetV2 LeRobot feature schema as parsed from JSON."""
 
-    return json.loads(json.dumps(build_cameras_set_v1_lerobot_features()))
+    return json.loads(json.dumps(build_camera_set_v2_lerobot_features()))
 
 
 def _audit_info_features(
@@ -301,7 +301,7 @@ def _audit_info_features(
 
     expected = _expected_features()
 
-    # CameraSetV1 is frozen at exactly two RGB streams: any other
+    # CameraSetV2 is frozen at exactly two RGB streams: any other
     # observation.images.* key is rejected, not only known legacy names.
     unexpected_images = sorted(
         key

@@ -21,8 +21,11 @@ from types import MappingProxyType
 import pytest
 
 from lerobot.bamboo_sorting.contracts import ACTION_SCHEMA_VERSION
-from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V1_LEROBOT_BRIDGE_VERSION
-from lerobot.bamboo_sorting.rgb_gate import CAMERA_SET_SCHEMA_VERSION, FROZEN_CAMERA_SET_V1_SHA256
+from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V2_LEROBOT_BRIDGE_VERSION
+from lerobot.bamboo_sorting.rgb_gate import (
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
+)
 from lerobot.bamboo_sorting.rl_contract import (
     MODE_REQUIRED_GATES,
     REWARD_SCHEMA_VERSION,
@@ -50,9 +53,9 @@ def _observation_ref(
         observation_id=observation_id,
         scene_id=scene_id,
         instruction_id="pick_any_collection",
-        camera_set_schema_version=CAMERA_SET_SCHEMA_VERSION,
-        camera_set_sha256=FROZEN_CAMERA_SET_V1_SHA256,
-        bridge_version=CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        camera_set_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+        camera_set_sha256=FROZEN_CAMERA_SET_V2_SHA256,
+        bridge_version=CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         model_input_ref=f"model-inputs/episode-0001/step-{step_index:04d}.json",
         model_input_sha256="ef" * 32,
         sync_timestamp_s=sync_timestamp_s,
@@ -135,7 +138,7 @@ def test_observation_ref_binds_two_rgb_cameraset_identity() -> None:
     assert ref.sync_timestamp_s == 10.25
     record = ref.to_manifest_record()
     assert record["observation_id"] == "observation-0001"
-    assert record["camera_set_sha256"] == FROZEN_CAMERA_SET_V1_SHA256
+    assert record["camera_set_sha256"] == FROZEN_CAMERA_SET_V2_SHA256
     assert record["model_input_sha256"] == "ef" * 32
     json.dumps(record, allow_nan=False)
 
@@ -160,10 +163,10 @@ def test_observation_ref_manifest_has_no_image_or_depth_payload() -> None:
         ({"instruction_id": "made_up"}, "Unknown instruction_id"),
         ({"instruction_id": "control_fixed"}, "Control instructions"),
         ({"camera_set_schema_version": "ThreeRgbV1"}, "camera_set_schema_version must be"),
-        ({"camera_set_sha256": "ab" * 32}, "must equal FROZEN_CAMERA_SET_V1_SHA256"),
+        ({"camera_set_sha256": "ab" * 32}, "must equal FROZEN_CAMERA_SET_V2_SHA256"),
         (
-            {"camera_set_sha256": "0" + FROZEN_CAMERA_SET_V1_SHA256[1:]},
-            "must equal FROZEN_CAMERA_SET_V1_SHA256",
+            {"camera_set_sha256": "1" + FROZEN_CAMERA_SET_V2_SHA256[1:]},
+            "must equal FROZEN_CAMERA_SET_V2_SHA256",
         ),
         ({"bridge_version": "BridgeV0"}, "bridge_version must be"),
         ({"model_input_ref": ""}, "model_input_ref must be a non-empty string"),
@@ -190,7 +193,7 @@ def test_observation_ref_manifest_record_is_detached_deep_copy() -> None:
     record["camera_set_sha256"] = "00" * 32
 
     assert ref.observation_id == "observation-0001"
-    assert ref.camera_set_sha256 == FROZEN_CAMERA_SET_V1_SHA256
+    assert ref.camera_set_sha256 == FROZEN_CAMERA_SET_V2_SHA256
 
 
 # RewardSchemaV1

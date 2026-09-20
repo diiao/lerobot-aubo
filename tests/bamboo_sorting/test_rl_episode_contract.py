@@ -20,8 +20,11 @@ from dataclasses import replace
 import pytest
 
 from lerobot.bamboo_sorting.contracts import ACTION_SCHEMA_VERSION
-from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V1_LEROBOT_BRIDGE_VERSION
-from lerobot.bamboo_sorting.rgb_gate import CAMERA_SET_SCHEMA_VERSION, FROZEN_CAMERA_SET_V1_SHA256
+from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V2_LEROBOT_BRIDGE_VERSION
+from lerobot.bamboo_sorting.rgb_gate import (
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
+)
 from lerobot.bamboo_sorting.rl_contract import (
     REWARD_SCHEMA_VERSION,
     RL_OBSERVATION_REF_SCHEMA_VERSION,
@@ -50,9 +53,9 @@ def _observation_ref(index: int, episode_id: str = "episode-0001") -> RLObservat
         observation_id=f"observation-{episode_id}-{index:04d}",
         scene_id=f"scene-{episode_id}-{index:04d}",
         instruction_id="pick_any_collection",
-        camera_set_schema_version=CAMERA_SET_SCHEMA_VERSION,
-        camera_set_sha256=FROZEN_CAMERA_SET_V1_SHA256,
-        bridge_version=CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        camera_set_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+        camera_set_sha256=FROZEN_CAMERA_SET_V2_SHA256,
+        bridge_version=CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         model_input_ref=f"model-inputs/{episode_id}/step-{index + 1:04d}.json",
         model_input_sha256="ef" * 32,
         sync_timestamp_s=10.25 + 0.04 * index,
