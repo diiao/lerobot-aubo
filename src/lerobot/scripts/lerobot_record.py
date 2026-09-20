@@ -68,8 +68,11 @@ lerobot-record \
 """
 
 import logging
+import sys
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 from pprint import pformat
 from typing import Any, Protocol
@@ -317,6 +320,101 @@ class RecordLoopObserver(Protocol):
     ) -> None: ...
 
 
+class RecordEpisodeLifecycleObserver(Protocol):
+    """Optional per-episode/session lifecycle hook surface for the record loop.
+
+    Implementations must be generic: ``lerobot_record`` never imports C0-specific
+    modules and never hardcodes robot types, DO pins, or gripper semantics. The
+    lifecycle observer orchestrates, per episode attempt: which frame observer
+    ``record_loop`` uses, how a completed episode buffer is saved, and what
+    happens on rerecord/stop/incomplete. It also receives the dataset
+    finalize outcome so post-save promotion can run only after the writer was
+    safely closed through the dataset's public lifecycle.
+
+    When the observer is None, the record loop keeps its original behavior
+    exactly: one direct ``dataset.save_episode()`` per non-rerecorded episode
+    (including an episode stopped mid-way), unchanged rerecord handling, reset
+    loops without a dataset, and a plain ``dataset.finalize()``.
+
+    Exception contract (deterministic and tested):
+    - Observer exceptions propagate whenever no other exception is in flight.
+    - When the episode's ``record_loop`` already raised, the incomplete
+      notification is best-effort: its exception is logged as context and the
+      original record exception keeps propagating.
+    - On finalize failure the failure notification runs while the finalize
+      exception is propagating: its exception is logged and never masks the
+      finalize error, which keeps propagating.
+    - On finalize success the success notification may raise (it is the only
+      error in flight); while another exception is already propagating its
+      exception is only logged.
+    """
+
+    def episode_frame_observer(self) -> RecordLoopObserver | None:
+        """Return the frame observer for the episode attempt about to start.
+
+        Called once per episode attempt, before ``record_loop`` begins and
+        again for every rerecord attempt. Implementations must fail closed
+        here when the episode must not start at all (for example a manifest
+        count/index mismatch): raising prevents any send/save for it.
+        Returning None records the episode without a frame observer.
+        """
+        ...
+
+    def on_episode_rerecord(
+        self, *, robot: Robot, dataset: LeRobotDataset, episode_index: int
+    ) -> None:
+        """The current episode attempt is discarded and will be re-recorded.
+
+        Called after the episode's record and reset loops, right before
+        ``dataset.clear_episode_buffer()``, and never for an episode that was
+        saved. The episode index stays at ``episode_index`` for the next
+        attempt.
+        """
+        ...
+
+    def on_episode_incomplete(
+        self, *, robot: Robot, dataset: LeRobotDataset, episode_index: int, reason: str
+    ) -> None:
+        """The current episode attempt ends unsaved (operator stop or failure).
+
+        Called for an operator stop before save, or best-effort when the
+        episode's ``record_loop`` or reset phase raised (in which case observer
+        exceptions are logged and never mask the original error). The unsaved
+        buffer must not be treated as a completed episode.
+        """
+        ...
+
+    def save_episode(self, *, robot: Robot, dataset: LeRobotDataset, episode_index: int) -> None:
+        """Orchestrate the save of one completed, non-rerecorded episode.
+
+        Must perform the episode's single logical save. Called exactly once
+        per completed episode; rerecorded attempts and stopped episodes never
+        reach this hook. Exceptions propagate and must not be retried here.
+        """
+        ...
+
+    def on_dataset_finalize_success(
+        self, *, dataset: LeRobotDataset, recorded_episode_count: int
+    ) -> None:
+        """The dataset finalized/closed its writer through its public lifecycle.
+
+        Every previously saved episode is durably finalized at this point; this
+        is the only place where post-save promotion may run. May raise when a
+        promotion fails: no episode save may be retried from here.
+        """
+        ...
+
+    def on_dataset_finalize_failure(self, *, dataset: LeRobotDataset, error: BaseException) -> None:
+        """The dataset finalize step raised; the original exception keeps propagating.
+
+        Implementations must keep every previously saved episode pending and
+        must not fabricate finalized evidence. This hook itself must not raise:
+        its exceptions are logged, never masked, and never replace the
+        finalize error.
+        """
+        ...
+
+
 """ --------------- record_loop() data flow --------------------------
        [ Robot ]
            V
@@ -558,6 +656,223 @@ def record_loop(
         timestamp = time.perf_counter() - start_episode_t
 
 
+def _notify_lifecycle_observer(hook: str, call, *, original_error: BaseException | None) -> None:
+    """Run one lifecycle observer hook with deterministic exception semantics.
+
+    Without an in-flight original error the observer's exception propagates
+    (it is the only error), including KeyboardInterrupt and SystemExit. With
+    one, every observer BaseException is logged as checkable context and the
+    original error keeps propagating unmasked. Logger failures never replace
+    or reorder that original error.
+    """
+
+    try:
+        call()
+    except BaseException as observer_error:
+        if original_error is None:
+            raise
+        bound_hook = hook
+        bound_observer_error = observer_error
+        bound_original_error = original_error
+        with suppress(BaseException):
+            logging.getLogger(__name__).error(
+                "record episode lifecycle hook %s failed with %r; the original "
+                "error %r keeps propagating",
+                bound_hook,
+                bound_observer_error,
+                bound_original_error,
+                exc_info=True,
+            )
+
+
+def record_episode_sessions(
+    *,
+    robot: Robot,
+    teleop: Teleoperator | list[Teleoperator] | None,
+    policy: PreTrainedPolicy | None,
+    preprocessor: PolicyProcessorPipeline[dict[str, Any], dict[str, Any]] | None,
+    postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction] | None,
+    teleop_action_processor: RobotProcessorPipeline[
+        tuple[RobotAction, RobotObservation], RobotAction
+    ],
+    robot_action_processor: RobotProcessorPipeline[
+        tuple[RobotAction, RobotObservation], RobotAction
+    ],
+    robot_observation_processor: RobotProcessorPipeline[
+        RobotObservation, RobotObservation
+    ],
+    dataset: LeRobotDataset,
+    events: dict,
+    fps: int,
+    num_episodes: int,
+    episode_time_s: int | float,
+    reset_time_s: int | float,
+    single_task: str,
+    play_sounds: bool,
+    display_data: bool,
+    display_compressed_images: bool,
+    lifecycle: RecordEpisodeLifecycleObserver | None = None,
+) -> int:
+    """Run the record/reset/rerecord/save episode loop (extracted from record()).
+
+    Returns the number of episodes whose save returned. With ``lifecycle=None``
+    the behavior is exactly the historical ``record()`` loop: one direct
+    ``dataset.save_episode()`` per non-rerecorded episode (including an
+    episode stopped mid-way), unchanged rerecord handling, reset loops without
+    a dataset, and no observer of any kind. With a lifecycle observer, the
+    frame observer comes from ``episode_frame_observer()`` per attempt, saves
+    go exclusively through ``lifecycle.save_episode()``, rerecord/stop notify
+    the observer, and a stopped episode is never saved.
+    """
+
+    recorded_episodes = 0
+    while recorded_episodes < num_episodes and not events["stop_recording"]:
+        log_say(f"Recording episode {dataset.num_episodes}", play_sounds)
+        frame_observer = lifecycle.episode_frame_observer() if lifecycle is not None else None
+        terminal = False
+        phase = "record_loop"
+        try:
+            record_loop(
+                robot=robot,
+                events=events,
+                fps=fps,
+                teleop_action_processor=teleop_action_processor,
+                robot_action_processor=robot_action_processor,
+                robot_observation_processor=robot_observation_processor,
+                teleop=teleop,
+                policy=policy,
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                dataset=dataset,
+                control_time_s=episode_time_s,
+                single_task=single_task,
+                display_data=display_data,
+                display_compressed_images=display_compressed_images,
+                observer=frame_observer,
+            )
+
+            # Execute a few seconds without recording to give time to manually reset the environment
+            # Skip reset for the last episode to be recorded
+            if not events["stop_recording"] and (
+                (recorded_episodes < num_episodes - 1) or events["rerecord_episode"]
+            ):
+                log_say("Reset the environment", play_sounds)
+
+                # reset g1 robot
+                if robot.name == "unitree_g1":
+                    phase = "robot.reset"
+                    robot.reset()
+
+                phase = "reset record_loop"
+                record_loop(
+                    robot=robot,
+                    events=events,
+                    fps=fps,
+                    teleop_action_processor=teleop_action_processor,
+                    robot_action_processor=robot_action_processor,
+                    robot_observation_processor=robot_observation_processor,
+                    teleop=teleop,
+                    control_time_s=reset_time_s,
+                    single_task=single_task,
+                    display_data=display_data,
+                )
+
+            if events["rerecord_episode"]:
+                log_say("Re-record episode", play_sounds)
+                events["rerecord_episode"] = False
+                events["exit_early"] = False
+                terminal = True
+                if lifecycle is not None:
+                    lifecycle.on_episode_rerecord(
+                        robot=robot, dataset=dataset, episode_index=recorded_episodes
+                    )
+                dataset.clear_episode_buffer()
+                continue
+
+            if events["stop_recording"] and lifecycle is not None:
+                # An explicitly stopped episode is incomplete and must never be
+                # saved as if it had been completed.
+                terminal = True
+                lifecycle.on_episode_incomplete(
+                    robot=robot,
+                    dataset=dataset,
+                    episode_index=recorded_episodes,
+                    reason="operator stop before save",
+                )
+            else:
+                terminal = True
+                if lifecycle is not None:
+                    lifecycle.save_episode(
+                        robot=robot, dataset=dataset, episode_index=recorded_episodes
+                    )
+                else:
+                    dataset.save_episode()
+                recorded_episodes += 1
+        except BaseException as error:
+            if lifecycle is not None and not terminal:
+                bound_error = error
+                bound_reason = f"{phase} raised {type(bound_error).__name__}: {bound_error}"
+                bound_index = recorded_episodes
+                _notify_lifecycle_observer(
+                    "on_episode_incomplete",
+                    partial(
+                        lifecycle.on_episode_incomplete,
+                        robot=robot,
+                        dataset=dataset,
+                        episode_index=bound_index,
+                        reason=bound_reason,
+                    ),
+                    original_error=bound_error,
+                )
+            raise
+    return recorded_episodes
+
+
+def finalize_recorded_dataset(
+    dataset: LeRobotDataset,
+    *,
+    lifecycle: RecordEpisodeLifecycleObserver | None = None,
+    recorded_episode_count: int = 0,
+) -> None:
+    """Finalize the dataset through its public lifecycle, notifying the observer.
+
+    With ``lifecycle=None`` this is exactly ``dataset.finalize()``: any
+    exception propagates unchanged and there is no extra behavior. With an
+    observer, a finalize failure is reported through
+    ``on_dataset_finalize_failure`` (whose own exceptions are logged and never
+    mask the finalize error) and the original exception keeps propagating; a
+    finalize success is reported through ``on_dataset_finalize_success``,
+    whose exception propagates unless another exception is already in flight
+    (in that case it is only logged, never masking the original error).
+    """
+
+    if lifecycle is None:
+        dataset.finalize()
+        return
+    try:
+        dataset.finalize()
+    except BaseException as finalize_error:
+        bound_error = finalize_error
+        _notify_lifecycle_observer(
+            "on_dataset_finalize_failure",
+            partial(
+                lifecycle.on_dataset_finalize_failure, dataset=dataset, error=bound_error
+            ),
+            original_error=bound_error,
+        )
+        raise
+    bound_count = recorded_episode_count
+    _notify_lifecycle_observer(
+        "on_dataset_finalize_success",
+        partial(
+            lifecycle.on_dataset_finalize_success,
+            dataset=dataset,
+            recorded_episode_count=bound_count,
+        ),
+        original_error=sys.exc_info()[1],
+    )
+
+
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
     log_dir = Path("log")
@@ -602,6 +917,11 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     dataset = None
     listener = None
+    recorded_episodes = 0
+    # The generic record entrypoint never activates a lifecycle observer: the
+    # hook is optional and exists so explicitly-injected coordinators (tested
+    # offline) can orchestrate episode saves without changing default behavior.
+    lifecycle = None
 
     try:
         if cfg.resume:
@@ -667,65 +987,34 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             )
 
         with VideoEncodingManager(dataset):
-            recorded_episodes = 0
-            while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
-                log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
-                record_loop(
-                    robot=robot,
-                    events=events,
-                    fps=cfg.dataset.fps,
-                    teleop_action_processor=teleop_action_processor,
-                    robot_action_processor=robot_action_processor,
-                    robot_observation_processor=robot_observation_processor,
-                    teleop=teleop,
-                    policy=policy,
-                    preprocessor=preprocessor,
-                    postprocessor=postprocessor,
-                    dataset=dataset,
-                    control_time_s=cfg.dataset.episode_time_s,
-                    single_task=cfg.dataset.single_task,
-                    display_data=cfg.display_data,
-                    display_compressed_images=display_compressed_images,
-                )
-
-                # Execute a few seconds without recording to give time to manually reset the environment
-                # Skip reset for the last episode to be recorded
-                if not events["stop_recording"] and (
-                    (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
-                ):
-                    log_say("Reset the environment", cfg.play_sounds)
-
-                    # reset g1 robot
-                    if robot.name == "unitree_g1":
-                        robot.reset()
-
-                    record_loop(
-                        robot=robot,
-                        events=events,
-                        fps=cfg.dataset.fps,
-                        teleop_action_processor=teleop_action_processor,
-                        robot_action_processor=robot_action_processor,
-                        robot_observation_processor=robot_observation_processor,
-                        teleop=teleop,
-                        control_time_s=cfg.dataset.reset_time_s,
-                        single_task=cfg.dataset.single_task,
-                        display_data=cfg.display_data,
-                    )
-
-                if events["rerecord_episode"]:
-                    log_say("Re-record episode", cfg.play_sounds)
-                    events["rerecord_episode"] = False
-                    events["exit_early"] = False
-                    dataset.clear_episode_buffer()
-                    continue
-
-                dataset.save_episode()
-                recorded_episodes += 1
+            recorded_episodes = record_episode_sessions(
+                robot=robot,
+                teleop=teleop,
+                policy=policy,
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                teleop_action_processor=teleop_action_processor,
+                robot_action_processor=robot_action_processor,
+                robot_observation_processor=robot_observation_processor,
+                dataset=dataset,
+                events=events,
+                fps=cfg.dataset.fps,
+                num_episodes=cfg.dataset.num_episodes,
+                episode_time_s=cfg.dataset.episode_time_s,
+                reset_time_s=cfg.dataset.reset_time_s,
+                single_task=cfg.dataset.single_task,
+                play_sounds=cfg.play_sounds,
+                display_data=cfg.display_data,
+                display_compressed_images=display_compressed_images,
+                lifecycle=lifecycle,
+            )
     finally:
         log_say("Stop recording", cfg.play_sounds, blocking=True)
 
         if dataset:
-            dataset.finalize()
+            finalize_recorded_dataset(
+                dataset, lifecycle=lifecycle, recorded_episode_count=recorded_episodes
+            )
 
         if robot.is_connected:
             robot.disconnect()

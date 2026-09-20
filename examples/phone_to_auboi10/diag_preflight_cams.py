@@ -4,7 +4,7 @@
 1. 能否连接并持续出帧；
 2. 实际 cadence 是否满足 25 Hz 控制循环；
 3. 最新帧是否过旧或接近全黑/纯色；
-4. 保存现场预览图，供人工确认 handeye/fixed 没有接反。
+4. 保存现场预览图，供人工确认 global_rgb/grasp_rgb 没有接反。
 
 本脚本不连接机械臂。预览图只写到 /tmp/aubo_camera_preflight。
 """
@@ -28,12 +28,12 @@ PREVIEW_DIR = Path("/tmp/aubo_camera_preflight")
 
 CAMERA_CONFIGS = {
     # 该相机驱动只接受 30 FPS，但硬件时间戳实测约 25 FPS。
-    "handeye": {
+    "global_rgb": {
         "device": "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0",
         "capture_fps": 30,
         "fourcc": "MJPG",
     },
-    "fixed": {
+    "grasp_rgb": {
         "device": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
         "capture_fps": 25,
         "fourcc": "MJPG",
@@ -162,7 +162,7 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
 
-    print("\n体检通过。开始录制前请人工打开两张预览图确认相机名称和视野。")
+    print("\n体检通过。开始录制前请人工打开两张预览图确认相机角色和视野。")
     return 0
 
 

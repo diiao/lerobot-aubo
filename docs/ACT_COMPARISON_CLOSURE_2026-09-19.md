@@ -51,7 +51,7 @@ ACT 前期实验对照正式结束。后续不再追加 ACT 的双根训练、�
 后续唯一主线为：
 
 ```text
-CameraSetV1 {global_rgb, grasp_rgb}
+CameraSetV2 {global_rgb, grasp_rgb}
 + canonical English instruction_text
 + 13D proprioception
 -> SmolVLA action chunk

@@ -22,7 +22,10 @@ import pytest
 
 from lerobot.bamboo_sorting.rgb_gate import (
     CAMERA_SET_SCHEMA_VERSION,
+    CAMERA_SET_V2_SCHEMA_VERSION,
     FIXED_RGB_STREAMS,
+    FROZEN_CAMERA_SET_V1_SHA256,
+    FROZEN_CAMERA_SET_V2_SHA256,
     THREE_RGB_STREAMS,
     CameraSetDecision,
     CameraSetV1Record,
@@ -33,9 +36,10 @@ from lerobot.bamboo_sorting.rgb_gate import (
     evaluate_concurrent_rgb_gate,
     evaluate_isolated_wrist_rgb,
     freeze_camera_set_v1,
+    freeze_camera_set_v2,
     load_camera_set_v1,
+    load_camera_set_v2,
     pair_key,
-    FROZEN_CAMERA_SET_V1_SHA256,
     WRIST_RGB,
 )
 
@@ -220,6 +224,20 @@ def test_camera_set_v1_is_created_once_and_never_overwritten(tmp_path: Path) -> 
         freeze_camera_set_v1(target, _record())
 
 
+def test_camera_set_v2_freeze_requires_matching_version_and_filename(tmp_path: Path) -> None:
+    v2_record = replace(_record(), schema_version=CAMERA_SET_V2_SCHEMA_VERSION)
+    target = tmp_path / "CameraSetV2.json"
+
+    digest = freeze_camera_set_v2(target, v2_record)
+
+    assert len(digest) == 64
+    assert json.loads(target.read_text())["schema_version"] == CAMERA_SET_V2_SCHEMA_VERSION
+    with pytest.raises(ValueError, match="requires schema_version"):
+        freeze_camera_set_v2(tmp_path / "other" / "CameraSetV2.json", _record())
+    with pytest.raises(ValueError, match="filename must be CameraSetV2.json"):
+        freeze_camera_set_v2(tmp_path / "CameraSetV1.json", v2_record)
+
+
 def test_camera_set_v1_deep_freezes_capture_profiles() -> None:
     profile = {"width": 640, "height": 480, "fourcc": "MJPG"}
     record = CameraSetV1Record(
@@ -251,5 +269,19 @@ def test_load_frozen_camera_set_v1_is_two_rgb_without_wrist() -> None:
     assert digest == FROZEN_CAMERA_SET_V1_SHA256
     assert record.decision is CameraSetDecision.TWO_RGB
     assert record.camera_streams == FIXED_RGB_STREAMS
+    assert WRIST_RGB not in record.camera_streams
+    assert record.immutable is True
+
+
+def test_load_frozen_camera_set_v2_has_corrected_physical_roles() -> None:
+    record, digest = load_camera_set_v2()
+
+    assert digest == FROZEN_CAMERA_SET_V2_SHA256
+    assert record.schema_version == CAMERA_SET_V2_SCHEMA_VERSION
+    assert record.decision is CameraSetDecision.TWO_RGB
+    assert record.camera_streams == FIXED_RGB_STREAMS
+    assert "external stationary GENERAL WEBCAM" in record.physical_roles["global_rgb"]
+    assert "eye-in-hand Sonix USB2.0_CAM1" in record.physical_roles["grasp_rgb"]
+    assert record.evidence_sha256["legacy_camera_set_v1"] == FROZEN_CAMERA_SET_V1_SHA256
     assert WRIST_RGB not in record.camera_streams
     assert record.immutable is True

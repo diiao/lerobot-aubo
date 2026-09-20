@@ -53,13 +53,13 @@ from lerobot.bamboo_sorting.contracts import (
     INSTRUCTION_SPECS,
 )
 from lerobot.bamboo_sorting.lerobot_bridge import (
-    CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
-    build_cameras_set_v1_lerobot_features,
+    CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
+    build_camera_set_v2_lerobot_features,
 )
 from lerobot.bamboo_sorting.observation_contract import OBSERVATION_STATE_FIELD_NAMES
 from lerobot.bamboo_sorting.rgb_gate import (
-    CAMERA_SET_SCHEMA_VERSION,
-    FROZEN_CAMERA_SET_V1_SHA256,
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
 )
 
 EPISODE_ID = "c0-controller-binding-episode-00"
@@ -83,9 +83,9 @@ def _episode_manifest(
         scene_id="c0-scene-00",
         session_id="c0-session-01",
         split_name="train",
-        camera_set_schema_version=CAMERA_SET_SCHEMA_VERSION,
-        camera_set_sha256=FROZEN_CAMERA_SET_V1_SHA256,
-        bridge_version=CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        camera_set_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+        camera_set_sha256=FROZEN_CAMERA_SET_V2_SHA256,
+        bridge_version=CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         action_schema_version=ACTION_SCHEMA_VERSION,
         instruction_schema_version=INSTRUCTION_SCHEMA_VERSION,
         instruction_id=instruction.instruction_id,
@@ -151,7 +151,7 @@ def _write_dataset(
 
     meta_dir = root / "meta"
     meta_dir.mkdir(parents=True, exist_ok=True)
-    features = json.loads(json.dumps(build_cameras_set_v1_lerobot_features()))
+    features = json.loads(json.dumps(build_camera_set_v2_lerobot_features()))
     info = {
         "codebase_version": "v2.1",
         "fps": fps,

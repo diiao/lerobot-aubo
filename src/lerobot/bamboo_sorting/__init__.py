@@ -116,7 +116,10 @@ from .depth_gate_analysis import (
 )
 from .lerobot_bridge import (
     CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+    CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
+    CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION,
     FORBIDDEN_VLA_KEYS,
+    build_camera_set_v2_lerobot_features,
     build_cameras_set_v1_lerobot_features,
     observation_to_lerobot_frame,
     sha256_file,
@@ -259,7 +262,10 @@ __all__ = [
     "StaticPoseMeasurements",
     "analyze_depth_gate",
     "CAMERASET_V1_LEROBOT_BRIDGE_VERSION",
+    "CAMERASET_V2_LEROBOT_BRIDGE_VERSION",
+    "CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION",
     "FORBIDDEN_VLA_KEYS",
+    "build_camera_set_v2_lerobot_features",
     "build_cameras_set_v1_lerobot_features",
     "observation_to_lerobot_frame",
     "sha256_file",

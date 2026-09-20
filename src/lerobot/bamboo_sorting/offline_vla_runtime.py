@@ -31,12 +31,12 @@ from .lerobot_bridge import observation_to_lerobot_frame
 from .policy_prediction import POLICY_PREDICTION_SCHEMA_VERSION, PolicyPredictionV1
 from .thin_safety_gate import GatedActionChunk, ThinSafetyGate
 
-PHASE_B_POLICY_ID: Final = "smolvla-camerasetv1-offline-phase-b"
+PHASE_B_POLICY_ID: Final = "smolvla-camerasetv2-offline-phase-b"
 PolicyForward = Callable[[Mapping[str, object]], Sequence[Sequence[object]]]
 
 
 class OfflineVLARuntime:
-    """Run CameraSetV1 observations through a policy and the thin safety gate."""
+    """Run CameraSetV2 observations through a policy and the thin safety gate."""
 
     def __init__(
         self,

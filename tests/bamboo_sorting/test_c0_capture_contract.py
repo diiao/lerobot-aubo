@@ -38,10 +38,10 @@ from lerobot.bamboo_sorting.contracts import (
     INSTRUCTION_SCHEMA_VERSION,
     INSTRUCTION_SPECS,
 )
-from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V1_LEROBOT_BRIDGE_VERSION
+from lerobot.bamboo_sorting.lerobot_bridge import CAMERASET_V2_LEROBOT_BRIDGE_VERSION
 from lerobot.bamboo_sorting.rgb_gate import (
-    CAMERA_SET_SCHEMA_VERSION,
-    FROZEN_CAMERA_SET_V1_SHA256,
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
 )
 
 DATASET_SHA = "12" * 32
@@ -59,9 +59,9 @@ def _episode(index: int = 0, **changes: object) -> C0EpisodeManifestV1:
         "scene_id": f"c0-scene-{index:02d}",
         "session_id": "c0-session-01",
         "split_name": "train" if index < 8 else "validation",
-        "camera_set_schema_version": CAMERA_SET_SCHEMA_VERSION,
-        "camera_set_sha256": FROZEN_CAMERA_SET_V1_SHA256,
-        "bridge_version": CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        "camera_set_schema_version": CAMERA_SET_V2_SCHEMA_VERSION,
+        "camera_set_sha256": FROZEN_CAMERA_SET_V2_SHA256,
+        "bridge_version": CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         "action_schema_version": ACTION_SCHEMA_VERSION,
         "instruction_schema_version": INSTRUCTION_SCHEMA_VERSION,
         "instruction_id": instruction.instruction_id,
@@ -206,7 +206,7 @@ def test_device_timestamp_and_clock_id_are_paired(
 
 
 def test_episode_rejects_valid_but_non_frozen_camera_sha() -> None:
-    with pytest.raises(ValueError, match="frozen CameraSetV1"):
+    with pytest.raises(ValueError, match="frozen CameraSetV2"):
         _episode(camera_set_sha256="ab" * 32)
 
 
@@ -384,7 +384,7 @@ def test_batch_rejects_configuration_drift(field: str) -> None:
     episodes = list(_batch().episodes)
     if field == "camera_set_sha256":
         # Episode-level validation prevents constructing drift in frozen constants.
-        with pytest.raises(ValueError, match="frozen CameraSetV1"):
+        with pytest.raises(ValueError, match="frozen CameraSetV2"):
             replace(episodes[-1], **{field: "ab" * 32})
         return
     if field == "bridge_version":

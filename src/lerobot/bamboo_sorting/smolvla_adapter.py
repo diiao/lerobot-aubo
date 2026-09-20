@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline-only CameraSetV1 adapter for a LeRobot SmolVLA policy stack.
+"""Offline-only CameraSetV2 adapter for a LeRobot SmolVLA policy stack.
 
 The bridge produces dataset-style HWC uint8 images. SmolVLA inference expects
 CHW float tensors before its saved preprocessor adds a batch dimension,
@@ -33,7 +33,7 @@ import torch
 from .contracts import ACTION_FIELD_NAMES, INSTRUCTION_LANGUAGE, validate_instruction_fields
 from .lerobot_bridge import (
     ACTION_FEATURE_KEY,
-    CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+    CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION,
     IMAGE_FEATURE_KEYS,
     STATE_FEATURE_KEY,
     TASK_FEATURE_KEY,
@@ -58,7 +58,7 @@ def validate_smolvla_policy_contract(
     height: int = DEFAULT_IMAGE_HEIGHT,
     width: int = DEFAULT_IMAGE_WIDTH,
 ) -> None:
-    """Require the checkpoint feature contract to match frozen CameraSetV1."""
+    """Require the checkpoint feature contract to match frozen CameraSetV2."""
 
     config = getattr(policy, "config", None)
     input_features = getattr(config, "input_features", None)
@@ -69,7 +69,7 @@ def validate_smolvla_policy_contract(
     expected_inputs = {*IMAGE_FEATURE_KEYS, STATE_FEATURE_KEY}
     if set(input_features) != expected_inputs:
         raise ValueError(
-            f"SmolVLA input features must exactly match CameraSetV1: {sorted(expected_inputs)}"
+            f"SmolVLA input features must exactly match CameraSetV2: {sorted(expected_inputs)}"
         )
     if set(output_features) != {ACTION_FEATURE_KEY}:
         raise ValueError("SmolVLA output features must contain only the 8D action")
@@ -98,8 +98,8 @@ def prepare_smolvla_inference_frame(
     action is deliberately omitted to prevent target leakage at inference.
     """
 
-    if frame.get("bridge_version") != CAMERASET_V1_LEROBOT_BRIDGE_VERSION:
-        raise ValueError("SmolVLA input requires a CameraSetV1 bridge frame")
+    if frame.get("bridge_version") != CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION:
+        raise ValueError("SmolVLA input requires a CameraSetV2 bridge frame")
     if isinstance(height, bool) or not isinstance(height, int) or height <= 0:
         raise ValueError("height must be a positive integer")
     if isinstance(width, bool) or not isinstance(width, int) or width <= 0:

@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Versioned CameraSetV1 to LeRobot frame bridge for Phase B.
+"""Versioned current camera-set to LeRobot frame bridge for Phase B.
 
 This mapping is offline-only. It refuses ACT ``handeye``/``fixed`` keys, wrist
 RGB, and depth fields so report ACT data cannot enter the VLA contract.
@@ -43,6 +43,8 @@ from .observation_contract import OBSERVATION_STATE_FIELD_NAMES, OBSERVATION_STA
 from .rgb_gate import FIXED_RGB_STREAMS
 
 CAMERASET_V1_LEROBOT_BRIDGE_VERSION: Final = "CameraSetV1LeRobotBridgeV1"
+CAMERASET_V2_LEROBOT_BRIDGE_VERSION: Final = "CameraSetV2LeRobotBridgeV1"
+CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION: Final = CAMERASET_V2_LEROBOT_BRIDGE_VERSION
 FORBIDDEN_VLA_KEYS: Final = frozenset(
     {
         "handeye",
@@ -63,10 +65,10 @@ ACTION_FEATURE_KEY: Final = "action"
 TASK_FEATURE_KEY: Final = "task"
 
 
-def build_cameras_set_v1_lerobot_features(
+def build_camera_set_v2_lerobot_features(
     *, height: int = 480, width: int = 640
 ) -> dict[str, dict[str, object]]:
-    """Return the frozen two-RGB LeRobot feature contract."""
+    """Return the current frozen two-RGB LeRobot feature contract."""
 
     if isinstance(height, bool) or not isinstance(height, int) or height <= 0:
         raise ValueError("height must be a positive integer")
@@ -88,6 +90,14 @@ def build_cameras_set_v1_lerobot_features(
     }
     features[TASK_FEATURE_KEY] = {"dtype": "string", "shape": (1,)}
     return features
+
+
+def build_cameras_set_v1_lerobot_features(
+    *, height: int = 480, width: int = 640
+) -> dict[str, dict[str, object]]:
+    """Compatibility alias for the unchanged two-RGB tensor schema."""
+
+    return build_camera_set_v2_lerobot_features(height=height, width=width)
 
 
 def _reject_forbidden_keys(payload: Mapping[str, object]) -> None:
@@ -129,7 +139,7 @@ def observation_to_lerobot_frame(
     height: int = 480,
     width: int = 640,
 ) -> dict[str, object]:
-    """Convert a CameraSetV1 sample into a LeRobot frame."""
+    """Convert a current CameraSetV2 sample into a LeRobot frame."""
 
     _reject_forbidden_keys(payload)
     instruction = validate_instruction_fields(
@@ -140,7 +150,7 @@ def observation_to_lerobot_frame(
     )
     action = validate_action_vector(payload[ACTION_FEATURE_KEY])  # type: ignore[arg-type]
     frame: dict[str, object] = {
-        "bridge_version": CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        "bridge_version": CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION,
         "action_schema_version": ACTION_SCHEMA_VERSION,
         "instruction_schema_version": INSTRUCTION_SCHEMA_VERSION,
         "instruction_id": instruction.instruction_id,
@@ -171,7 +181,7 @@ def write_scene_manifest(scene_dir: Path, artifacts: Mapping[str, str]) -> Path:
             raise ValueError(f"invalid SHA-256 for {relative_path}")
         records.append({"relative_path": relative_path, "sha256": digest})
     payload = {
-        "schema_version": CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        "schema_version": CURRENT_CAMERASET_LEROBOT_BRIDGE_VERSION,
         "scene_id": scene_dir.name,
         "raw_data_immutable": True,
         "artifacts": records,

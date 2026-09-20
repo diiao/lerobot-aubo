@@ -48,7 +48,11 @@ from lerobot.bamboo_sorting.c0_gripper_save_finalizer import (
     C0GripperSaveFinalizationError,
     C0GripperSaveFinalizationResultV1,
     begin_c0_gripper_episode_finalization,
+    c0_gripper_journal_save_state,
     complete_c0_gripper_episode_finalization,
+    require_c0_gripper_finalized_evidence_bound,
+    require_c0_gripper_journal_save_state,
+    require_c0_gripper_pending_token_bound_to_journal,
 )
 from lerobot.bamboo_sorting.contracts import (
     ACTION_FIELD_NAMES,
@@ -58,13 +62,13 @@ from lerobot.bamboo_sorting.contracts import (
     INSTRUCTION_SPECS,
 )
 from lerobot.bamboo_sorting.lerobot_bridge import (
-    CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
-    build_cameras_set_v1_lerobot_features,
+    CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
+    build_camera_set_v2_lerobot_features,
 )
 from lerobot.bamboo_sorting.observation_contract import OBSERVATION_STATE_FIELD_NAMES
 from lerobot.bamboo_sorting.rgb_gate import (
-    CAMERA_SET_SCHEMA_VERSION,
-    FROZEN_CAMERA_SET_V1_SHA256,
+    CAMERA_SET_V2_SCHEMA_VERSION,
+    FROZEN_CAMERA_SET_V2_SHA256,
 )
 
 EPISODE_ID = "c0-r4b-finalizer-episode-00"
@@ -98,9 +102,9 @@ def _episode_manifest(frame_count: int = FRAME_COUNT) -> C0EpisodeManifestV1:
         scene_id="c0-scene-00",
         session_id="c0-session-01",
         split_name="train",
-        camera_set_schema_version=CAMERA_SET_SCHEMA_VERSION,
-        camera_set_sha256=FROZEN_CAMERA_SET_V1_SHA256,
-        bridge_version=CAMERASET_V1_LEROBOT_BRIDGE_VERSION,
+        camera_set_schema_version=CAMERA_SET_V2_SCHEMA_VERSION,
+        camera_set_sha256=FROZEN_CAMERA_SET_V2_SHA256,
+        bridge_version=CAMERASET_V2_LEROBOT_BRIDGE_VERSION,
         action_schema_version=ACTION_SCHEMA_VERSION,
         instruction_schema_version=INSTRUCTION_SCHEMA_VERSION,
         instruction_id=instruction.instruction_id,
@@ -145,6 +149,7 @@ def _episode_table(
     on_frame: int | None,
     off_frame: int | None,
     fps: float = FPS,
+    timestamp_offset: float = 0.0,
 ) -> pa.Table:
     action_values = _gripper_action(frame_count, on_frame, off_frame)
     observation = [0.0, *action_values[:-1]]
@@ -158,7 +163,10 @@ def _episode_table(
             "observation.state": pa.array(state.tolist(), type=pa.list_(pa.float64())),
             "episode_index": pa.array([0] * frame_count, type=pa.int64()),
             "frame_index": pa.array(list(range(frame_count)), type=pa.int64()),
-            "timestamp": pa.array([frame / fps for frame in range(frame_count)], type=pa.float64()),
+            "timestamp": pa.array(
+                [frame / fps + timestamp_offset for frame in range(frame_count)],
+                type=pa.float64(),
+            ),
             "index": pa.array(list(range(frame_count)), type=pa.int64()),
         }
     )
@@ -170,7 +178,7 @@ def _write_info(root: Path, *, frame_count: int, fps: float = FPS) -> None:
     info = {
         "codebase_version": "v2.1",
         "fps": fps,
-        "features": json.loads(json.dumps(build_cameras_set_v1_lerobot_features())),
+        "features": json.loads(json.dumps(build_camera_set_v2_lerobot_features())),
         "total_episodes": 1,
         "total_frames": frame_count,
     }
@@ -184,9 +192,16 @@ def _write_dataset(
     on_frame: int | None = ON_FRAME,
     off_frame: int | None = OFF_FRAME,
     fps: float = FPS,
+    timestamp_offset: float = 0.0,
 ) -> None:
     """Write one closed synthetic saved-episode snapshot."""
-    table = _episode_table(frame_count=frame_count, on_frame=on_frame, off_frame=off_frame, fps=fps)
+    table = _episode_table(
+        frame_count=frame_count,
+        on_frame=on_frame,
+        off_frame=off_frame,
+        fps=fps,
+        timestamp_offset=timestamp_offset,
+    )
     data_dir = root / "data" / "chunk-000"
     data_dir.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, data_dir / "episode_000000.parquet")
@@ -1259,3 +1274,139 @@ def test_readback_not_supported_blocker_aligns_structurally_finalized(tmp_path) 
     record = result.to_manifest_record()
     assert record["structurally_finalized"] is False
     assert "controller_readback_not_supported" in record["binding_blockers"]
+
+
+def test_r4b_public_binding_validation_is_read_only_and_deterministic(tmp_path) -> None:
+    _write_dataset(tmp_path)
+    journal = _journal()
+    _drive_full_journal(journal)
+    dataset = FakeDataset(tmp_path, frame_count=FRAME_COUNT)
+    pending = _begin(journal, dataset)
+    result = complete_c0_gripper_episode_finalization(
+        journal=journal,
+        dataset=dataset,
+        pending=pending,
+        episode_manifest=_episode_manifest(),
+    )
+    save_calls = dataset.save_calls
+    journal_before = journal.to_manifest_record()
+    token_before = pending.to_manifest_record()
+    result_before = result.to_manifest_record()
+    state_attr_before = journal._c0_r4b_state
+    fingerprint_before = journal._c0_r4b_token_fingerprint
+    snapshot_before = journal._c0_r4b_snapshot_sha256
+    result_fingerprint_before = journal._c0_r4b_result_fingerprint
+
+    first = c0_gripper_journal_save_state(journal)
+    require_c0_gripper_journal_save_state(journal, expected="finalized")
+    require_c0_gripper_pending_token_bound_to_journal(journal=journal, pending=pending)
+    require_c0_gripper_finalized_evidence_bound(
+        journal=journal, pending=pending, result=result
+    )
+    second = c0_gripper_journal_save_state(journal)
+    require_c0_gripper_journal_save_state(journal, expected="finalized")
+    require_c0_gripper_pending_token_bound_to_journal(journal=journal, pending=pending)
+    require_c0_gripper_finalized_evidence_bound(
+        journal=journal, pending=pending, result=result
+    )
+
+    assert first == second == "finalized"
+    assert dataset.save_calls == save_calls == 1
+    assert journal.to_manifest_record() == journal_before
+    assert pending.to_manifest_record() == token_before
+    assert result.to_manifest_record() == result_before
+    assert journal._c0_r4b_state == state_attr_before
+    assert journal._c0_r4b_token_fingerprint == fingerprint_before
+    assert journal._c0_r4b_snapshot_sha256 == snapshot_before
+    assert journal._c0_r4b_result_fingerprint == result_fingerprint_before
+    assert isinstance(result_fingerprint_before, str) and result_fingerprint_before
+    json.dumps(journal.to_manifest_record(), allow_nan=False)
+    json.dumps(pending.to_manifest_record(), allow_nan=False)
+    json.dumps(result.to_manifest_record(), allow_nan=False)
+
+
+def _same_root_foreign_finalized_pair(tmp_path):
+    """Two legal completes: same identity/root/journal/token/attempts, different digest."""
+
+    _write_dataset(tmp_path)
+    journal_a = _journal()
+    _drive_full_journal(journal_a)
+    dataset = FakeDataset(tmp_path, frame_count=FRAME_COUNT)
+    pending_a = _begin(journal_a, dataset)
+    journal_b = copy.deepcopy(journal_a)
+    pending_b = copy.deepcopy(pending_a)
+    result_a = complete_c0_gripper_episode_finalization(
+        journal=journal_a,
+        dataset=dataset,
+        pending=pending_a,
+        episode_manifest=_episode_manifest(),
+    )
+    _write_dataset(tmp_path, timestamp_offset=0.01)
+    result_b = complete_c0_gripper_episode_finalization(
+        journal=journal_b,
+        dataset=dataset,
+        pending=pending_b,
+        episode_manifest=_episode_manifest(),
+    )
+    return journal_a, pending_a, result_a, journal_b, pending_b, result_b, dataset
+
+
+def test_finalized_binding_rejects_same_root_foreign_result(tmp_path) -> None:
+    journal_a, pending_a, result_a, journal_b, pending_b, result_b, dataset = (
+        _same_root_foreign_finalized_pair(tmp_path)
+    )
+    assert dataset.save_calls == 1
+    assert pending_a.episode_id == pending_b.episode_id == result_a.episode_id == result_b.episode_id
+    assert pending_a.episode_index == result_b.episode_index
+    assert float(pending_a.fps) == float(result_b.fps)
+    assert pending_a.frame_count == result_b.frame_count
+    assert pending_a.dataset_root == pending_b.dataset_root == result_b.dataset_report.dataset_root
+    assert pending_a.to_manifest_record() == pending_b.to_manifest_record()
+    assert journal_a._c0_r4b_token_fingerprint == journal_b._c0_r4b_token_fingerprint
+    assert journal_a._c0_r4b_snapshot_sha256 == journal_b._c0_r4b_snapshot_sha256
+    assert [
+        (attempt.attempt_index, attempt.candidate_frame_index, attempt.source_trace_sha256)
+        for attempt in journal_a.controller_attempts
+    ] == [
+        (attempt.attempt_index, attempt.candidate_frame_index, attempt.source_trace_sha256)
+        for attempt in journal_b.controller_attempts
+    ]
+    assert result_a.dataset_gripper_slice_sha256 != result_b.dataset_gripper_slice_sha256
+    with pytest.raises(C0GripperSaveFinalizationError, match="finalization result fingerprint"):
+        require_c0_gripper_finalized_evidence_bound(
+            journal=journal_a, pending=pending_a, result=result_b
+        )
+
+
+def test_finalized_binding_rejects_missing_result_fingerprint(tmp_path) -> None:
+    _write_dataset(tmp_path)
+    journal = _journal()
+    _drive_full_journal(journal)
+    dataset = FakeDataset(tmp_path, frame_count=FRAME_COUNT)
+    pending = _begin(journal, dataset)
+    result = complete_c0_gripper_episode_finalization(
+        journal=journal,
+        dataset=dataset,
+        pending=pending,
+        episode_manifest=_episode_manifest(),
+    )
+    delattr(journal, "_c0_r4b_result_fingerprint")
+    with pytest.raises(C0GripperSaveFinalizationError, match="finalization result fingerprint"):
+        require_c0_gripper_finalized_evidence_bound(
+            journal=journal, pending=pending, result=result
+        )
+
+
+def test_finalized_binding_rejects_result_fingerprint_mismatch(tmp_path) -> None:
+    journal_a, pending_a, result_a, _journal_b, _pending_b, result_b, _dataset = (
+        _same_root_foreign_finalized_pair(tmp_path)
+    )
+    journal_a._c0_r4b_result_fingerprint = journal_a._c0_r4b_token_fingerprint
+    with pytest.raises(C0GripperSaveFinalizationError, match="finalization result fingerprint"):
+        require_c0_gripper_finalized_evidence_bound(
+            journal=journal_a, pending=pending_a, result=result_a
+        )
+    with pytest.raises(C0GripperSaveFinalizationError, match="finalization result fingerprint"):
+        require_c0_gripper_finalized_evidence_bound(
+            journal=journal_a, pending=pending_a, result=result_b
+        )

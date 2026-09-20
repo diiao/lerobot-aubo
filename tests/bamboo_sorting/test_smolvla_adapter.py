@@ -169,7 +169,7 @@ def test_adapter_rejects_invalid_policy_chunks(chunk: object, message: str) -> N
 
 
 def test_prepare_rejects_non_bridge_input() -> None:
-    with pytest.raises(ValueError, match="CameraSetV1 bridge"):
+    with pytest.raises(ValueError, match="CameraSetV2 bridge"):
         prepare_smolvla_inference_frame({}, height=4, width=5)
 
 
@@ -177,7 +177,7 @@ def test_policy_contract_rejects_missing_frozen_camera() -> None:
     policy = _Policy(torch.zeros(1, 2, 8))
     del policy.config.input_features["observation.images.grasp_rgb"]
 
-    with pytest.raises(ValueError, match="exactly match CameraSetV1"):
+    with pytest.raises(ValueError, match="exactly match CameraSetV2"):
         validate_smolvla_policy_contract(policy)
 
 
