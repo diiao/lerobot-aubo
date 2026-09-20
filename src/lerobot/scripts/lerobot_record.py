@@ -72,7 +72,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from pprint import pformat
-from typing import Any
+from typing import Any, Protocol
 
 from lerobot.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
@@ -249,6 +249,74 @@ class RecordConfig:
         return ["policy"]
 
 
+class RecordLoopObserver(Protocol):
+    """Optional hook surface for record_loop's per-cycle send/capture lifecycle.
+
+    Implementations must be generic: record_loop never imports C0-specific
+    modules and never hardcodes robot types, DO pins, or trace field names.
+    methods receives the plain record_loop data (robot, dataset, the
+    dataset-bound action values, the action actually handed to the robot, the
+    action returned by ``send_action``, and the candidate frame index derived
+    from the dataset episode buffer), so an exception raised by any method
+    identifies its stage by construction.
+    Methods are only invoked while ``dataset is not None``; when the observer
+    is None, record_loop keeps its original behavior exactly.
+    """
+
+    def before_send(
+        self,
+        *,
+        robot: Robot,
+        dataset: LeRobotDataset,
+        action: RobotAction,
+        robot_action_to_send: RobotAction,
+        candidate_frame_index: int,
+    ) -> None: ...
+
+    def on_send_success(
+        self,
+        *,
+        robot: Robot,
+        dataset: LeRobotDataset,
+        action: RobotAction,
+        robot_action_to_send: RobotAction,
+        sent_action: RobotAction,
+        candidate_frame_index: int,
+    ) -> None: ...
+
+    def on_send_failure(
+        self,
+        *,
+        robot: Robot,
+        dataset: LeRobotDataset,
+        action: RobotAction,
+        robot_action_to_send: RobotAction,
+        candidate_frame_index: int,
+        error: Exception,
+    ) -> None: ...
+
+    def on_add_frame_success(
+        self,
+        *,
+        robot: Robot,
+        dataset: LeRobotDataset,
+        action: RobotAction,
+        robot_action_to_send: RobotAction,
+        candidate_frame_index: int,
+    ) -> None: ...
+
+    def on_add_frame_failure(
+        self,
+        *,
+        robot: Robot,
+        dataset: LeRobotDataset,
+        action: RobotAction,
+        robot_action_to_send: RobotAction,
+        candidate_frame_index: int,
+        error: Exception,
+    ) -> None: ...
+
+
 """ --------------- record_loop() data flow --------------------------
        [ Robot ]
            V
@@ -302,6 +370,7 @@ def record_loop(
     single_task: str | None = None,
     display_data: bool = False,
     display_compressed_images: bool = False,
+    observer: RecordLoopObserver | None = None,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -403,13 +472,73 @@ def record_loop(
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset. action = postprocessor.process(action)
         # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
-        _sent_action = robot.send_action(robot_action_to_send)
+
+        # The optional observer only participates in the dataset capture
+        # lifecycle (dataset is not None). The candidate frame index mirrors
+        # add_frame's rule: the current episode_buffer size, or 0 when no
+        # episode buffer exists yet.
+        active_observer = observer if dataset is not None else None
+        candidate_frame_index = 0
+        if active_observer is not None:
+            episode_buffer = getattr(dataset, "episode_buffer", None)
+            if episode_buffer is not None:
+                candidate_frame_index = episode_buffer["size"]
+            active_observer.before_send(
+                robot=robot,
+                dataset=dataset,
+                action=action_values,
+                robot_action_to_send=robot_action_to_send,
+                candidate_frame_index=candidate_frame_index,
+            )
+
+        try:
+            _sent_action = robot.send_action(robot_action_to_send)
+        except Exception as send_error:
+            if active_observer is not None:
+                active_observer.on_send_failure(
+                    robot=robot,
+                    dataset=dataset,
+                    action=action_values,
+                    robot_action_to_send=robot_action_to_send,
+                    candidate_frame_index=candidate_frame_index,
+                    error=send_error,
+                )
+            raise
+        if active_observer is not None:
+            active_observer.on_send_success(
+                robot=robot,
+                dataset=dataset,
+                action=action_values,
+                robot_action_to_send=robot_action_to_send,
+                sent_action=_sent_action,
+                candidate_frame_index=candidate_frame_index,
+            )
 
         # Write to dataset
         if dataset is not None:
             action_frame = build_dataset_frame(dataset.features, action_values, prefix=ACTION)
             frame = {**observation_frame, **action_frame, "task": single_task}
-            dataset.add_frame(frame)
+            try:
+                dataset.add_frame(frame)
+            except Exception as add_frame_error:
+                if active_observer is not None:
+                    active_observer.on_add_frame_failure(
+                        robot=robot,
+                        dataset=dataset,
+                        action=action_values,
+                        robot_action_to_send=robot_action_to_send,
+                        candidate_frame_index=candidate_frame_index,
+                        error=add_frame_error,
+                    )
+                raise
+            if active_observer is not None:
+                active_observer.on_add_frame_success(
+                    robot=robot,
+                    dataset=dataset,
+                    action=action_values,
+                    robot_action_to_send=robot_action_to_send,
+                    candidate_frame_index=candidate_frame_index,
+                )
 
         if display_data:
             log_rerun_data(

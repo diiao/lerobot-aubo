@@ -8,13 +8,22 @@ from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot
 
 
 class FakeIO:
-    def __init__(self, *, suction_on: bool, fail_at: int | None = None):
+    def __init__(
+        self,
+        *,
+        suction_on: bool,
+        fail_at: int | None = None,
+        exception_at: int | None = None,
+    ):
         self.outputs = {2: suction_on, 3: not suction_on}
         self.fail_at = fail_at
+        self.exception_at = exception_at
         self.calls: list[tuple[int, bool]] = []
 
     def setStandardDigitalOutput(self, pin: int, value: bool) -> int:
         self.calls.append((pin, value))
+        if self.exception_at == len(self.calls):
+            raise RuntimeError(f"sdk write failed at call {len(self.calls)}")
         if self.fail_at == len(self.calls):
             return -1
         self.outputs[pin] = value
@@ -284,3 +293,136 @@ def test_j6yaw_servojoint_minus13_retries_after_reenable() -> None:
 
     assert motion.servoJoint.call_count == 2
     robot.enable_servo_mode.assert_called_once()
+
+
+# --- send_action trace freshness (C0-R4A) -----------------------------------
+
+
+def _stale_trace() -> dict:
+    return {"requested_transition": True, "stale_previous_cycle": True}
+
+
+def test_send_action_clears_previous_trace_before_connection_check() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    robot.robot_rpc_client = Mock()
+    robot.robot_rpc_client.hasConnected.return_value = False
+    robot.last_gripper_command_trace = _stale_trace()
+
+    with pytest.raises(ConnectionError, match="未连接"):
+        robot.send_action(absolute_action(gripper=100.0))
+
+    assert robot.last_gripper_command_trace is None
+
+
+def test_send_action_clears_previous_trace_before_speed_fraction_failure() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    configure_send_action(robot)
+    motion = robot.robot_interface.getMotionControl.return_value
+    motion.setSpeedFraction.return_value = -1
+    robot.last_gripper_command_trace = _stale_trace()
+
+    with pytest.raises(RuntimeError, match="设置速度比例失败"):
+        robot.send_action(absolute_action(gripper=100.0))
+
+    assert robot.last_gripper_command_trace is None
+
+
+def test_send_action_clears_previous_trace_before_servo_failure() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    configure_send_action(robot)
+    robot.is_servo_mode_enabled = False
+    robot.enable_servo_mode = Mock(return_value=False)
+    robot.last_gripper_command_trace = _stale_trace()
+
+    with pytest.raises(RuntimeError, match="无法开启伺服模式"):
+        robot.send_action(absolute_action(gripper=100.0))
+
+    assert robot.last_gripper_command_trace is None
+
+
+def test_send_action_clears_previous_trace_when_motion_stage_fails_before_gripper() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    configure_send_action(robot)
+    robot._send_ee_action_servo_absolute = Mock(side_effect=RuntimeError("IK solve failed"))
+    robot.last_gripper_command_trace = _stale_trace()
+
+    with pytest.raises(RuntimeError, match="IK solve failed"):
+        robot.send_action(absolute_action(gripper=100.0))
+
+    # Motion failed before any gripper call: no stale trace may survive and
+    # no pseudo gripper evidence may be fabricated for this cycle.
+    assert robot.last_gripper_command_trace is None
+    robot._send_ee_action_servo_absolute.assert_called_once()
+
+
+def test_send_action_success_produces_its_own_trace_not_previous_one() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    configure_send_action(robot)
+    robot.last_gripper_command_trace = _stale_trace()
+
+    assert robot.send_action(absolute_action(gripper=100.0)) is not None
+    trace = robot.last_gripper_command_trace
+
+    assert trace is not None
+    assert "stale_previous_cycle" not in trace
+    assert trace["requested_transition"] is True
+    assert trace["do_api_success"] is True
+
+
+def test_send_action_no_transition_produces_fresh_hold_trace() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False))
+    configure_send_action(robot)
+    robot.last_gripper_command_trace = _stale_trace()
+
+    robot.send_action(absolute_action(gripper=0.0))
+
+    trace = robot.last_gripper_command_trace
+    assert trace is not None
+    assert trace["requested_transition"] is False
+    assert trace["do_api_success"] is None
+    assert trace["commanded_state_before"] is False
+
+
+def test_send_action_do_failure_produces_its_own_failed_trace() -> None:
+    robot = make_robot(io_control=FakeIO(suction_on=False, fail_at=2))
+    configure_send_action(robot)
+    robot.last_gripper_command_trace = _stale_trace()
+
+    with pytest.raises(RuntimeError, match="夹爪 DO 状态切换失败"):
+        robot.send_action(absolute_action(gripper=100.0))
+
+    trace = robot.last_gripper_command_trace
+    assert trace is not None
+    assert "stale_previous_cycle" not in trace
+    assert trace["do_api_success"] is False
+    assert trace["do_write_attempt_count"] == 2
+
+
+def test_sdk_first_write_exception_records_attempt_without_writes() -> None:
+    io = FakeIO(suction_on=False, exception_at=1)
+    robot = make_robot(io_control=io)
+
+    assert robot.suction_activate() is False
+
+    assert io.calls == [(3, False)]
+    trace = robot.last_gripper_command_trace
+    assert trace["do_write_attempt_count"] == 1
+    assert trace["do_writes"] == []
+    assert trace["do_api_success"] is False
+    assert trace["partial_write_possible"] is True
+    assert "sdk write failed at call 1" in trace["error"]
+
+
+def test_sdk_second_write_exception_records_only_first_write() -> None:
+    io = FakeIO(suction_on=False, exception_at=2)
+    robot = make_robot(io_control=io)
+
+    assert robot.suction_activate() is False
+
+    assert io.calls == [(3, False), (2, True)]
+    trace = robot.last_gripper_command_trace
+    assert trace["do_write_attempt_count"] == 2
+    assert trace["do_writes"] == [{"pin": 3, "value": False, "return_code": 0}]
+    assert trace["do_api_success"] is False
+    assert trace["partial_write_possible"] is True
+    assert "sdk write failed at call 2" in trace["error"]

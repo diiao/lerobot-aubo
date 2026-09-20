@@ -282,6 +282,11 @@ class AuboI10Robot(Robot):
 
         使用伺服模式进行实时控制
         """
+        # 每个控制周期开始时清空上一周期的夹爪 trace，保证 trace freshness:
+        # 若本周期在连接检查、速度比例、伺服或运动阶段失败，last_gripper_command_trace
+        # 必须为 None，不得残留上一周期的 controller 证据。
+        self.last_gripper_command_trace = None
+
         if not self.is_connected:
             raise ConnectionError("机器人未连接，无法发送动作")
 
