@@ -176,14 +176,12 @@ def _write_smoke_dataset(
         "features": features if features is not None else _features(image_keys=image_keys),
     }
     (meta / "info.json").write_text(json.dumps(info), encoding="utf-8")
-    pq.write_table(
-        pa.table(
-            {
-                "task_index": pa.array([0], type=pa.int64()),
-                "task": pa.array([task]),
-            }
-        ),
-        meta / "tasks.parquet",
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0],
+            "__index_level_0__": [task],
+        },
     )
     episodes_dir = meta / "episodes" / "chunk-000"
     episodes_dir.mkdir(parents=True, exist_ok=True)
@@ -200,6 +198,24 @@ def _write_smoke_dataset(
     if write_videos:
         for key in image_keys:
             _write_color_mp4(root / "videos" / key / "chunk-000" / "file-000.mp4")
+
+
+def _write_tasks_parquet(
+    root: Path,
+    columns: dict[str, list[object] | pa.Array],
+) -> None:
+    arrays: dict[str, pa.Array] = {}
+    for name, values in columns.items():
+        if isinstance(values, pa.Array):
+            arrays[name] = values
+            continue
+        if name == "task_index":
+            arrays[name] = pa.array(values, type=pa.int64())
+        else:
+            arrays[name] = pa.array(values, type=pa.string())
+    meta = root / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table(arrays), meta / "tasks.parquet")
 
 
 def test_camera_keys_and_frozen_device_mapping() -> None:
@@ -315,6 +331,173 @@ def test_postflight_accepts_one_episode_c0_contract(tmp_path: Path) -> None:
     assert report["training_authorized"] is False
     assert report["formal_c0_batch"] is False
     assert report["formal_final_evidence_bound"] is False
+
+
+def test_postflight_accepts_lerobot_v3_tasks_schema(tmp_path: Path) -> None:
+    root = tmp_path / "v3"
+    _write_smoke_dataset(root)
+    report = run_c0_smoke_postflight(root)
+    assert report["task"] == C0_SMOKE_TASK_TEXT
+
+
+def test_postflight_rejects_wrong_v3_task_text(tmp_path: Path) -> None:
+    root = tmp_path / "wrong_v3"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0],
+            "__index_level_0__": ["Place the long strip in zone A."],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match="task text must equal"):
+        run_c0_smoke_postflight(root)
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_postflight_rejects_empty_or_null_v3_task_text(tmp_path: Path, value: str | None) -> None:
+    root = tmp_path / "empty_v3"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0],
+            "__index_level_0__": [value],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match="__index_level_0__"):
+        run_c0_smoke_postflight(root)
+
+
+def test_postflight_rejects_missing_task_text_source(tmp_path: Path) -> None:
+    root = tmp_path / "no_text"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(root, {"task_index": [0]})
+    with pytest.raises(C0SmokeCaptureError, match="task text source"):
+        run_c0_smoke_postflight(root)
+
+
+def test_postflight_rejects_missing_task_index(tmp_path: Path) -> None:
+    root = tmp_path / "no_task_index"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(root, {"__index_level_0__": [C0_SMOKE_TASK_TEXT]})
+    with pytest.raises(C0SmokeCaptureError, match="task_index column"):
+        run_c0_smoke_postflight(root)
+
+
+@pytest.mark.parametrize(
+    ("task_indexes", "message"),
+    [
+        (pa.array([None], type=pa.int64()), "Python integer"),
+        (pa.array([-1], type=pa.int64()), "greater than or equal to 0"),
+        (pa.array([True], type=pa.bool_()), "Python integer"),
+    ],
+)
+def test_postflight_rejects_invalid_task_index(
+    tmp_path: Path,
+    task_indexes: pa.Array,
+    message: str,
+) -> None:
+    root = tmp_path / "invalid_task_index"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": task_indexes,
+            "__index_level_0__": [C0_SMOKE_TASK_TEXT],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match=message):
+        run_c0_smoke_postflight(root)
+
+
+def test_postflight_rejects_duplicate_task_index_with_same_text(tmp_path: Path) -> None:
+    root = tmp_path / "duplicate_same"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0, 0],
+            "__index_level_0__": [C0_SMOKE_TASK_TEXT, C0_SMOKE_TASK_TEXT],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match="duplicate task_index"):
+        run_c0_smoke_postflight(root)
+
+
+def test_postflight_rejects_duplicate_task_index_with_different_text(tmp_path: Path) -> None:
+    root = tmp_path / "duplicate_different"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0, 0],
+            "__index_level_0__": [
+                C0_SMOKE_TASK_TEXT,
+                "Place the long strip in zone A.",
+            ],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match="contradictory task_index"):
+        run_c0_smoke_postflight(root)
+
+
+def test_postflight_rejects_same_text_for_different_task_indexes(tmp_path: Path) -> None:
+    root = tmp_path / "same_text_different_indexes"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0, 1],
+            "__index_level_0__": [C0_SMOKE_TASK_TEXT, C0_SMOKE_TASK_TEXT],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match="same task text"):
+        run_c0_smoke_postflight(root)
+
+
+def test_postflight_accepts_legacy_task_column(tmp_path: Path) -> None:
+    root = tmp_path / "legacy_task"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0],
+            "task": [C0_SMOKE_TASK_TEXT],
+        },
+    )
+    report = run_c0_smoke_postflight(root)
+    assert report["task"] == C0_SMOKE_TASK_TEXT
+
+
+def test_postflight_accepts_matching_v3_and_legacy_task_columns(tmp_path: Path) -> None:
+    root = tmp_path / "both_match"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0],
+            "__index_level_0__": [C0_SMOKE_TASK_TEXT],
+            "task": [C0_SMOKE_TASK_TEXT],
+        },
+    )
+    report = run_c0_smoke_postflight(root)
+    assert report["task"] == C0_SMOKE_TASK_TEXT
+
+
+def test_postflight_rejects_contradictory_v3_and_legacy_task_columns(tmp_path: Path) -> None:
+    root = tmp_path / "both_conflict"
+    _write_smoke_dataset(root)
+    _write_tasks_parquet(
+        root,
+        {
+            "task_index": [0],
+            "__index_level_0__": [C0_SMOKE_TASK_TEXT],
+            "task": ["Place the long strip in zone A."],
+        },
+    )
+    with pytest.raises(C0SmokeCaptureError, match="disagree"):
+        run_c0_smoke_postflight(root)
 
 
 def test_importing_c0_smoke_module_does_not_touch_hardware() -> None:

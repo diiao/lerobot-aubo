@@ -126,8 +126,9 @@ class _StdinHotkeyListener:
     Arrow keys arrive as ANSI sequences on stdin when that terminal is focused.
     """
 
-    def __init__(self, events: dict[str, bool]):
+    def __init__(self, events: dict[str, bool], *, enable_return_to_start: bool = True):
         self.events = events
+        self.enable_return_to_start = enable_return_to_start
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="stdin-hotkeys", daemon=True)
         self._fd: int | None = None
@@ -151,6 +152,8 @@ class _StdinHotkeyListener:
 
     def stop(self):
         self._stop.set()
+        if self._thread.is_alive() and self._thread is not threading.current_thread():
+            self._thread.join(timeout=0.2)
         if self._fd is None or self._old is None:
             return
         try:
@@ -174,7 +177,7 @@ class _StdinHotkeyListener:
                 char = self._read_byte(0.05)
                 if not char:
                     continue
-                if char in (b"r", b"R"):
+                if self.enable_return_to_start and char in (b"r", b"R"):
                     print("R key pressed. Return to start pose...")
                     self.events["return_to_start"] = True
                 elif char == b"\x1b":
@@ -210,7 +213,11 @@ class _CompositeKeyboardListener:
                 pass
 
 
-def init_keyboard_listener():
+def init_keyboard_listener(
+    events: dict[str, bool] | None = None,
+    *,
+    enable_return_to_start: bool = True,
+):
     """
     Initializes a non-blocking keyboard listener for real-time user interaction.
 
@@ -226,13 +233,17 @@ def init_keyboard_listener():
     # Allow to exit early while recording an episode or resetting the environment,
     # by tapping the right arrow key '->'. This might require a sudo permission
     # to allow your terminal to monitor keyboard events.
-    events = {}
+    if events is None:
+        events = {}
     events["exit_early"] = False
     events["rerecord_episode"] = False
     events["stop_recording"] = False
     events["return_to_start"] = False
 
-    stdin_listener = _StdinHotkeyListener(events)
+    stdin_listener = _StdinHotkeyListener(
+        events,
+        enable_return_to_start=enable_return_to_start,
+    )
     stdin_listener.start()
 
     pynput_listener = None
@@ -257,7 +268,11 @@ def init_keyboard_listener():
                     print("Escape key pressed. Stopping data recording...")
                     events["stop_recording"] = True
                     events["exit_early"] = True
-                elif hasattr(key, "char") and key.char == "r":
+                elif (
+                    enable_return_to_start
+                    and hasattr(key, "char")
+                    and key.char == "r"
+                ):
                     print("R key pressed. Return to start pose...")
                     events["return_to_start"] = True
             except Exception as e:
@@ -267,7 +282,10 @@ def init_keyboard_listener():
         pynput_listener.start()
 
     if sys.stdin.isatty():
-        print("键盘：请在运行本命令的终端内按 → 开始、r 归位、Esc 结束（不要点到别的窗口）")
+        if enable_return_to_start:
+            print("键盘：请在运行本命令的终端内按 → 开始、r 归位、Esc 结束（不要点到别的窗口）")
+        else:
+            print("键盘：请在运行本命令的终端内按 → 继续/结束、← 重录、Esc 停止")
 
     return _CompositeKeyboardListener(stdin_listener, pynput_listener), events
 

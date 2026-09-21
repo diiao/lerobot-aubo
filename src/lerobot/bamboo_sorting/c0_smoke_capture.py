@@ -329,16 +329,69 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _require_task_text(value: object, source: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise C0SmokeCaptureError(
+            f"meta/tasks.parquet {source} must be a non-empty task string"
+        )
+    return value
+
+
 def _task_texts(dataset_root: Path) -> tuple[str, ...]:
     tasks_path = dataset_root / "meta" / "tasks.parquet"
     if not tasks_path.is_file():
         raise C0SmokeCaptureError("meta/tasks.parquet is missing")
     table = pq.read_table(tasks_path)
-    if "task" not in table.column_names:
-        raise C0SmokeCaptureError("meta/tasks.parquet lacks a task column")
-    texts = [str(item) for item in table.column("task").to_pylist() if item is not None]
-    if not texts:
+    names = table.column_names
+    if "task_index" not in names:
+        raise C0SmokeCaptureError("meta/tasks.parquet lacks a task_index column")
+    has_v3_text = "__index_level_0__" in names
+    has_legacy_text = "task" in names
+    if not has_v3_text and not has_legacy_text:
+        raise C0SmokeCaptureError("meta/tasks.parquet lacks a task text source")
+    if table.num_rows == 0:
         raise C0SmokeCaptureError("meta/tasks.parquet has no task text")
+
+    task_indexes = table.column("task_index").to_pylist()
+    v3_values = table.column("__index_level_0__").to_pylist() if has_v3_text else None
+    legacy_values = table.column("task").to_pylist() if has_legacy_text else None
+    texts: list[str] = []
+    index_to_text: dict[int, str] = {}
+    text_to_index: dict[str, int] = {}
+    for row, task_index in enumerate(task_indexes):
+        if isinstance(task_index, bool) or not isinstance(task_index, int):
+            raise C0SmokeCaptureError(
+                "meta/tasks.parquet task_index must be a Python integer"
+            )
+        if task_index < 0:
+            raise C0SmokeCaptureError(
+                "meta/tasks.parquet task_index must be greater than or equal to 0"
+            )
+        row_texts: list[str] = []
+        if v3_values is not None:
+            row_texts.append(_require_task_text(v3_values[row], "__index_level_0__"))
+        if legacy_values is not None:
+            row_texts.append(_require_task_text(legacy_values[row], "task"))
+        if len(set(row_texts)) != 1:
+            raise C0SmokeCaptureError(
+                "meta/tasks.parquet task and __index_level_0__ disagree"
+            )
+        text = row_texts[0]
+        if task_index in index_to_text and index_to_text[task_index] != text:
+            raise C0SmokeCaptureError(
+                "meta/tasks.parquet has contradictory task_index mapping"
+            )
+        if task_index in index_to_text:
+            raise C0SmokeCaptureError(
+                "meta/tasks.parquet has duplicate task_index mapping"
+            )
+        if text in text_to_index:
+            raise C0SmokeCaptureError(
+                "meta/tasks.parquet maps the same task text to multiple task_index values"
+            )
+        index_to_text[task_index] = text
+        text_to_index[text] = task_index
+        texts.append(text)
     return tuple(texts)
 
 
