@@ -5,6 +5,7 @@ import time
 import numpy as np
 
 from lerobot.robots import Robot
+from lerobot.cameras.opencv import OpenCVCamera
 from .config_aubo_i10 import AuboI10Config
 from lerobot.utils.rotation import Rotation
 import pyaubo_sdk
@@ -243,6 +244,8 @@ class AuboI10Robot(Robot):
                 obs_dict["J6"]  = joints_deg[5]
 
                 tcp_pose = robot_state.getTcpPose()
+                # SDK returns XYZ + RPY (ZYX Euler), not a rotation vector.
+                # C0 abs_j6yaw capture preserves these SDK pose components.
                 obs_dict["ee.x"] = float(tcp_pose[0])
                 obs_dict["ee.y"] = float(tcp_pose[1])
                 obs_dict["ee.z"] = float(tcp_pose[2])
@@ -260,12 +263,19 @@ class AuboI10Robot(Robot):
 
         for cam_key, cam in self.cameras.items():
             start_cam = time.perf_counter()
+            capture_timestamp = None
             try:
-                img = cam.read_latest()
+                if isinstance(cam, OpenCVCamera):
+                    img, capture_timestamp = cam.read_latest_with_timestamp()
+                else:
+                    img = cam.read_latest()
             except Exception as latest_error:
                 # read_latest 失败时回退到 async_read（阻塞等待新帧）
                 try:
-                    img = cam.async_read(timeout_ms=200)
+                    if isinstance(cam, OpenCVCamera):
+                        img, capture_timestamp = cam.async_read_with_timestamp(timeout_ms=200)
+                    else:
+                        img = cam.async_read(timeout_ms=200)
                 except Exception as e:
                     raise RuntimeError(
                         f"相机 {cam_key} 读取失败；为避免黑帧污染数据，已中止本轮"
@@ -277,12 +287,15 @@ class AuboI10Robot(Robot):
                         latest_error,
                     )
             obs_dict[cam_key] = img
-            frame_lock = getattr(cam, "frame_lock", None)
-            if frame_lock is not None:
-                with frame_lock:
+            # C0 uses OpenCV: do not reread latest_timestamp after returning an
+            # image, since the capture thread may already have published another.
+            if not isinstance(cam, OpenCVCamera):
+                frame_lock = getattr(cam, "frame_lock", None)
+                if frame_lock is not None:
+                    with frame_lock:
+                        capture_timestamp = getattr(cam, "latest_timestamp", None)
+                else:
                     capture_timestamp = getattr(cam, "latest_timestamp", None)
-            else:
-                capture_timestamp = getattr(cam, "latest_timestamp", None)
             if (
                 isinstance(capture_timestamp, (int, float))
                 and not isinstance(capture_timestamp, bool)

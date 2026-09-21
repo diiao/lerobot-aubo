@@ -173,6 +173,28 @@ def test_prepare_rejects_non_bridge_input() -> None:
         prepare_smolvla_inference_frame({}, height=4, width=5)
 
 
+def test_explicit_decoder_keeps_raw_audit_and_clears_it_on_failure():
+    policy = _Policy(torch.tensor([[[0., 0., -.5, .2, 0., 0., 0., 72.]]]))
+    frame = observation_to_lerobot_frame(_payload(height=480, width=640))
+    adapter = SmolVLAOfflineForwardAdapter(policy, _identity, _identity, decode_gripper=True)
+    actions = adapter(frame)
+    assert actions[0][-1] == 100
+    assert adapter.last_decoding.raw_actions[0][-1] == 72
+    assert adapter.last_decoding.actions == actions
+    policy.chunk = torch.full((1, 1, 8), float('nan'))
+    with pytest.raises(ValueError):
+        adapter(frame)
+    assert adapter.last_decoding is None
+
+
+def test_decoder_remains_opt_in():
+    policy = _Policy(torch.tensor([[[0., 0., -.5, .2, 0., 0., 0., 72.]]]))
+    frame = observation_to_lerobot_frame(_payload(height=480, width=640))
+    adapter = SmolVLAOfflineForwardAdapter(policy, _identity, _identity)
+    assert adapter(frame)[0][-1] == 72
+    assert adapter.last_decoding is None
+
+
 def test_policy_contract_rejects_missing_frozen_camera() -> None:
     policy = _Policy(torch.zeros(1, 2, 8))
     del policy.config.input_features["observation.images.grasp_rgb"]

@@ -7,6 +7,7 @@ import pytest
 
 from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot
 from lerobot.robots.aubo_i10.config_aubo_i10 import AuboI10Config
+from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
 
 
 def _bare_robot(*, cameras: dict, connected: bool = False) -> AuboI10Robot:
@@ -66,6 +67,45 @@ def test_get_observation_exposes_fresh_host_monotonic_sensor_timestamps():
     assert "global_rgb" in observation
     assert robot.last_c0_sensor_timestamps["global_rgb"] == 12.5
     assert robot.last_c0_sensor_timestamps["robot_state"] >= 0.0
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_opencv_observation_keeps_image_and_timestamp_paired(monkeypatch, fallback):
+    """Publish a newer frame just after unlocking, including the async fallback."""
+    camera = OpenCVCamera(OpenCVCameraConfig(index_or_path=0))
+    monkeypatch.setattr(OpenCVCamera, "is_connected", property(lambda self: True))
+    monkeypatch.setattr("lerobot.cameras.opencv.camera_opencv.time.perf_counter", lambda: 12.6)
+    camera.thread = Mock()
+    camera.thread.is_alive.return_value = True
+    first = np.zeros((2, 2, 3), dtype=np.uint8)
+    second = np.ones_like(first)
+    camera.latest_frame = first
+    camera.latest_timestamp = 10.0 if fallback else 12.5
+
+    class PublishAfterUnlock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            camera.latest_frame = second
+            camera.latest_timestamp = 12.6
+
+    camera.frame_lock = PublishAfterUnlock()
+    camera.new_frame_event = Mock()
+
+    def new_frame(timeout):
+        camera.latest_frame = first
+        camera.latest_timestamp = 12.5
+        return True
+
+    camera.new_frame_event.wait.side_effect = new_frame
+    robot = _bare_robot(cameras={"global_rgb": camera})
+    observation = robot.get_observation()
+
+    assert observation["global_rgb"] is first
+    assert camera.latest_frame is second
+    assert robot.last_c0_sensor_timestamps["global_rgb"] == 12.5
+    assert camera.new_frame_event.wait.call_count == int(fallback)
 
 
 def test_disconnect_releases_connected_cameras():

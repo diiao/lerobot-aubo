@@ -18,13 +18,15 @@ from typing import Any
 
 import torch
 
-from lerobot.configs.types import PipelineFeatureType, PolicyFeature
+from lerobot.configs.types import NormalizationMode, PipelineFeatureType, PolicyFeature
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+from lerobot.policies.smolvla.relative_xyz import RAW_TCP_KEY, RELATIVE_XYZ
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     ComplementaryDataProcessorStep,
     DeviceProcessorStep,
     NormalizerProcessorStep,
+    ObservationProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStepRegistry,
@@ -54,6 +56,10 @@ def make_smolvla_pre_post_processors(
     5.  Tokenizing the language task description.
     6.  Moving all data to the specified device.
 
+    In relative_tcp_xyz mode, raw TCP is preserved before state normalization.
+    Actions stay absolute and unnormalized here: the policy converts/normalizes
+    its training targets and restores absolute output before postprocessing.
+
     The post-processing pipeline handles the model's output by:
     1.  Moving data to the CPU.
     2.  Unnormalizing the output actions to their original scale.
@@ -66,9 +72,17 @@ def make_smolvla_pre_post_processors(
         A tuple containing the configured pre-processor and post-processor pipelines.
     """
 
+    config.validate_action_representation()
+    relative = config.action_representation == RELATIVE_XYZ
+    norm_map = dict(config.normalization_mapping)
+    if relative:
+        norm_map["ACTION"] = NormalizationMode.IDENTITY
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),  # To mimic the same processor as pretrained one
         AddBatchDimensionProcessorStep(),
+        # Saved by full class path; import also registers SmolVLA language steps
+        # when loading in a fresh inference process.
+        *([SmolVLARawTCPProcessor()] if relative else []),
         SmolVLANewLineProcessor(),
         TokenizerProcessorStep(
             tokenizer_name=config.vlm_model_name,
@@ -78,15 +92,15 @@ def make_smolvla_pre_post_processors(
         ),
         DeviceProcessorStep(device=config.device),
         NormalizerProcessorStep(
-            features={**config.input_features, **config.output_features},
-            norm_map=config.normalization_mapping,
+            features=config.input_features if relative else {**config.input_features, **config.output_features},
+            norm_map=norm_map,
             stats=dataset_stats,
         ),
     ]
     output_steps = [
-        UnnormalizerProcessorStep(
+        *([] if relative else [UnnormalizerProcessorStep(
             features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
-        ),
+        )]),
         DeviceProcessorStep(device="cpu"),
     ]
     return (
@@ -138,4 +152,17 @@ class SmolVLANewLineProcessor(ComplementaryDataProcessorStep):
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+class SmolVLARawTCPProcessor(ObservationProcessorStep):
+    """Carry the unnormalized current TCP with the batch, never in shared state."""
+
+    def observation(self, observation):
+        state = observation["observation.state"]
+        if state.ndim != 2 or state.shape[-1] != 13:
+            raise ValueError("Relative TCP XYZ expects current C0 state [B, 13]")
+        return {**observation, RAW_TCP_KEY: state[:, 6:9].clone()}
+
+    def transform_features(self, features):
         return features

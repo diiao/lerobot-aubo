@@ -85,7 +85,7 @@ class OpenCVCamera(Camera):
         async_image = camera.async_read()
 
         # Get the latest frame immediately (no wait, returns timestamp)
-        latest_image, timestamp = camera.read_latest()
+        latest_image, timestamp = camera.read_latest_with_timestamp()
 
         # When done, properly disconnect the camera using
         camera.disconnect()
@@ -546,6 +546,11 @@ class OpenCVCamera(Camera):
             RuntimeError: If an unexpected error occurs.
         """
 
+        return self.async_read_with_timestamp(timeout_ms)[0]
+
+    @check_if_not_connected
+    def async_read_with_timestamp(self, timeout_ms: float = 200) -> tuple[NDArray[Any], float]:
+        """Wait for a frame and return its matching host timestamp atomically."""
         if self.thread is None or not self.thread.is_alive():
             raise RuntimeError(f"{self} read thread is not running.")
 
@@ -557,12 +562,13 @@ class OpenCVCamera(Camera):
 
         with self.frame_lock:
             frame = self.latest_frame
+            timestamp = self.latest_timestamp
             self.new_frame_event.clear()
 
-        if frame is None:
+        if frame is None or timestamp is None:
             raise RuntimeError(f"Internal error: Event set but no frame available for {self}.")
 
-        return frame
+        return frame, timestamp
 
     @check_if_not_connected
     def read_latest(self, max_age_ms: int = 500) -> NDArray[Any]:
@@ -581,6 +587,11 @@ class OpenCVCamera(Camera):
             RuntimeError: If the camera is connected but has not captured any frames yet.
         """
 
+        return self.read_latest_with_timestamp(max_age_ms)[0]
+
+    @check_if_not_connected
+    def read_latest_with_timestamp(self, max_age_ms: int = 500) -> tuple[NDArray[Any], float]:
+        """Return one locked frame/timestamp snapshot, with the usual age check."""
         if self.thread is None or not self.thread.is_alive():
             raise RuntimeError(f"{self} read thread is not running.")
 
@@ -597,7 +608,7 @@ class OpenCVCamera(Camera):
                 f"{self} latest frame is too old: {age_ms:.1f} ms (max allowed: {max_age_ms} ms)."
             )
 
-        return frame
+        return frame, timestamp
 
     def disconnect(self) -> None:
         """

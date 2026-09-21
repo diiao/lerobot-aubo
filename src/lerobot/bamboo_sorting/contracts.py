@@ -93,14 +93,17 @@ class ActionFieldSpec:
     semantics: str
 
 
+# C0 records getTcpPose()/IK pose components unchanged: AUBO uses RPY
+# (Rz(yaw) @ Ry(pitch) @ Rx(roll)), not an axis-angle rotation vector.
+# This corrects the description of existing numbers; it is not a conversion.
 ACTION_FIELD_SPECS: Final = (
     ActionFieldSpec("ee.j6_target", "rad", "absolute AUBO J6 joint target"),
     ActionFieldSpec("ee.x", "m", "absolute base-frame TCP x"),
     ActionFieldSpec("ee.y", "m", "absolute base-frame TCP y"),
     ActionFieldSpec("ee.z", "m", "absolute base-frame TCP z"),
-    ActionFieldSpec("ee.wx", "rad", "absolute base-frame TCP rotation-vector x"),
-    ActionFieldSpec("ee.wy", "rad", "absolute base-frame TCP rotation-vector y"),
-    ActionFieldSpec("ee.wz", "rad", "absolute base-frame TCP rotation-vector z"),
+    ActionFieldSpec("ee.wx", "rad", "absolute base-frame TCP RPY roll (AUBO ZYX Euler)"),
+    ActionFieldSpec("ee.wy", "rad", "absolute base-frame TCP RPY pitch (AUBO ZYX Euler)"),
+    ActionFieldSpec("ee.wz", "rad", "absolute base-frame TCP RPY yaw (AUBO ZYX Euler)"),
     ActionFieldSpec(
         "ee.gripper_pos",
         "legacy_binary",
