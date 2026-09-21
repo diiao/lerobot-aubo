@@ -172,6 +172,7 @@ wandb/
 # Data folders
 data/
 outputs/
+/datasets/
 
 # Local, non-versioned preservation copies of physical-robot datasets and checkpoints.
 # Their integrity is recorded in docs/robot_arm_technical_documentation.md.
