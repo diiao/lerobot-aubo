@@ -63,7 +63,15 @@ from typing_extensions import Unpack
 
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
+from lerobot.policies.smolvla.action_padding import restore_action_padding
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+from lerobot.policies.smolvla.losses import masked_action_loss
+from lerobot.policies.smolvla.relative_xyz import (
+    RAW_TCP_KEY,
+    RELATIVE_XYZ,
+    decode_relative_actions,
+    encode_relative_actions,
+)
 from lerobot.policies.smolvla.smolvlm_with_expert import SmolVLMWithExpertModel
 from lerobot.policies.utils import (
     populate_queues,
@@ -299,6 +307,8 @@ class SmolVLAPolicy(PreTrainedPolicy):
         if self.config.adapt_to_pi_aloha:
             actions = self._pi_aloha_encode_actions(actions)
 
+        if self.config.action_representation == RELATIVE_XYZ:
+            actions = decode_relative_actions(actions, batch[RAW_TCP_KEY], self.config.relative_action_stats)
         return actions
 
     def _prepare_batch(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -375,28 +385,32 @@ class SmolVLAPolicy(PreTrainedPolicy):
         lang_tokens = batch[f"{OBS_LANGUAGE_TOKENS}"]
         lang_masks = batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
         actions = self.prepare_action(batch)
-        actions_is_pad = batch.get("actions_id_pad")
+        actions_is_pad = batch.get("action_is_pad")
+        legacy_pad = batch.get("actions_id_pad")
+        if actions_is_pad is None:
+            actions_is_pad = legacy_pad
+        elif legacy_pad is not None and not torch.equal(actions_is_pad, legacy_pad):
+            raise ValueError("Conflicting action padding masks")
         loss_dict = {}
         losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
         loss_dict["losses_after_forward"] = losses.clone().mean().item()
 
-        if actions_is_pad is not None:
-            in_episode_bound = ~actions_is_pad
-            losses = losses * in_episode_bound.unsqueeze(-1)
-            loss_dict["losses_after_in_ep_bound"] = losses.clone().mean().item()
-
-        # Remove padding
-        losses = losses[:, :, : self.config.max_action_dim]
-        loss_dict["losses_after_rm_padding"] = losses.clone().mean().item()
+        per_sample_loss = masked_action_loss(
+            losses,
+            self.config.action_feature.shape[0],
+            actions_is_pad,
+            execution_horizon=self.config.n_action_steps,
+            execution_loss_fraction=self.config.execution_loss_fraction,
+        )
+        loss_dict["losses_after_rm_padding"] = per_sample_loss.detach().mean().item()
 
         if reduction == "none":
             # Return per-sample losses (B,) by averaging over time and action dims
-            per_sample_loss = losses.mean(dim=(1, 2))
             loss_dict["loss"] = per_sample_loss.mean().item()
             return per_sample_loss, loss_dict
         else:
             # Default: return scalar mean loss
-            loss = losses.mean()
+            loss = per_sample_loss.mean()
             loss_dict["loss"] = loss.item()
             return loss, loss_dict
 
@@ -477,7 +491,10 @@ class SmolVLAPolicy(PreTrainedPolicy):
 
     def prepare_action(self, batch):
         """Pad action"""
-        actions = pad_vector(batch[ACTION], self.config.max_action_dim)
+        actions = batch[ACTION]
+        if self.config.action_representation == RELATIVE_XYZ:
+            actions = encode_relative_actions(actions, batch[RAW_TCP_KEY], self.config.relative_action_stats)
+        actions = pad_vector(actions, self.config.max_action_dim)
         return actions
 
     def _get_default_peft_targets(self) -> dict[str, any]:
@@ -856,6 +873,11 @@ class VLAFlowMatching(nn.Module):
                 v_t = denoise_step_partial_call(x_t)
 
             x_t = x_t + dt * v_t
+            # Match training's known zero-target path for loss-masked padding.
+            # Real action coordinates retain their unmodified learned update.
+            x_t = restore_action_padding(
+                x_t, noise, max(0.0, 1.0 + (step + 1) * dt), self.config.action_feature.shape[0]
+            )
 
             if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():
                 self.rtc_processor.track(time=time, x_t=x_t, v_t=v_t)

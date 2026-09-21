@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from dataclasses import dataclass, field
 
 from lerobot.configs.policies import PreTrainedConfig
@@ -73,6 +74,14 @@ class SmolVLAConfig(PreTrainedConfig):
     train_expert_only: bool = True
     train_state_proj: bool = True
 
+    # Optional loss mass for the n_action_steps that will actually be executed.
+    # None preserves uniform timestep weighting for existing checkpoints.
+    execution_loss_fraction: float | None = None
+
+    # C0 opt-in: policy handles action normalization and returns absolute actions.
+    action_representation: str = "absolute"
+    relative_action_stats: dict[str, list[float]] | None = None
+
     # Training presets
     optimizer_lr: float = 1e-4
     optimizer_betas: tuple[float, float] = (0.9, 0.95)
@@ -115,12 +124,53 @@ class SmolVLAConfig(PreTrainedConfig):
                 f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
                 f"{self.n_action_steps} for `n_action_steps` and {self.chunk_size} for `chunk_size`."
             )
+        if self.execution_loss_fraction is not None:
+            if (
+                isinstance(self.execution_loss_fraction, bool)
+                or not isinstance(self.execution_loss_fraction, (int, float))
+                or not math.isfinite(self.execution_loss_fraction)
+                or not 0 < self.execution_loss_fraction < 1
+            ):
+                raise ValueError("execution_loss_fraction must be finite and strictly between zero and one")
+            if (
+                isinstance(self.n_action_steps, bool)
+                or not isinstance(self.n_action_steps, int)
+                or self.n_action_steps < 1
+            ):
+                raise ValueError("execution loss requires a positive integer n_action_steps")
         if self.use_delta_joint_actions_aloha:
             raise NotImplementedError(
                 "`use_delta_joint_actions_aloha` is used by smolvla for aloha real models. It is not ported yet in LeRobot."
             )
 
+    def validate_action_representation(self) -> None:
+        if self.action_representation not in {"absolute", "relative_tcp_xyz"}:
+            raise ValueError("Unknown SmolVLA action_representation")
+        if self.action_representation == "absolute":
+            if self.relative_action_stats is not None:
+                raise ValueError("Relative statistics require relative_tcp_xyz mode")
+            return
+        if (self.adapt_to_pi_aloha or self.use_delta_joint_actions_aloha
+                or self.n_obs_steps != 1 or self.rtc_config is not None):
+            raise ValueError("Relative TCP XYZ supports single-observation C0 without Aloha or RTC")
+        if (self.input_features.get("observation.state") is None
+                or self.input_features["observation.state"].shape != (13,)
+                or self.output_features.get("action") is None
+                or self.output_features["action"].shape != (8,)):
+            raise ValueError("Relative TCP XYZ requires C0 13D state and 8D action")
+        if self.normalization_mapping.get("ACTION") != NormalizationMode.MEAN_STD:
+            raise ValueError("Relative TCP XYZ requires MEAN_STD action normalization")
+        stats = self.relative_action_stats
+        if stats is None or any(k not in stats for k in ("mean", "std", "min", "max")):
+            raise ValueError("Relative TCP XYZ requires saved training-only action statistics")
+        for key, values in stats.items():
+            if len(values) != 8 or not all(math.isfinite(v) for v in values):
+                raise ValueError("Relative action statistics must be finite 8D vectors")
+            if key == "std" and any(v < 0 for v in values):
+                raise ValueError("Action standard deviations must be nonnegative")
+
     def validate_features(self) -> None:
+        self.validate_action_representation()
         for i in range(self.empty_cameras):
             key = f"{OBS_IMAGES}.empty_camera_{i}"
             empty_camera = PolicyFeature(

@@ -88,9 +88,9 @@ OBSERVATION_STATE_FIELD_SPECS: Final = (
     ObservationStateFieldSpec("ee.x", "m", "measured base-frame TCP x"),
     ObservationStateFieldSpec("ee.y", "m", "measured base-frame TCP y"),
     ObservationStateFieldSpec("ee.z", "m", "measured base-frame TCP z"),
-    ObservationStateFieldSpec("ee.wx", "rad", "measured base-frame TCP rotation-vector x"),
-    ObservationStateFieldSpec("ee.wy", "rad", "measured base-frame TCP rotation-vector y"),
-    ObservationStateFieldSpec("ee.wz", "rad", "measured base-frame TCP rotation-vector z"),
+    ObservationStateFieldSpec("ee.wx", "rad", "measured base-frame TCP RPY roll (AUBO ZYX Euler)"),
+    ObservationStateFieldSpec("ee.wy", "rad", "measured base-frame TCP RPY pitch (AUBO ZYX Euler)"),
+    ObservationStateFieldSpec("ee.wz", "rad", "measured base-frame TCP RPY yaw (AUBO ZYX Euler)"),
     ObservationStateFieldSpec(
         "gripper_pos",
         "legacy_binary",

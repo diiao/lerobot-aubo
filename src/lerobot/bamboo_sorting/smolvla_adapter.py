@@ -39,6 +39,7 @@ from .lerobot_bridge import (
     TASK_FEATURE_KEY,
 )
 from .observation_contract import OBSERVATION_STATE_FIELD_NAMES
+from .smolvla_action_decoder import DecodedSmolVLAChunk, decode_smolvla_gripper
 
 DEFAULT_IMAGE_HEIGHT: Final = 480
 DEFAULT_IMAGE_WIDTH: Final = 640
@@ -175,19 +176,25 @@ class SmolVLAOfflineForwardAdapter:
         *,
         height: int = DEFAULT_IMAGE_HEIGHT,
         width: int = DEFAULT_IMAGE_WIDTH,
+        decode_gripper: bool = False,
     ) -> None:
         if not callable(getattr(policy, "predict_action_chunk", None)):
             raise TypeError("policy must provide predict_action_chunk")
         if not callable(preprocessor) or not callable(postprocessor):
             raise TypeError("preprocessor and postprocessor must be callable")
         validate_smolvla_policy_contract(policy, height=height, width=width)
+        if not isinstance(decode_gripper, bool):
+            raise ValueError("decode_gripper must be bool")
         self.policy = policy
         self.preprocessor = preprocessor
         self.postprocessor = postprocessor
         self.height = height
         self.width = width
+        self.decode_gripper = decode_gripper
+        self.last_decoding: DecodedSmolVLAChunk | None = None
 
     def __call__(self, frame: Mapping[str, object]) -> Sequence[Sequence[object]]:
+        self.last_decoding = None
         inputs = prepare_smolvla_inference_frame(
             frame,
             height=self.height,
@@ -199,4 +206,8 @@ class SmolVLAOfflineForwardAdapter:
         with torch.inference_mode():
             predicted = self.policy.predict_action_chunk(processed)
             postprocessed = self.postprocessor(predicted)
-        return _validated_action_chunk(postprocessed)
+        raw = _validated_action_chunk(postprocessed)
+        if not self.decode_gripper:
+            return raw
+        self.last_decoding = decode_smolvla_gripper(raw)
+        return self.last_decoding.actions
