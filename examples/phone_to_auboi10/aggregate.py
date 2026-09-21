@@ -1,13 +1,16 @@
 #!/usr/bin/env python
-"""聚合新视角的多个录制批次，用于纯 ACT 训练。
+"""聚合多个兼容的 AUBO 录制批次。
 
 用法:
     cd examples/phone_to_auboi10
     python aggregate.py
 
-默认自动发现 bamboo_newview_s01、s02...，也可通过 DATASET_SOURCES
+默认 ACT profile 自动发现 bamboo_newview_s01、s02...，也可通过 DATASET_SOURCES
 传入逗号分隔的 repo_id。聚合输出必须使用一个不存在的新目录；脚本拒绝覆盖
 任何已有目录，以保护原始批次和既有聚合成果。
+
+C0 使用 ``DATASET_PROFILE=c0`` 并显式设置 ``DATASET_SOURCES``；这只聚合
+数据集，不代表训练、推理或策略执行授权。
 
 注意: SRC 里的每个批次必须用相同的相机配置、处理器链、FPS、TASK_DESCRIPTION
 录制，否则 aggregate 的 validate_all_metadata 会报 features 不一致。
@@ -28,14 +31,77 @@ from lerobot.datasets.dataset_tools import merge_datasets
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
-DST = os.environ.get("OUTPUT_DATASET_PATH", "./datasets/bamboo_newview_full")
+DATASET_PROFILE = os.environ.get("DATASET_PROFILE", "act").strip().lower()
+if DATASET_PROFILE not in {"act", "c0"}:
+    raise ValueError("DATASET_PROFILE must be 'act' or 'c0'")
+
+DST = os.environ.get(
+    "OUTPUT_DATASET_PATH",
+    "./datasets/c0_formal_single_strip_full"
+    if DATASET_PROFILE == "c0"
+    else "./datasets/bamboo_newview_full",
+)
 EXPECTED_FPS = 25
 EXPECTED_IMAGE_SHAPE = [480, 640, 3]
 REQUIRED_CAMERAS = (
-    "observation.images.handeye",
-    "observation.images.fixed",
+    (
+        "observation.images.global_rgb",
+        "observation.images.grasp_rgb",
+    )
+    if DATASET_PROFILE == "c0"
+    else (
+        "observation.images.handeye",
+        "observation.images.fixed",
+    )
 )
 RESERVED_OUTPUT_NAMES = {"bamboo_act_report_full"}
+
+
+def expected_total_episodes() -> int | None:
+    configured = os.environ.get("EXPECTED_TOTAL_EPISODES", "").strip()
+    if not configured:
+        return None
+    try:
+        value = int(configured)
+    except ValueError as exc:
+        raise ValueError("EXPECTED_TOTAL_EPISODES must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError("EXPECTED_TOTAL_EPISODES must be a positive integer")
+    return value
+
+
+def configured_episode_splits(total_episodes: int) -> dict[str, str]:
+    """Return the requested aggregate split without changing any source dataset."""
+
+    configured = os.environ.get("TRAIN_EPISODE_COUNT", "").strip()
+    if not configured:
+        return {"train": f"0:{total_episodes}"}
+    try:
+        train_count = int(configured)
+    except ValueError as exc:
+        raise ValueError("TRAIN_EPISODE_COUNT must be a positive integer") from exc
+    if not 0 < train_count < total_episodes:
+        raise ValueError(
+            "TRAIN_EPISODE_COUNT must leave at least one episode for validation"
+        )
+    return {
+        "train": f"0:{train_count}",
+        "validation": f"{train_count}:{total_episodes}",
+    }
+
+
+def write_aggregate_splits(dataset_root: Path, splits: dict[str, str]) -> None:
+    """Update only the newly generated aggregate metadata, never its sources."""
+
+    info_path = dataset_root / "meta" / "info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["splits"] = dict(splits)
+    temporary = info_path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(info, indent=4, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(info_path)
 
 
 def action_array_to_numpy(actions) -> np.ndarray:
@@ -68,6 +134,9 @@ def discover_sources() -> list[str]:
     if configured:
         return [item.strip() for item in configured.split(",") if item.strip()]
 
+    if DATASET_PROFILE == "c0":
+        raise RuntimeError("C0 aggregation requires explicit DATASET_SOURCES")
+
     dataset_root = HF_LEROBOT_HOME / "datasets"
     return [
         f"./datasets/{path.name}"
@@ -78,7 +147,7 @@ def discover_sources() -> list[str]:
 
 def validate_image_stats(dataset_root) -> None:
     stats = json.loads((dataset_root / "meta" / "stats.json").read_text())
-    for key in ("observation.images.handeye", "observation.images.fixed"):
+    for key in REQUIRED_CAMERAS:
         std = stats[key]["std"]
         min_std = min(float(channel[0][0]) for channel in std)
         if min_std < 0.02:
@@ -91,7 +160,7 @@ def validate_metadata(dataset_root) -> dict:
     info = json.loads((dataset_root / "meta" / "info.json").read_text())
     if int(info["fps"]) != EXPECTED_FPS:
         raise RuntimeError(
-            f"{dataset_root.name} 是 {info['fps']} FPS；新视角数据必须是 {EXPECTED_FPS} FPS"
+            f"{dataset_root.name} 是 {info['fps']} FPS；聚合数据必须是 {EXPECTED_FPS} FPS"
         )
     if int(info["total_episodes"]) < 1 or int(info["total_frames"]) < 1:
         raise RuntimeError(f"{dataset_root.name} 没有已保存的 episode")
@@ -243,7 +312,7 @@ def main():
     sources = discover_sources()
     if not sources:
         raise RuntimeError(
-            "没有发现 bamboo_newview_sXX 批次；请先录制，或设置 DATASET_SOURCES"
+            "没有找到聚合源批次；请先录制，或设置 DATASET_SOURCES"
         )
     source_roots = [resolve_dataset_root(source) for source in sources]
     dst_root = Path(DST).expanduser()
@@ -251,25 +320,41 @@ def main():
     validate_aggregation_paths(source_roots, dst_root)
 
     # 先验证每个源批次；目标目录已经在上方确认不存在。
+    source_infos = []
     for source, source_root in zip(sources, source_roots, strict=True):
         print(f"检查源批次: {source} -> {source_root}")
         info = validate_metadata(source_root)
+        source_infos.append(info)
         validate_image_stats(source_root)
         validate_gripper_labels(source_root)
         validate_episode_actions(source_root, info)
+
+    expected_total = expected_total_episodes()
+    source_total = sum(int(info["total_episodes"]) for info in source_infos)
+    if expected_total is not None and source_total != expected_total:
+        raise RuntimeError(
+            f"源批次合计 {source_total} episodes，不等于要求的 {expected_total}"
+        )
+    splits = configured_episode_splits(source_total)
 
     print(f"合并: {sources} -> {dst_root}")
     datasets = [
         LeRobotDataset(repo_id=source_root.name, root=source_root) for source_root in source_roots
     ]
     merge_datasets(datasets, output_repo_id=dst_root.name, output_dir=dst_root)
+    write_aggregate_splits(dst_root, splits)
 
     m = LeRobotDataset(repo_id=dst_root.name, root=dst_root)
     merged_info = validate_metadata(dst_root)
+    if int(merged_info["total_episodes"]) != source_total:
+        raise RuntimeError(
+            f"聚合结果有 {merged_info['total_episodes']} episodes，源批次合计 {source_total}"
+        )
     validate_image_stats(dst_root)
     validate_gripper_labels(dst_root)
     validate_episode_actions(dst_root, merged_info)
     print(f"合并完成: {m.meta.total_episodes} episodes, {m.meta.total_frames} frames")
+    print(f"数据划分: {splits}")
     print(f"输出位置: {dst_root}")
 
 

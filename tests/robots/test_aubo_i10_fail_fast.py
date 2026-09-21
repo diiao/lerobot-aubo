@@ -1,4 +1,7 @@
 from unittest.mock import Mock
+import threading
+
+import numpy as np
 
 import pytest
 
@@ -38,9 +41,31 @@ def test_get_observation_raises_instead_of_returning_black_placeholder():
     camera.read_latest.side_effect = TimeoutError("stale")
     camera.async_read.side_effect = TimeoutError("no new frame")
     robot = _bare_robot(cameras={"handeye": camera})
+    robot.last_c0_sensor_timestamps = {"stale": 1.0}
 
     with pytest.raises(RuntimeError, match="避免黑帧污染数据"):
         robot.get_observation()
+    assert robot.last_c0_sensor_timestamps is None
+
+
+def test_get_observation_exposes_fresh_host_monotonic_sensor_timestamps():
+    camera = Mock()
+    camera.read_latest.return_value = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera.frame_lock = threading.Lock()
+    camera.latest_timestamp = 12.5
+    robot = _bare_robot(cameras={"global_rgb": camera}, connected=True)
+    robot.is_suction_on = False
+    state = Mock()
+    state.getJointPositions.return_value = [0.0] * 6
+    state.getTcpPose.return_value = [0.0] * 6
+    robot.robot_interface = Mock()
+    robot.robot_interface.getRobotState.return_value = state
+
+    observation = robot.get_observation()
+
+    assert "global_rgb" in observation
+    assert robot.last_c0_sensor_timestamps["global_rgb"] == 12.5
+    assert robot.last_c0_sensor_timestamps["robot_state"] >= 0.0
 
 
 def test_disconnect_releases_connected_cameras():

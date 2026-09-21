@@ -57,6 +57,12 @@ class AuboI10Robot(Robot):
         # Last controller-command evidence. This is software/DO state only;
         # it is not physical gripper-position or grasp-success feedback.
         self.last_gripper_command_trace: dict[str, Any] | None = None
+        # Host-monotonic receive/capture times for the observation most recently
+        # returned by get_observation(). Formal C0 observes this trace through a
+        # fail-closed record-loop observer; ordinary workflows may ignore it.
+        # It is cleared at the start of every read so stale timing evidence can
+        # never leak across a failed robot/camera observation.
+        self.last_c0_sensor_timestamps: dict[str, float] | None = None
 
         # 固定 Aubo 的第五轴角度（单位：度）
         # 建议值：0.0（默认）、90.0、-90.0、180.0 等，根据工具朝向调整
@@ -220,7 +226,9 @@ class AuboI10Robot(Robot):
             return False
 
     def get_observation(self) -> dict[str, Any]:
+        self.last_c0_sensor_timestamps = None
         obs_dict = {}
+        sensor_timestamps: dict[str, float] = {}
         if self.is_connected and self.robot_interface:
             try:
                 robot_state = self.robot_interface.getRobotState()
@@ -243,6 +251,7 @@ class AuboI10Robot(Robot):
                 obs_dict["ee.wz"] = float(tcp_pose[5])
 
                 obs_dict["gripper_pos"] = 100.0 if self.is_suction_on else 0.0
+                sensor_timestamps["robot_state"] = time.perf_counter()
 
             except Exception as e:
                 logging.error(f"读取关节状态失败: {e}")
@@ -268,9 +277,23 @@ class AuboI10Robot(Robot):
                         latest_error,
                     )
             obs_dict[cam_key] = img
+            frame_lock = getattr(cam, "frame_lock", None)
+            if frame_lock is not None:
+                with frame_lock:
+                    capture_timestamp = getattr(cam, "latest_timestamp", None)
+            else:
+                capture_timestamp = getattr(cam, "latest_timestamp", None)
+            if (
+                isinstance(capture_timestamp, (int, float))
+                and not isinstance(capture_timestamp, bool)
+                and math.isfinite(float(capture_timestamp))
+                and float(capture_timestamp) >= 0
+            ):
+                sensor_timestamps[cam_key] = float(capture_timestamp)
             dt_cam = (time.perf_counter() - start_cam) * 1e3
             logging.debug(f"读取 {cam_key}: {dt_cam:.1f}ms")
 
+        self.last_c0_sensor_timestamps = sensor_timestamps
         return obs_dict
 
     def send_action(self, action: dict) -> dict:
