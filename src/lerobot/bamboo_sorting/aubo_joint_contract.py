@@ -9,12 +9,14 @@ import math
 from collections.abc import Mapping, Sequence
 from numbers import Real
 
-JOINT_SCHEMA_VERSION = "AuboI10JointFixedJ5V1"
+JOINT_SCHEMA_VERSION = "AuboI10JointLegacyTeleopV2"
 JOINT_NAMES = tuple(f"J{i}" for i in range(1, 7))
-LEARNED_JOINT_NAMES = ("J1", "J2", "J3", "J4", "J6")
+LEARNED_JOINT_NAMES = JOINT_NAMES
 FIXED_J5_DEG = 90.0
 FIXED_J5_TOLERANCE_DEG = 0.5
 JOINT_FIELDS = (*LEARNED_JOINT_NAMES, "gripper_pos")
+JOINT_DIM = len(JOINT_FIELDS)
+GRIPPER_INDEX = JOINT_FIELDS.index("gripper_pos")
 JOINT_IMAGE_KEYS = ("global_rgb", "grasp_rgb")
 JOINT_TASK = "Pick one strip and place it in the collection area."
 JOINT_FPS = 25
@@ -39,8 +41,8 @@ def joint_command(action: Mapping) -> dict[str, float]:
 
 
 def expand_joint_command(action: Mapping) -> dict[str, float]:
-    """Insert the fixed fifth axis only at the execution/evidence boundary."""
-    return {**joint_command(action), "J5": FIXED_J5_DEG}
+    """All six joint targets are already explicit in the legacy-teleop contract."""
+    return joint_command(action)
 
 
 def require_fixed_j5(value):
@@ -54,7 +56,7 @@ def joint_observation_features() -> dict:
 
 
 def joint_dataset_features() -> dict:
-    vector = {"dtype": "float32", "shape": (6,), "names": list(JOINT_FIELDS)}
+    vector = {"dtype": "float32", "shape": (JOINT_DIM,), "names": list(JOINT_FIELDS)}
     return {
         "observation.state": dict(vector),
         "action": dict(vector),
@@ -70,8 +72,8 @@ def joint_contract_record() -> dict:
         "state_names": list(JOINT_FIELDS),
         "action_names": list(JOINT_FIELDS),
         "joint_unit": "deg",
-        "fixed_joint_targets_deg": {"J5": FIXED_J5_DEG},
-        "fixed_joint_tolerance_deg": FIXED_J5_TOLERANCE_DEG,
+        "fixed_joint_targets_deg": {},
+        "teleoperation_profile": "legacy_abs_j6yaw",
         "action_representation": "absolute_joint_positions",
         "action_source": "accepted_servoJoint_target",
         "gripper_values": {"off": 0, "on": 100},
@@ -85,14 +87,14 @@ def joint_contract_record() -> dict:
 def require_joint_dataset(features: Mapping, contract: Mapping, fps: float) -> None:
     expected = joint_contract_record()
     if any(contract.get(key) != value for key, value in expected.items()):
-        raise ValueError("dataset must carry the exact AuboI10JointFixedJ5V1 contract")
+        raise ValueError("dataset must carry the exact AuboI10JointLegacyTeleopV2 contract")
     if fps != JOINT_FPS:
         raise ValueError("joint dataset must be 25 Hz")
     for key in ("observation.state", "action"):
         feature = features.get(key, {})
-        if (tuple(feature.get("shape", ())) != (6,) or feature.get("dtype") != "float32"
+        if (tuple(feature.get("shape", ())) != (JOINT_DIM,) or feature.get("dtype") != "float32"
                 or tuple(feature.get("names", ())) != JOINT_FIELDS):
-            raise ValueError(f"{key} must have ordered AUBO 6D fixed-J5 joint fields")
+            raise ValueError(f"{key} must have ordered AUBO 7D full-joint joint fields")
     images = {key for key in features if key.startswith("observation.images.")}
     if images != {f"observation.images.{key}" for key in JOINT_IMAGE_KEYS}:
         raise ValueError("joint dataset requires exactly the CameraSetV2 RGB streams")

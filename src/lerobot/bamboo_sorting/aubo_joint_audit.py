@@ -6,18 +6,26 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from .aubo_joint_contract import JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, require_joint_dataset
+from .joint_gripper_quality import gripper_episode_quality, require_joint_normalization_stats
+
+from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, require_joint_dataset
 
 
-def audit_joint_dataset(dataset_root, evidence_root):
+def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None):
     root, evidence = Path(dataset_root).resolve(), Path(evidence_root).resolve()
+    # Explicit relocation declaration: evidence keeps the original identity.
+    # Never infer a trusted identity from the evidence being checked.
+    source = root if source_dataset_root is None else Path(source_dataset_root)
+    if not source.is_absolute() or ".." in source.parts:
+        raise ValueError("source dataset root must be an absolute normalized path")
+    identity = str(source)
     info = json.loads((root / "meta/info.json").read_text())
     contract = json.loads((root / "meta/aubo_joint_contract.json").read_text())
     require_joint_dataset(info["features"], contract, info["fps"])
     if info["robot_type"] != "aubo_i10":
         raise ValueError("joint dataset must identify AUBO i10")
     session = json.loads((evidence / "session.json").read_text())
-    if (session.get("dataset_root") != str(root) or session.get("dataset_finalized") is not True
+    if (session.get("dataset_root") != identity or session.get("dataset_finalized") is not True
             or session.get("contract") != joint_contract_record()):
         raise ValueError("matching finalized joint session is required")
     files = sorted((root / "data").glob("chunk-*/*.parquet"))
@@ -26,10 +34,10 @@ def audit_joint_dataset(dataset_root, evidence_root):
     data = pq.read_table(files).to_pydict()
     states, actions = (np.asarray(data[k], dtype=np.float32) for k in ("observation.state", "action"))
     ep, frame = (np.asarray(data[k]) for k in ("episode_index", "frame_index"))
-    if (states.shape != (len(ep), 6) or actions.shape != (len(ep), 6)
+    if (states.shape != (len(ep), JOINT_DIM) or actions.shape != (len(ep), JOINT_DIM)
             or not np.isfinite(states).all() or not np.isfinite(actions).all()):
-        raise ValueError("joint state/action arrays must be finite [frames, 6]")
-    if not np.isin(states[:, 5], [0, 100]).all() or not np.isin(actions[:, 5], [0, 100]).all():
+        raise ValueError("joint state/action arrays must be finite [frames, 7]")
+    if not np.isin(states[:, GRIPPER_INDEX], [0, 100]).all() or not np.isin(actions[:, GRIPPER_INDEX], [0, 100]).all():
         raise ValueError("invalid suction values")
     count = session["saved_episode_count"]
     if (count < 1 or count != info["total_episodes"] or len(ep) != info["total_frames"]
@@ -45,9 +53,18 @@ def audit_joint_dataset(dataset_root, evidence_root):
     if [a["episode_index"] for a in saved] != list(range(count)):
         raise ValueError("joint sidecar saved episode sequence mismatch")
     result = []
+    quality_issues = []
+    stats_path = root / "meta/stats.json"
+    if not stats_path.exists():
+        quality_issues.append("missing_normalization_stats")
+    else:
+        try:
+            require_joint_normalization_stats(json.loads(stats_path.read_text()))
+        except ValueError as exc:
+            quality_issues.append(str(exc))
     for index, record in enumerate(saved):
         sidecar = json.loads((evidence / f"episode-{index:04d}.json").read_text())
-        if sidecar != record or sidecar["dataset_root"] != str(root):
+        if sidecar != record or sidecar["dataset_root"] != identity:
             raise ValueError("joint episode sidecar differs from finalized session")
         mask = ep == index
         if not np.array_equal(frame[mask], np.arange(mask.sum())):
@@ -74,15 +91,27 @@ def audit_joint_dataset(dataset_root, evidence_root):
             values = [r["timestamps"][stream]["host_receive_monotonic_s"] for r in timestamps]
             if not np.isfinite(values).all() or (np.diff(values) <= 0).any():
                 raise ValueError("sensor timestamps must be finite and increasing")
-        if not np.array_equal(states[mask][1:, 5], actions[mask][:-1, 5]):
+        if not np.array_equal(states[mask][1:, GRIPPER_INDEX], actions[mask][:-1, GRIPPER_INDEX]):
             raise ValueError("suction history does not equal preceding command")
         for cycle, a in zip(cycles, actions[mask], strict=True):
-            if (cycle["dataset_action_gripper_pos"] != a[5] or cycle["action_consistency"] != "matched"
+            if (cycle["dataset_action_gripper_pos"] != a[GRIPPER_INDEX] or cycle["action_consistency"] != "matched"
                     or not cycle["send_action_returned"]):
                 raise ValueError("suction command evidence mismatch")
+        gripper = gripper_episode_quality(states[mask], actions[mask])
+        if record["human_outcome"] == "single_success":
+            quality_issues.extend(f"episode-{index}: {issue}" for issue in gripper["quality_issues"])
         result.append({"episode_index": index, "frames": int(mask.sum()),
-                       **record["metadata"], "human_outcome": record["human_outcome"]})
+                       **record["metadata"], "human_outcome": record["human_outcome"],
+                       "gripper_quality": gripper})
+    candidates = [r["episode_index"] for r in result if r["human_outcome"] == "single_success"
+                  and not r["gripper_quality"]["quality_issues"]]
+    if not candidates:
+        quality_issues.append("no_complete_success_demonstrations")
     return {"schema_version": contract["schema_version"], "audit_passed": True,
+            "storage_root": str(root), "source_dataset_root": identity,
             "episodes": result, "frames": len(ep), "capture_complete": session["capture_complete"],
             "video_decode_checked": False, "physical_success_verified": False,
+            "supervised_candidate_episodes": candidates,
+            "gripper_quality_passed": not quality_issues,
+            "gripper_quality_issues": quality_issues,
             "training_authorized": False, "policy_execution_authorized": False}

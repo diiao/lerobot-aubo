@@ -42,7 +42,7 @@ def _robot():
     robot.robot_interface = Mock()
     current = [0, 0, 0, 0, math.pi / 2, 0]
     robot.robot_interface.getRobotState().getJointPositions.return_value = current
-    robot.robot_interface.getRobotAlgorithm().inverseKinematics.return_value = ([0.01, 0.02, 0, 0, math.pi / 2, 0], 0)
+    robot.robot_interface.getRobotAlgorithm().inverseKinematics.return_value = ([0.01, 0.02, 0, 0, math.radians(91), 0], 0)
     motion = robot.robot_interface.getMotionControl()
     motion.setSpeedFraction.return_value = 0
     motion.isServoModeEnabled.return_value = True
@@ -126,13 +126,13 @@ def test_real_record_loop_saves_accepted_joint_target_not_measured_state(tmp_pat
     robot, dataset = _record_one(tmp_path, observer)
     observer.validate_buffer(dataset)
     frame = dataset.frames[0]
-    assert frame["action"].shape == frame["observation.state"].shape == (6,)
+    assert frame["action"].shape == frame["observation.state"].shape == (7,)
     assert frame["action"][0] == pytest.approx(math.degrees(0.01))
     assert frame["observation.state"][0] == 0
-    assert "J5" not in dataset.features["action"]["names"]
+    assert "J5" in dataset.features["action"]["names"]
     assert not any("ee." in key for key in dataset.features["action"]["names"])
     sdk_q = robot.robot_interface.getMotionControl().servoJoint.call_args.args[0]
-    assert sdk_q[4] == math.pi / 2
+    assert sdk_q[4] == pytest.approx(math.radians(91))
     assert sdk_q[5] == pytest.approx(0.015)
     assert observer.frames[0]["joint_command_trace"]["sdk_target_rad"] == sdk_q
 
@@ -144,7 +144,7 @@ def test_record_refuses_label_command_mismatch_before_send(tmp_path):
         _record_one(tmp_path, action_processor=change)
 
 
-@pytest.mark.parametrize("changes", [{"J5": 90}, {"ee.x": 0}, {"J1": float("nan")}, {"J2": True}, {"gripper_pos": 50}])
+@pytest.mark.parametrize("changes", [{"J7": 90}, {"ee.x": 0}, {"J1": float("nan")}, {"J2": True}, {"gripper_pos": 50}])
 def test_driver_rejects_bad_schema_before_sdk_calls(changes):
     robot = _robot()
     with pytest.raises(ValueError):
@@ -152,20 +152,42 @@ def test_driver_rejects_bad_schema_before_sdk_calls(changes):
     robot.robot_interface.getMotionControl().servoJoint.assert_not_called()
 
 
-@pytest.mark.parametrize("index,angle", [(0, 5), (4, 91)])
-def test_phone_rejects_ik_jump_or_nonfixed_j5(index, angle):
+@pytest.mark.parametrize("returns", [[0], [2, 0], [-13, 0]])
+def test_joint_capture_matches_legacy_phone_targets_and_servo_retries(returns):
+    from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot
+    legacy, capture = _robot(), _robot()
+    # Both a non-90 J5 and a >2 degree target must follow the legacy behavior.
+    for robot in (legacy, capture):
+        robot.robot_interface.getRobotAlgorithm().inverseKinematics.return_value = (
+            [math.radians(5), 0, 0, 0, math.radians(85), 0], 0)
+        robot.servo_max_queue_retry = 3
+        robot.enable_servo_mode = Mock(return_value=True)
+        robot.robot_interface.getMotionControl().servoJoint.side_effect = returns
+    AuboI10Robot.send_action(legacy, _phone_target())
+    target = capture.resolve_phone_joint_target(_phone_target(), _observation())
+    assert target["J5"] == 85 and target["J1"] == 5
+    assert capture.send_action(target) == target
+    old_calls = legacy.robot_interface.getMotionControl().servoJoint.call_args_list
+    new_calls = capture.robot_interface.getMotionControl().servoJoint.call_args_list
+    assert len(old_calls) == len(new_calls) == len(returns)
+    for old, new in zip(old_calls, new_calls):
+        np.testing.assert_allclose(old.args[0], new.args[0], rtol=0, atol=1e-14)
+        assert old.args[1:] == new.args[1:]
+    assert legacy.enable_servo_mode.call_count == capture.enable_servo_mode.call_count
+    assert capture.last_joint_command_trace["joint_target_deg"][4] == 85
+
+
+def test_joint_capture_preserves_measured_j5_in_state():
+    state = _entry().learning_observation({**_observation(), "J5": 92})
+    assert state["J5"] == 92
+
+
+def test_phone_ik_failure_never_sends():
     robot = _robot()
-    q = [0, 0, 0, 0, math.pi / 2, 0]
-    q[index] = math.radians(angle)
-    robot.robot_interface.getRobotAlgorithm().inverseKinematics.return_value = (q, 0)
-    with pytest.raises(ValueError):
+    robot.robot_interface.getRobotAlgorithm().inverseKinematics.return_value = ([0] * 6, -5)
+    with pytest.raises(ValueError, match="inverse kinematics failed"):
         robot.resolve_phone_joint_target(_phone_target(), _observation())
     robot.robot_interface.getMotionControl().servoJoint.assert_not_called()
-
-
-def test_fifth_axis_observation_drift_is_not_hidden():
-    with pytest.raises(ValueError, match="J5"):
-        _entry().learning_observation({**_observation(), "J5": 92})
 
 
 def test_servo_failure_never_leaves_success_trace():
@@ -219,6 +241,8 @@ def test_save_finalize_and_readonly_audit(tmp_path):
     pq.write_table(pa.table(data), parquet)
     result = audit_joint_dataset(root, tmp_path / "evidence")
     assert result["audit_passed"] and not result["capture_complete"]
+    assert not result["gripper_quality_passed"]
+    assert result["supervised_candidate_episodes"] == []
     data["action"][0][0] += 0.25
     pq.write_table(pa.table(data), parquet)
     with pytest.raises(ValueError, match="labels differ"):
@@ -274,18 +298,18 @@ def test_default_plan_is_hardware_free_and_refuses_overwrite(tmp_path, monkeypat
 
 def test_joint_policy_excludes_tcp_targets_and_preserves_joint_predictions():
     cfg = make_joint_smolvla_config()
-    raw = torch.tensor([[[1, 2, 3, 4, 6, 97.0]]])
+    raw = torch.tensor([[[1, 2, 3, 4, 5, 6, 97.0]]])
     policy = Mock(config=cfg)
     policy.predict_action_chunk.return_value = raw
     adapter = SmolVLAJointOfflineAdapter(policy, lambda x: x, lambda x: x, contract=joint_contract_record())
-    frame = {"task": JOINT_TASK, "observation.state": np.zeros(6, np.float32), "action": np.ones(6), "ee.x": 42,
+    frame = {"task": JOINT_TASK, "observation.state": np.zeros(7, np.float32), "action": np.ones(7), "ee.x": 42,
              **{f"observation.images.{k}": np.zeros((480, 640, 3), np.uint8) for k in ("global_rgb", "grasp_rgb")}}
     decoded = adapter(frame)
-    assert decoded.tolist() == [[1, 2, 3, 4, 6, 100]]
+    assert decoded.tolist() == [[1, 2, 3, 4, 5, 6, 100]]
     assert adapter.raw_actions[0, -1] == 97
     actual = policy.predict_action_chunk.call_args.args[0]
     assert "action" not in actual and "ee.x" not in actual
-    assert actual["observation.state"].shape == (6,)
+    assert actual["observation.state"].shape == (7,)
     with pytest.raises(ValueError):
         SmolVLAJointOfflineAdapter(policy, lambda x: x, lambda x: x, contract={})
 
@@ -293,5 +317,109 @@ def test_joint_policy_excludes_tcp_targets_and_preserves_joint_predictions():
 def test_legacy_dataset_contract_is_rejected():
     features = joint_dataset_features()
     features["observation.state"]["shape"] = (13,)
-    with pytest.raises(ValueError, match="6D"):
+    with pytest.raises(ValueError, match="7D"):
         require_joint_dataset(features, joint_contract_record(), 25)
+
+
+def test_fixed_j5_data_and_checkpoint_are_not_reinterpreted_as_seven_dimensions():
+    features = joint_dataset_features()
+    features["action"].update(shape=(6,), names=["J1", "J2", "J3", "J4", "J6", "gripper_pos"])
+    with pytest.raises(ValueError, match="7D"):
+        require_joint_dataset(features, joint_contract_record(), 25)
+    old_contract = {**joint_contract_record(), "schema_version": "AuboI10JointFixedJ5V1",
+                    "fixed_joint_targets_deg": {"J5": 90.0}}
+    with pytest.raises(ValueError, match="AuboI10JointLegacyTeleopV2"):
+        require_joint_dataset(joint_dataset_features(), old_contract, 25)
+    with pytest.raises(ValueError, match="AuboI10JointLegacyTeleopV2"):
+        SmolVLAJointOfflineAdapter(Mock(config=make_joint_smolvla_config()), None, None, contract=old_contract)
+
+
+@pytest.mark.parametrize("failure", [None, "capture", "finalize"])
+def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch, failure):
+    """Run entry callbacks with fake devices; prompts must own stdin exclusively."""
+    import sys
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.robots.aubo_i10 import joint_capture
+    from lerobot.teleoperators.phone import teleop_phone
+    from lerobot.scripts import lerobot_record
+    from lerobot.utils import control_utils
+
+    entry = _entry()
+    calls, listeners = [], []
+    fake = _robot()
+    fake.robot_interface.getMotionControl().moveJoint.return_value = 0
+    fake.disable_servo_mode = lambda: calls.append("disable") or True
+    fake.suction_release = lambda: True
+    monkeypatch.setattr(joint_capture.AuboI10JointCaptureRobot, "__init__",
+                        lambda self, config: self.__dict__.update(fake.__dict__))
+    monkeypatch.setattr(joint_capture.AuboI10JointCaptureRobot, "connect", lambda self: None)
+    # Only explicit entry cleanup belongs in this trace, not GC of earlier fakes.
+    monkeypatch.setattr(joint_capture.AuboI10JointCaptureRobot, "__del__", lambda self: None)
+    monkeypatch.setattr(joint_capture.AuboI10JointCaptureRobot, "disconnect",
+                        lambda self: calls.append("robot_disconnect"))
+    monkeypatch.setattr(teleop_phone, "Phone", lambda config: SimpleNamespace(
+        connect=lambda: None, is_connected=True,
+        disconnect=lambda: calls.append("phone_disconnect")))
+    monkeypatch.setitem(sys.modules, "record_c0_batch", SimpleNamespace(
+        read_fresh_c0_observation=lambda **kwargs: None,
+        _load_record_helpers=lambda: SimpleNamespace(
+            return_to_start=lambda robot: True)))
+
+    def create(**kwargs):
+        (kwargs["root"] / "meta").mkdir(parents=True)
+        return Dataset(kwargs["root"])
+    monkeypatch.setattr(LeRobotDataset, "create", create)
+
+    def start_listener(events=None):
+        events = {} if events is None else events
+        events.update(exit_early=False, return_to_start=False, stop_recording=False, rerecord_episode=False)
+        listener = SimpleNamespace(active=True, events=events)
+        listener.stop = lambda: setattr(listener, "active", False)
+        listeners.append(listener)
+        return listener, events
+    monkeypatch.setattr(control_utils, "init_keyboard_listener", start_listener)
+    answers = iter(["", "  ", "train-r-scene", "", "ruler B", "invalid", "1",
+                    "train-r-scene-2", "ruler C", "2"])
+    def prompt(message):
+        assert not any(listener.active for listener in listeners), "hotkeys compete with input()"
+        return next(answers)
+    monkeypatch.setattr("builtins.input", prompt)
+
+    def press_keys(delay):
+        active = [listener for listener in listeners if listener.active]
+        assert len(active) == 1
+        active[0].events.update(return_to_start=True, exit_early=True)
+    monkeypatch.setattr(entry.time, "sleep", press_keys)
+
+    def record(**kwargs):
+        lifecycle = kwargs["lifecycle"]
+        for index in range(2):
+            metadata = lifecycle.prepare_episode(index)
+            assert metadata["scene_id"] == ["train-r-scene", "train-r-scene-2"][index]
+            assert metadata["placement_reference"] == ["ruler B", "ruler C"][index]
+            assert sum(listener.active for listener in listeners) == 1
+            if failure == "capture":
+                calls.append("capture_failure")
+                raise RuntimeError("capture failed")
+            assert lifecycle.outcome_provider(index) == ["single_success", "empty"][index]
+        lifecycle.saved_count = 2
+    monkeypatch.setattr(lerobot_record, "record_episode_sessions", record)
+
+    def finalize(*args, **kwargs):
+        assert calls[-1] == "disable", "servo must be disabled before video finalization"
+        if failure == "capture":
+            assert calls.index("capture_failure") < len(calls) - 1
+        calls.append("finalize")
+        if failure == "finalize":
+            raise RuntimeError("finalize failed")
+    monkeypatch.setattr(lerobot_record, "finalize_recorded_dataset", finalize)
+    args = ["--dataset-root", str(tmp_path / "data"), "--evidence-root", str(tmp_path / "evidence"),
+            "--num-episodes", "2", "--split", "train", "--record"]
+    if failure:
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            entry.main(args)
+    else:
+        assert entry.main(args) == 0
+    assert "finalize" in calls
+    assert calls.index("finalize") < calls.index("phone_disconnect") < calls.index("robot_disconnect")
+    assert not any(listener.active for listener in listeners)
