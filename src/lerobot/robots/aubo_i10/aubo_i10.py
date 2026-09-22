@@ -516,6 +516,14 @@ class AuboI10Robot(Robot):
         if "ee.j6_target" in action:
             q_sol[5] = float(action["ee.j6_target"])
 
+        self._send_phone_joint_target(q_sol, motion)
+        logging.debug(
+            f"位置+J6偏航: pos=[{target_pose[0]:.3f},{target_pose[1]:.3f},{target_pose[2]:.3f}]m, "
+            f"J6={math.degrees(q_sol[5]):.1f}°"
+        )
+
+    def _send_phone_joint_target(self, q_sol, motion):
+        """Send an already resolved phone target using the legacy retry behavior."""
         retry_count = 0
         ret = 2
         while retry_count < self.servo_max_queue_retry:
@@ -556,10 +564,6 @@ class AuboI10Robot(Robot):
         if ret != 0:
             raise RuntimeError(f"J6偏航关节伺服返回非 0 码 ret={ret}")
 
-        logging.debug(
-            f"位置+J6偏航: pos=[{target_pose[0]:.3f},{target_pose[1]:.3f},{target_pose[2]:.3f}]m, "
-            f"J6={math.degrees(q_sol[5]):.1f}°"
-        )
 
     def _send_so101_joint_action(self, action: dict, motion):
         """

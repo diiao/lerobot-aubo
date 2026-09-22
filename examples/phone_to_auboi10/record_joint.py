@@ -1,21 +1,20 @@
 #!/usr/bin/env python
 """AUBO i10 joint-space SmolVLA capture. Default: print plan, no hardware.
 
---record explicitly starts supervised hardware capture. Images and 6D joint
+--record explicitly starts supervised hardware capture. Images and 7D joint
 state/action are saved to a NEW dataset; historical C0 entries stay intact.
 """
 
 import argparse
 import json
 import logging
-import math
 import sys
 import time
 from pathlib import Path
 
 from lerobot.bamboo_sorting.aubo_joint_contract import (
-    FIXED_J5_DEG, JOINT_FIELDS, JOINT_FPS, JOINT_IMAGE_KEYS, JOINT_TASK,
-    joint_command, joint_contract_record, joint_dataset_features, require_fixed_j5,
+    JOINT_FIELDS, JOINT_FPS, JOINT_IMAGE_KEYS, JOINT_TASK,
+    joint_command, joint_contract_record, joint_dataset_features,
 )
 from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, write_joint_json
 from lerobot.bamboo_sorting.c0_smoke_capture import frozen_c0_smoke_camera_mapping
@@ -44,7 +43,6 @@ def parse_args(argv=None):
 
 def learning_observation(raw):
     """TCP is available to phone teleop, but excluded from dataset/model state."""
-    require_fixed_j5(raw["J5"])
     state = joint_command({key: raw[key] for key in JOINT_FIELDS})
     return {**state, **{key: raw[key] for key in JOINT_IMAGE_KEYS}}
 
@@ -57,13 +55,22 @@ class IdentityAction:
         pass
 
 
+def required_text(prompt):
+    """Retry empty metadata without inventing or copying a scene identity."""
+    while True:
+        value = input(prompt).strip()
+        if value:
+            return value
+        print("这一项不能为空，请输入内容后再按回车。")
+
+
 def main(argv=None):
     args = parse_args(argv)
     cameras = frozen_c0_smoke_camera_mapping()
     plan = {"contract": joint_contract_record(), "dataset_root": str(args.dataset_root),
             "evidence_root": str(args.evidence_root), "num_episodes": args.num_episodes,
             "split": args.split, "camera_mapping": cameras,
-            "max_joint_tracking_deg": 2.0,
+            "teleoperation_profile": "legacy_abs_j6yaw",
             "mode": "supervised_capture" if args.record else "plan_only"}
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if not args.record:
@@ -89,24 +96,12 @@ def main(argv=None):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from record_c0_batch import read_fresh_c0_observation, _load_record_helpers
     helpers = _load_record_helpers()
-    from aubo_start_poses import NORMAL_START_DEG
 
     def return_to_joint_start(robot):
         if not robot.disable_servo_mode():
             return False
-        # Preserve the old start pose file; this profile alone fixes its J5.
-        start = list(NORMAL_START_DEG)
-        start[4] = FIXED_J5_DEG
-        motion = robot.robot_interface.getMotionControl()
-        if motion.setSpeedFraction(helpers.NORMAL_MOVE_SPEED_FRACTION) != 0:
-            return False
-        if motion.moveJoint([math.radians(v) for v in start], math.radians(80), math.radians(60), 0, 0) != 0:
-            return False
-        if not helpers.wait_for_move_completion(motion):
-            return False
-        measured = robot.robot_interface.getRobotState().getJointPositions()
-        require_fixed_j5(math.degrees(measured[4]))
-        return bool(robot.suction_release())
+        # Reuse the complete legacy homing routine, including J5=90.88 degrees.
+        return helpers.return_to_start(robot)
 
     class FreshJointRobot(AuboI10JointCaptureRobot):
         def __init__(self, config):
@@ -150,17 +145,21 @@ def main(argv=None):
         write_joint_json(args.dataset_root / "meta" / "aubo_joint_contract.json", joint_contract_record())
         write_joint_json(args.evidence_root / "controller_limits.json", {
             "lower_deg": list(robot.joint_lower_deg), "upper_deg": list(robot.joint_upper_deg),
-            "max_joint_tracking_deg": robot.max_joint_tracking_deg})
-        listener, events = init_keyboard_listener()
+            "teleoperation_profile": "legacy_abs_j6yaw"})
+        events = dict(exit_early=False, return_to_start=False, stop_recording=False, rerecord_episode=False)
 
         def prepare_episode(index):
+            nonlocal listener
             if not robot.disable_servo_mode():
                 raise RuntimeError("cannot disable servo before scene preparation")
+            # The terminal hotkey reader and input() must never consume stdin together.
+            if listener is not None:
+                listener.stop()
+                listener = None
             print(f"\n准备第 {index + 1}/{args.num_episodes} 条；数据划分：{args.split}")
-            scene = input("场景编号（同一摆放场景保持同一编号，不跨训练/验证/测试）：").strip()
-            placement = input("物理刻度线/摆放参考（例如尺线 B、方向 90°）：").strip()
-            if not scene or not placement:
-                raise ValueError("scene and physical placement reference cannot be empty")
+            scene = required_text("场景编号（同一摆放场景保持同一编号，不跨训练/验证/测试）：")
+            placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
+            listener, _ = init_keyboard_listener(events)
             print("按 r 归位，摆好竹条后按 → 开始；录制中 → 结束，← 重录，Esc 停止。")
             events["exit_early"] = events["return_to_start"] = False
             ready = False
@@ -180,8 +179,12 @@ def main(argv=None):
             return {"scene_id": scene, "placement_reference": placement, "split": args.split}
 
         def outcome_provider(index):
+            nonlocal listener
             if not robot.disable_servo_mode():
                 raise RuntimeError("cannot disable servo before outcome annotation")
+            if listener is not None:
+                listener.stop()
+                listener = None
             choices = {"1": "single_success", "2": "empty", "3": "multi_pick", "4": "slip",
                        "5": "blocked", "6": "uncertain"}
             while True:
@@ -199,6 +202,12 @@ def main(argv=None):
                     display_compressed_images=False, lifecycle=session)
     finally:
         original_error = sys.exc_info()[1]
+        # Stop servo before potentially slow video finalization, including on failure.
+        try:
+            if not robot.disable_servo_mode():
+                logging.error("cannot confirm servo disabled before joint dataset finalization")
+        except Exception:
+            logging.exception("joint capture servo shutdown failed before finalization")
         try:
             if dataset is not None:
                 finalize_recorded_dataset(dataset, lifecycle=session,
