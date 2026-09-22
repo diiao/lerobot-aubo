@@ -106,7 +106,7 @@ def main(argv=None):
                     servo._require_zero(motion.setServoMode(True),'enable servo');servo._wait_servo(True)
             if goal is not None:
                 if not pending_suction and time.perf_counter()>prediction_deadline:
-                    raise TimeoutError('no fresh prediction within 500 ms')
+                    raise TimeoutError(f'no fresh prediction within {MAX_WITHOUT_PREDICTION*1000:.0f} ms')
                 if pending_suction and time.perf_counter()-last_observation>1.5:
                     raise TimeoutError('suction transition target not reached within 1.5 seconds')
                 q,target_tcp=trajectory.advance(goal[:6],fk)

@@ -26,7 +26,8 @@ def test_prediction_distance_separate_from_controller_limits():
     action=[-56.643585205078125,-.3033311367034912,117.9039306640625,29.727054595947266,90.61083221435547,-181.3079376220703,0]
     args=dict(state=state,tcp=[.18,-.65,.16],target_tcp=[.1912,-.65,.16],lower=[-360]*6,upper=[360]*6,timestamps=[1,1,1],now=1.2)
     assert validate_prediction(action,**args)==action
-    with pytest.raises(ValueError,match='expired'):validate_prediction(action,**{**args,'now':1.4})
+    assert validate_prediction(action,**{**args,'now':1.362})==action
+    with pytest.raises(ValueError,match='expired'):validate_prediction(action,**{**args,'now':1.401})
     with pytest.raises(ValueError,match='workspace'):validate_prediction(action,**{**args,'target_tcp':[.19,-.65,-.001]})
     farther=[state[0]+10,*action[1:]]
     assert validate_prediction(farther,**{**args,'target_tcp':[.3,-.65,.16]})==farther
