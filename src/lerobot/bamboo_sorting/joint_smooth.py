@@ -57,10 +57,34 @@ class SmoothTrajectory:
         old_tcp=fk(old);new_tcp=fk(candidate)
         distance=math.dist(old_tcp,new_tcp)
         if distance>MAX_TCP_SPEED*DT:
-            scale=MAX_TCP_SPEED*DT/distance*.999
-            velocity=[v*scale for v in velocity]
-            candidate=[q+v*DT for q,v in zip(old,velocity)]
+            # Scaling the desired velocity toward zero can over-decelerate an
+            # axis that has already used its acceleration allowance. Instead,
+            # form a braking velocity reachable from previous_v in ONE tick.
+            # Every convex blend with the desired velocity preserves the joint
+            # speed and acceleration bounds (both endpoints satisfy them).
+            peak=max(abs(v) for v in previous_v)
+            braking_scale=max(0.,1.-MAX_ACCEL*DT/peak) if peak else 0.
+            braking=[v*braking_scale for v in previous_v]
+            candidate=[q+v*DT for q,v in zip(old,braking)]
             new_tcp=fk(candidate)
+            if math.dist(old_tcp,new_tcp)>MAX_TCP_SPEED*DT:
+                raise ValueError('no TCP-safe braking candidate within acceleration bound')
+            desired=velocity
+            velocity=braking
+            low,high=0.,1.
+            # At most nine FK calls per tick, including the fast-path calls.
+            # Nonlinear FK is checked for each candidate; the search need not
+            # find the global optimum, but never returns an unchecked point.
+            for _ in range(6):
+                blend=(low+high)/2.
+                trial_v=[b+blend*(d-b) for b,d in zip(braking,desired)]
+                trial_q=[q+v*DT for q,v in zip(old,trial_v)]
+                trial_tcp=fk(trial_q)
+                if math.dist(old_tcp,trial_tcp)<=MAX_TCP_SPEED*DT:
+                    low=blend
+                    velocity,candidate,new_tcp=trial_v,trial_q,trial_tcp
+                else:
+                    high=blend
         if max(abs(a-b) for a,b in zip(velocity,previous_v))>MAX_ACCEL*DT+1e-8:
             raise ValueError('TCP limiting cannot preserve acceleration bound')
         if math.dist(old_tcp,new_tcp)>MAX_TCP_SPEED*DT+1e-7:

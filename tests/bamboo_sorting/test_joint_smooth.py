@@ -155,3 +155,44 @@ def test_camera_skew_relaxed_to_100ms(skew,accepted):
         assert validate_prediction(*args)==[*START_DEG,0]
     else:
         with pytest.raises(ValueError,match='camera skew'):validate_prediction(*args)
+
+
+def test_tcp_limit_and_j6_deceleration_are_satisfied_together():
+    # Last commanded q/v and target from joint_smooth_20260922_235754_796241.
+    # A local linear kinematics surrogate reproduces the conflict without RPC;
+    # it is not a claim of exact AUBO FK replay.
+    q0=[-23.806631537483575,2.03388843016352,123.0585963053864,32.518577394666586,89.54535485981886,-211.53457096427564]
+    v0=[4.041209964756092,-.6345783592048441,.15510540447439303,.7445300663751566,-.13183160933018875,-3.0555219335025994]
+    target=[-22.648202896118164,1.8356952667236328,123.06416320800781,32.72412872314453,89.51194763183594,-211.74574279785156]
+    def coupled_fk(q):return [.47+.012*(q[0]-q0[0]),-.43+.001*(q[5]-q0[5]),.12]
+    t=SmoothTrajectory(q0);t.v=v0.copy()
+    q,tcp=t.advance(target,coupled_fk)
+    assert math.dist(coupled_fk(q0),tcp)<=MAX_TCP_SPEED*DT+1e-7
+    assert max(abs(a-b) for a,b in zip(t.v,v0))<=MAX_ACCEL*DT+1e-8
+    assert max(abs(v) for v in t.v)<=MAX_SPEED
+    assert q!=q0
+
+
+def test_nonlinear_multiaxis_tracking_limits_and_fk_call_budget():
+    import random
+    rng=random.Random(23);calls=[0]
+    def coupled_fk(q):
+        calls[0]+=1
+        return [.3+.013*q[0]+.002*math.sin(q[1]),-.5+.006*q[1]+.001*q[5],.3+.004*q[2]]
+    t=SmoothTrajectory([0]*6)
+    for tick in range(800):
+        if tick%7==0:target=[rng.uniform(-8,8) for _ in range(6)]
+        previous_q=t.q.copy();previous_v=t.v.copy();before=calls[0]
+        q,tcp=t.advance(target,coupled_fk)
+        assert calls[0]-before<=9  # Bounded RPC load if FK comes from the controller.
+        assert math.dist(coupled_fk(previous_q),tcp)<=MAX_TCP_SPEED*DT+1e-7
+        assert max(abs(a-b) for a,b in zip(t.v,previous_v))<=MAX_ACCEL*DT+1e-8
+        assert max(abs(v) for v in t.v)<=MAX_SPEED
+
+
+def test_unusable_braking_candidate_rejected_without_mutating_trajectory():
+    t=SmoothTrajectory([0]*6);t.v=[2.]*6
+    old_q=t.q.copy();old_v=t.v.copy()
+    def abrupt_fk(q):return [.2 if q==old_q else .3,-.5,.3]
+    with pytest.raises(ValueError):t.advance([10]*6,abrupt_fk)
+    assert t.q==old_q and t.v==old_v
