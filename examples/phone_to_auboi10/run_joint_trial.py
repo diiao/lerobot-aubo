@@ -55,18 +55,23 @@ def encode_images(images, codec):
 
 
 class InferencePipe:
-    def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None):
+    def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None,
+                 remote_root=REMOTE_ROOT, checkpoint=None, expected_sha256=MODEL_SHA,
+                 inference_script=None):
         self.log=(output/'inference_stderr.log').open('w')
+        self.expected_sha256=expected_sha256
         deployment = 'joint_live_bf16_20260922' if bf16 else 'joint_live_matmul_20260922'
         script = 'joint_inference_stdio.py'
         if cuda_graph:
             deployment, script = 'joint_live_graph_20260922', 'graph_inference_stdio.py'
         if task is not None:
             deployment, script = 'joint_live_manual_task_20260922', 'joint_inference_stdio.py'
-        args=['env',f'PYTHONPATH={REMOTE_ROOT}/src','HF_HUB_OFFLINE=1','TRANSFORMERS_OFFLINE=1',
+        script_path=inference_script or f'{remote_root}/artifacts/{deployment}/{script}'
+        checkpoint_path=checkpoint or f'{remote_root}/outputs/joint_legacy_v2_run01/final'
+        args=['env',f'PYTHONPATH={remote_root}/src','HF_HUB_OFFLINE=1','TRANSFORMERS_OFFLINE=1',
             'HF_HUB_DISABLE_TELEMETRY=1','WANDB_MODE=disabled',REMOTE_PYTHON,'-u',
-            f'{REMOTE_ROOT}/artifacts/{deployment}/{script}',
-            '--checkpoint',f'{REMOTE_ROOT}/outputs/joint_legacy_v2_run01/final','--expected-sha256',MODEL_SHA]
+            str(script_path), '--checkpoint',str(checkpoint_path),
+            '--expected-sha256',self.expected_sha256]
         if fast_matmul:
             args.append('--fast-matmul')
         if bf16:
@@ -77,7 +82,7 @@ class InferencePipe:
             stdout=subprocess.PIPE,stderr=self.log,text=True,bufsize=1)
         try:
             ready=self.receive(120)
-            if ready.get('ready') is not True or ready.get('checkpoint_sha256')!=MODEL_SHA or ready.get('contract')!=joint_contract_record():
+            if ready.get('ready') is not True or ready.get('checkpoint_sha256')!=self.expected_sha256 or ready.get('contract')!=joint_contract_record():
                 raise ValueError('inference identity mismatch')
             if bool(ready.get('bf16',False)) != bf16:
                 raise ValueError('inference precision mismatch')
@@ -106,7 +111,7 @@ class InferencePipe:
         wire = json.dumps(packet)+'\n'
         self.process.stdin.write(wire);self.process.stdin.flush()
         result=self.receive(2)
-        if result.get('id')!=index or result.get('checkpoint_sha256')!=MODEL_SHA or result.get('shape')!=[50,7]:
+        if result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256 or result.get('shape')!=[50,7]:
             raise ValueError('invalid prediction identity or shape')
         finite_vector(result['raw_action'],7,'raw model action')
         finite_vector(result['action'],7,'decoded model action')
@@ -171,12 +176,12 @@ class ReadOnlyStation:
         else:raise ValueError(f'unknown suction output pair: {pins}')
         return q+[suction],tcp[:3],ts
 
-    def observe(self, *, require_stationary=True, state_snapshot=None):
+    def observe(self, *, require_stationary=True, state_snapshot=None, max_camera_age_ms=100):
         if state_snapshot is not None and require_stationary:
             raise ValueError('state reuse only applies to moving observations')
         images={};times=[]
         for name in ('global_rgb','grasp_rgb'):
-            image,stamp=self.cameras[name].read_latest_with_timestamp(max_age_ms=100)
+            image,stamp=self.cameras[name].read_latest_with_timestamp(max_age_ms=max_camera_age_ms)
             if stamp<=self.previous.get(name,-1):raise ValueError(f'repeated camera frame: {name}')
             if image.shape!=(480,640,3) or str(image.dtype)!='uint8':raise ValueError('camera schema mismatch')
             images[name]=image.copy();times.append(stamp);self.previous[name]=stamp

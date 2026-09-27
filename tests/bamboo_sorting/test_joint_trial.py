@@ -458,13 +458,19 @@ def test_current_timestamp_starts_at_joint_read_and_no_unused_speed_rpc(monkeypa
     assert stamp==calls[0]==10.2 and q==pytest.approx([*START_DEG,0])
 
 
-def test_observe_reuses_state_without_refreshing_its_timestamp():
+@pytest.mark.parametrize('max_camera_age_ms',[100,250])
+def test_observe_reuses_state_without_refreshing_its_timestamp(max_camera_age_ms):
     import numpy as np
     from types import SimpleNamespace
-    m=load_entry();s=m.ReadOnlyStation()
-    s.cameras={name:SimpleNamespace(read_latest_with_timestamp=lambda **kw:(np.zeros((480,640,3),dtype=np.uint8),10.02)) for name in ('global_rgb','grasp_rgb')}
+    m=load_entry();s=m.ReadOnlyStation();ages=[]
+    def read(**kw):
+        ages.append(kw['max_age_ms'])
+        return np.zeros((480,640,3),dtype=np.uint8),10.02
+    s.cameras={name:SimpleNamespace(read_latest_with_timestamp=read) for name in ('global_rgb','grasp_rgb')}
     def fail(**kwargs):raise AssertionError('duplicate robot RPC')
     s.current=fail
     snapshot=([*START_DEG,0],[.2,-.5,.3],10.)
-    state,images,stamps=s.observe(require_stationary=False,state_snapshot=snapshot)
+    state,images,stamps=s.observe(require_stationary=False,state_snapshot=snapshot,
+                                  max_camera_age_ms=max_camera_age_ms)
     assert state==snapshot[0] and stamps==[10.02,10.02,10.]
+    assert ages==[max_camera_age_ms,max_camera_age_ms]

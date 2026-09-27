@@ -94,9 +94,16 @@ def read_data_manifest(path):
         result["source_dataset_root"] = source
         return result
     train = [resolve(item) for item in value["train"]]
-    validation = resolve(value.get("validation"))
+    validation_value = value.get("validation")
+    if isinstance(validation_value, list):
+        if not validation_value:
+            raise ValueError("manifest requires nonempty validation sources")
+        validation = [resolve(item) for item in validation_value]
+    else:
+        validation = resolve(validation_value)
+    validations = validation if isinstance(validation, list) else [validation]
     for key in ("root", "evidence_root", "source_dataset_root"):
-        paths = [Path(item[key]) for item in [*train, validation]]
+        paths = [Path(item[key]) for item in [*train, *validations]]
         for i, p in enumerate(paths):
             if any(p == q or p in q.parents or q in p.parents for q in paths[:i]):
                 raise ValueError(f"duplicate or nested manifest {key}")
@@ -105,7 +112,9 @@ def read_data_manifest(path):
 
 def prepare_training_manifest(path):
     sources = read_data_manifest(path)
-    validation = sources["validation"]
+    validations = sources["validation"]
+    validations = validations if isinstance(validations, list) else [validations]
+    validation = validations[0]
     parts = [prepare_training_data(
         item["root"], item["evidence_root"], validation["root"], validation["evidence_root"],
         train_source_root=item["source_dataset_root"],
@@ -113,6 +122,18 @@ def prepare_training_manifest(path):
     ) for item in sources["train"]]
     if any(part["validation"] != parts[0]["validation"] for part in parts):
         raise ValueError("validation changed during preparation")
+    validation_records = [parts[0]["validation"]]
+    for item in validations[1:]:
+        extra = prepare_training_data(
+            sources["train"][0]["root"], sources["train"][0]["evidence_root"],
+            item["root"], item["evidence_root"],
+            train_source_root=sources["train"][0]["source_dataset_root"],
+            validation_source_root=item["source_dataset_root"],
+        )
+        validation_records.append(extra["validation"])
+    train_scenes = {scene for part in parts for scene in part["train"]["scenes"]}
+    if any(train_scenes.intersection(record["scenes"]) for record in validation_records):
+        raise ValueError("scene leakage between training and validation")
     # Pool by selected frame counts, not by the number of source folders.
     weights = np.asarray([part["train"]["frames"] for part in parts], dtype=np.float64)
     weights /= weights.sum()
@@ -127,9 +148,15 @@ def prepare_training_manifest(path):
                       "min": np.min([v["min"] for v in values], axis=0).tolist(),
                       "max": np.max([v["max"] for v in values], axis=0).tolist()}
     require_joint_normalization_stats(stats)
+    validation_record = validation_records[0] if len(validation_records) == 1 else {
+        "sources": validation_records,
+        "frames": sum(record["frames"] for record in validation_records),
+        "scenes": sorted({scene for record in validation_records for scene in record["scenes"]}),
+        "capture_complete": all(record["capture_complete"] for record in validation_records),
+    }
     return {**parts[0], "train": {"sources": [part["train"] for part in parts],
         "frames": sum(part["train"]["frames"] for part in parts),
-        "scenes": sorted({scene for part in parts for scene in part["train"]["scenes"]})},
+        "scenes": sorted(train_scenes)}, "validation": validation_record,
         "train_only_stats": stats}
 
 
