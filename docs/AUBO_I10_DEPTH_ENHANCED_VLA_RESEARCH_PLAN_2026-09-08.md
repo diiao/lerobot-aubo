@@ -1,5 +1,10 @@
 # AUBO i10 多视 RGB VLA 木条分拣研究规划（Depth No-Go 决策修订版）
 
+> **2026-09-27 状态勘误：**本文的 C0 数据与“当前／下一步”是 2026-09-21 的历史快照。
+> 本机 `datasets/c0_*` 及 `artifacts/c0_*` 已按授权清理；文中的相应文件路径现已失效。
+> 现行路线是双路 RGB、七维绝对关节 SmolVLA，J5 由模型预测。请先阅读
+> [本地数据清理与现行数据索引](AUBO_I10_LOCAL_DATA_CLEANUP_2026-09-27.md)。
+
 > 文档日期：2026-09-08
 >
 > 审核修订：2026-09-21（`C0PretrainingReadinessV1`；此前为 `ACTComparisonClosureV1`、
@@ -570,11 +575,11 @@ PolicyPredictionV1
 6. **C3 语言主实验**：基础抓放稳定后采集长/短木条 × A/B 区四种组合各至少 20 个；
 7. **C4 压力扩展**：核心论文实验完成后，才决定是否采集 5～10 根最多 40 个。
 
-C0-Pilot 当前聚合数据位于 `datasets/c0_pilot_single_strip_20260921_12/`，完整文件 SHA-256 清单位于
-`artifacts/c0_pilot_aggregate/c0_pilot_single_strip_20260921_12/MANIFEST.sha256`。此前
-`artifacts/c0_pretraining/c0_formal_single_strip_20260921_full/` 仅作为十条数据的历史证据快照保留；其
-数据摘要仍可追溯到源批次，但旧聚合目录已经按操作者授权删除。上述证据不构成上传、训练、推理或策略
-执行授权。C1/C2/C3 不前置到首次固定 SmolVLA pilot run，避免用扩大数据量代替对最小训练链路的验证。
+C0-Pilot 当时的聚合数据位于 `datasets/c0_pilot_single_strip_20260921_12/`，完整文件 SHA-256 清单
+曾位于 `artifacts/c0_pilot_aggregate/c0_pilot_single_strip_20260921_12/MANIFEST.sha256`；
+`artifacts/c0_pretraining/c0_formal_single_strip_20260921_full/` 曾作为十条数据的历史证据快照。
+这些本机数据及产物已于 2026-09-27 按授权删除，不能再按上述路径复核。以下 C1/C2/C3 安排
+保留为当时规划，不代表现行七维关节路线的下一步。
 
 每批结束都冻结并审计清单、同步统计、机位验收、动作跳变、人工结果标签和 split。相机移动、动作契约
 或语言映射发生实质变化时必须提升数据版本，不能与前一批静默混合。VLM 所需正例和安全自然发生的
