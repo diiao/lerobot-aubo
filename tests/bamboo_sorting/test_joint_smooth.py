@@ -44,18 +44,90 @@ def load_entry(monkeypatch):
     return m
 
 
-def test_plan_does_not_connect(monkeypatch):
+@pytest.mark.parametrize('model,expected_cycles',[('legacy-single',1),('mixed-double',2)])
+def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
     m=load_entry(monkeypatch)
     def fail(*a,**k):raise AssertionError('device touched')
     monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
-    assert m.main([])==0
+    assert m.main(['--model',model])==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['requested_suction_cycles']==expected_cycles
+    assert plan['max_seconds']==(360 if model=='mixed-double' else 120)
+    assert plan['servo_command_time_s']==(.08 if model=='mixed-double' else DT)
+    assert plan['max_camera_age_ms']==(250 if model=='mixed-double' else 100)
+    assert plan['checkpoint_sha256']==(m.MIXED_MODEL_SHA if expected_cycles==2 else m.MODEL_SHA)
+    assert plan['startup_release_if_unset']=='operator_confirmed'
 
 
-@pytest.mark.parametrize('inference_error',[False,True,'hung'])
-def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,inference_error):
+@pytest.mark.parametrize('answer,release_ok,expected_return',[
+    ('q',True,0),('',True,0),('',False,1),
+])
+def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,answer,release_ok,expected_return):
+    from lerobot.robots.aubo_i10 import aubo_i10
+    m=load_entry(monkeypatch);events=[]
+    monkeypatch.setattr(m.sys.stdin,'isatty',lambda:True)
+    monkeypatch.setattr(m,'read_task',lambda:'Pick one strip and place it in the collection area.')
+    replies=iter([answer,'q'])
+    monkeypatch.setattr('builtins.input',lambda prompt:next(replies))
+    class Station:
+        def __init__(self):
+            self.iface=self;self.state=self;self.algorithm=self;self.io_readback=self
+            self.pins=(False,False)
+            station[0]=self
+        def connect(self):pass
+        def close(self):events.append('station_closed')
+        def current(self,**kw):
+            if self.pins==(False,False):raise ValueError('unknown suction output pair: (False, False)')
+            return [*START_DEG,0],[.2,-.5,.3],1.
+        def getMotionControl(self):return self
+        def isServoModeEnabled(self):return False
+        def isSteady(self):return True
+        def forwardKinematics(self,q):return [.2,-.5,.3,0,0,0],0
+    class Pipe:
+        def __init__(self,*args,**kwargs):pass
+        def close(self):events.append('pipe_closed')
+        def predict(self,*args):raise AssertionError('inference before start')
+    class Suction:
+        last_gripper_command_trace=None
+        def __init__(self,*args):pass
+        def suction_release(self):
+            events.append('release')
+            self.last_gripper_command_trace={'do_api_success':release_ok}
+            if release_ok:station[0].pins=(False,True)
+            return release_ok
+    station=[None]
+    monkeypatch.setattr(m,'ReadOnlyStation',Station)
+    monkeypatch.setattr(m,'InferencePipe',Pipe)
+    monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
+    out=tmp_path/'run'
+    assert m.main(['--execute','--model','mixed-double','--output',str(out)])==expected_return
+    result=json.loads((out/'complete.json').read_text())
+    assert result['sent_frames']==result['predictions']==0
+    assert events.count('release')==(0 if answer else 1)
+    assert events[-2:]==['station_closed','pipe_closed']
+    if answer:
+        assert result['reason']=='cancelled' and result['failure'] is None
+        assert not (out/'final_state.json').exists()
+    elif release_ok:
+        assert result['reason']=='cancelled' and result['failure'] is None
+        assert (out/'final_state.json').exists()
+    else:
+        assert 'initial suction release failed' in result['failure']
+    if not answer:
+        trace=json.loads((out/'trace.jsonl').read_text().strip())
+        assert trace['initial_suction_release']['do_api_success']==release_ok
+
+
+@pytest.mark.parametrize('model,expected_cycles,inference_error,slow_fk',[
+    ('legacy-single',1,False,False),('legacy-single',1,True,False),('legacy-single',1,'hung',False),
+    ('mixed-double',2,False,False),('mixed-double',2,True,False),('mixed-double',2,'hung',False),
+    ('mixed-double',2,False,True),
+])
+def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,inference_error,slow_fk,model,expected_cycles):
     import numpy as np
     from lerobot.robots.aubo_i10 import aubo_i10
     m=load_entry(monkeypatch);clock=[10.];events=[];state=[*START_DEG,0];enabled=[False]
+    delayed=[False];state_reads=[0]
     def sleep(s):clock[0]+=s
     monkeypatch.setattr(m.time,'perf_counter',lambda:clock[0]);monkeypatch.setattr(m.time,'sleep',sleep)
     monkeypatch.setattr(m.sys.stdin,'isatty',lambda:True)
@@ -67,8 +139,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         def __init__(self):self.iface=self;self.state=self;self.algorithm=self;self.io_readback=self
         def connect(self):pass
         def close(self):pass
-        def current(self,**kw):return state.copy(),[.2,-.5,.3],clock[0]
+        def current(self,**kw):
+            state_reads[0]+=1
+            return state.copy(),[.2,-.5,.3],clock[0]
         def observe(self,**kw):
+            assert kw['max_camera_age_ms']==(250 if model=='mixed-double' else 100)
             if 'state_snapshot' in kw:
                 assert kw['state_snapshot'][0][-1]==state[-1]
             return state.copy(),{},[clock[0]-.050327,clock[0],clock[0]]
@@ -76,14 +151,26 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         def isSteady(self):return True
         def isServoModeEnabled(self):return enabled[0]
         def setServoMode(self,value):events.append(('mode',value));enabled[0]=value;return 0
-        def servoJoint(self,q,*args):events.append(('send',clock[0]));state[:6]=[math.degrees(x) for x in q];return 0
-        def forwardKinematics(self,q):return [.2,-.5,.3,0,0,0],0
+        def servoJoint(self,q,*args):
+            assert args[2]==(.08 if model=='mixed-double' else DT)
+            events.append(('send',clock[0]));state[:6]=[math.degrees(x) for x in q];return 0
+        def forwardKinematics(self,q):
+            if slow_fk and not delayed[0] and len([e for e in events if e[0]=='send'])>=3:
+                delayed[0]=True;clock[0]+=.11
+            return [.2,-.5,.3,0,0,0],0
     class Pipe:
-        def __init__(self,*a,**kw):pass
+        def __init__(self,*a,**kw):
+            if model=='mixed-double':
+                assert kw['expected_sha256']==m.MIXED_MODEL_SHA
+                assert kw['checkpoint']==m.MIXED_CHECKPOINT
+                assert kw['inference_script']==m.MIXED_INFERENCE_SCRIPT
+            else:
+                assert 'expected_sha256' not in kw
         def close(self):pass
         def predict(self,index,*a):
             if inference_error and index:raise RuntimeError('inference failed')
-            return {'action':[*START_DEG,0 if inference_error or index else 100]}
+            suction=0 if inference_error else (100 if index in ((0,2) if model=='mixed-double' else (0,)) else 0)
+            return {'action':[*START_DEG,suction]}
     class Future:
         def __init__(self,fn,args):self.fn=fn;self.args=args;self.ready=clock[0]+.14
         def done(self):
@@ -97,7 +184,8 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     class Suction:
         last_gripper_command_trace=None
         def __init__(self,*args):pass
-        def _control_suction_based_on_gripper(self,x):state[-1]=x;self.last_gripper_command_trace={'target':x}
+        def _control_suction_based_on_gripper(self,x):
+            state[-1]=x;self.last_gripper_command_trace={'target':x};events.append(('suction',x))
     class Recorder:
         def __init__(self,*args):pass
         def start(self):events.append(('video_start',True))
@@ -108,13 +196,19 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     monkeypatch.setattr(m,'ThreadPoolExecutor',Pool);monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
     monkeypatch.setattr(m,'TrialVideoRecorder',Recorder)
     out=tmp_path/'run'
-    assert m.main(['--execute','--output',str(out)])==int(bool(inference_error))
+    assert m.main(['--execute','--model',model,'--output',str(out)])==int(bool(inference_error))
     assert [e for e in events if e[0]=='mode']==[('mode',True),('mode',False)]
     assert len([e for e in events if e[0]=='send'])>1 and not enabled[0]
     r=json.loads((out/'complete.json').read_text())
     assert r['suction_cycle_commanded']==(not inference_error)
+    assert r['requested_suction_cycles']==expected_cycles
+    assert r['completed_suction_cycles']==(expected_cycles if not inference_error else 0)
+    assert [x for kind,x in events if kind=='suction']==([100,0]*expected_cycles if not inference_error else [])
     assert r['video']['complete'] and events[0][0]=='video_start' and events[-1][0]=='video_close'
-    assert 'observation_skipped' not in (out/'trace.jsonl').read_text()
+    trace=(out/'trace.jsonl').read_text()
+    assert 'observation_skipped' not in trace
+    assert ('state_refresh_before_servo' in trace)==slow_fk
+    if slow_fk:assert delayed[0] and state_reads[0]>len([e for e in events if e[0]=='send'])
 
 
 def test_j6_goal_jump_is_smoothed_and_servo_tracking_still_checked():

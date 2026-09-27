@@ -13,7 +13,7 @@ from pathlib import Path
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("plan", "preflight", "smoke", "train", "evaluate"), default="plan")
-    parser.add_argument("--data-manifest", type=Path, help="Explicit multiple training sources and one validation source")
+    parser.add_argument("--data-manifest", type=Path, help="Explicit training and validation sources")
     for name in ("train-root", "train-evidence", "validation-root", "validation-evidence",
                  "train-source-root", "validation-source-root", "base-path", "vlm-path", "output", "checkpoint"):
         parser.add_argument(f"--{name}", type=Path)
@@ -44,8 +44,10 @@ def parse_args(argv=None):
         if args.data_manifest is not None:
             from lerobot.bamboo_sorting.joint_training import read_data_manifest
             sources = read_data_manifest(args.data_manifest)
+            validations = sources["validation"]
+            validations = validations if isinstance(validations, list) else [validations]
             protected = [args.data_manifest.resolve(), *[Path(item[key])
-                for item in [*sources["train"], sources["validation"]] for key in ("root", "evidence_root")]]
+                for item in [*sources["train"], *validations] for key in ("root", "evidence_root")]]
             if any(output == p or p in output.parents or output in p.parents for p in protected):
                 parser.error("output must be independent of manifest and source roots")
         for path in (args.train_root, args.validation_root, args.train_evidence, args.validation_evidence,
@@ -247,7 +249,10 @@ def run_model(args, prepared):
             write_json(args.output / "complete.json", {"stage": "synthetic_smoke", "passed": True,
                 "optimizer_steps": 0, "physical_success_verified": False})
             return
-    states, targets, predictions, episodes, frames, losses = [], [], [], [], [], []
+    states, targets, predictions, episodes, frames, source_indices, losses = [], [], [], [], [], [], []
+    validation_sources = prepared["validation"].get("sources", [prepared["validation"]])
+    source_boundaries = np.cumsum([source["frames"] for source in validation_sources])
+    observed_frames = 0
     policy.eval()
     with torch.inference_mode():
         for raw in loader(dataset("validation")):
@@ -260,13 +265,34 @@ def run_model(args, prepared):
             predictions.extend(predicted)
             episodes.extend(raw["episode_index"].tolist())
             frames.extend(raw["frame_index"].tolist())
+            batch_frames = len(raw["episode_index"])
+            source_indices.extend(np.searchsorted(source_boundaries,
+                np.arange(observed_frames, observed_frames + batch_frames), side="right").tolist())
+            observed_frames += batch_frames
             losses.extend(loss.cpu().tolist())
+    if observed_frames != prepared["validation"]["frames"]:
+        raise ValueError("validation frame count changed")
     np.savez_compressed(args.output / "heldout_predictions.npz", states=states, targets=targets,
-        predictions=predictions, episode_index=episodes, frame_index=frames)
+        predictions=predictions, episode_index=episodes, frame_index=frames,
+        source_index=source_indices)
     metrics = prediction_metrics(states, targets, predictions)
     metrics.update(validation_loss=float(np.mean(losses)), prediction="first_action_from_saved_expert_observations",
                    policy_execution_authorized=False)
     write_json(args.output / "validation.json", metrics)
+    source_indices_array = np.asarray(source_indices)
+    states_array, targets_array, predictions_array = map(np.asarray, (states, targets, predictions))
+    losses_array = np.asarray(losses)
+    by_source = []
+    for index, source in enumerate(validation_sources):
+        mask = source_indices_array == index
+        result = prediction_metrics(states_array[mask], targets_array[mask], predictions_array[mask])
+        result.update(source_index=index, root=source["root"],
+                      validation_loss=float(losses_array[mask].mean()),
+                      prediction="first_action_from_saved_expert_observations",
+                      policy_execution_authorized=False)
+        by_source.append(result)
+    write_json(args.output / "validation_by_source.json", {"sources": by_source,
+        "physical_success_verified": False, "policy_execution_authorized": False})
     write_json(args.output / "complete.json", {"stage": args.stage, "completed": True,
         "policy_execution_authorized": False, "physical_success_verified": False})
 

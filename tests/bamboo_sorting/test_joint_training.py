@@ -43,6 +43,20 @@ def test_refuses_output_inside_input(tmp_path):
             "--vlm-path", str(tmp_path / "vlm"), "--output", str(tmp_path / "output")])
 
 
+def test_manifest_refuses_output_inside_second_validation_source(tmp_path, capsys):
+    import json
+    value = {"schema_version": "AuboJointTrainingSourcesV1",
+             "train": [{"root": "train", "evidence_root": "train-evidence"}],
+             "validation": [{"root": "validation1", "evidence_root": "validation-evidence1"},
+                            {"root": "validation2", "evidence_root": "validation-evidence2"}]}
+    manifest = tmp_path / "sources.json"
+    manifest.write_text(json.dumps(value))
+    with pytest.raises(SystemExit):
+        _entry().parse_args(["--stage", "preflight", "--data-manifest", str(manifest),
+            "--output", str(tmp_path / "validation2" / "output")])
+    assert "output must be independent" in capsys.readouterr().err
+
+
 def test_train_statistics_exclude_failed_and_validation_episodes(tmp_path, monkeypatch):
     train, val = tmp_path / "train", tmp_path / "validation"
     for root in (train, val):
@@ -90,11 +104,14 @@ def test_manifest_pools_selected_frames_and_rejects_duplicate_sources(tmp_path, 
               np.array([[10] * 7, [20] * 7, [30] * 7, [40] * 6 + [100]], dtype=float)]
     def prepare(root, evidence, validation, ve, **kwargs):
         idx = int(Path(root).name[-1]);a = arrays[idx]
+        validation_name = Path(validation).name
         stats = {k: {"mean": a.mean(0).tolist(), "std": a.std(0).tolist(),
                      "min": a.min(0).tolist(), "max": a.max(0).tolist()}
                  for k in ("action", "observation.state")}
         return {"train": {"frames": len(a), "scenes": [str(idx)], "root": root},
-                "validation": {"root": validation}, "train_only_stats": stats}
+                "validation": {"root": validation, "frames": 3 if validation_name == "val" else 2,
+                    "scenes": ["1" if validation_name == "val-overlap" else validation_name],
+                    "capture_complete": True}, "train_only_stats": stats}
     monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_data", prepare)
     value = {"schema_version": "AuboJointTrainingSourcesV1", "train": [
         {"root": "train0", "evidence_root": "ev0"}, {"root": "train1", "evidence_root": "ev1"}],
@@ -107,6 +124,21 @@ def test_manifest_pools_selected_frames_and_rejects_duplicate_sources(tmp_path, 
     value["train"].append(value["train"][0]);path.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="duplicate"):
         read_data_manifest(path)
+    value["train"].pop()
+    value["validation"] = [{"root": "val", "evidence_root": "ve"},
+                           {"root": "val2", "evidence_root": "ve2"}]
+    path.write_text(json.dumps(value))
+    result = prepare_training_manifest(path)
+    assert result["validation"]["frames"] == 5
+    assert [Path(item["root"]).name for item in result["validation"]["sources"]] == ["val", "val2"]
+    value["validation"][1] = value["validation"][0]
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="duplicate"):
+        read_data_manifest(path)
+    value["validation"][1] = {"root": "val-overlap", "evidence_root": "ve2"}
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="scene leakage"):
+        prepare_training_manifest(path)
 
 
 def test_concat_preserves_source_local_action_chunks(monkeypatch):
@@ -197,6 +229,8 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
     if multiple_sources:
         prepared["train"] = {"sources": [prepared["train"],
             {"root": str(tmp_path / "train2"), "episodes": [0], "frames": 3}], "frames": 6}
+        prepared["validation"] = {"sources": [prepared["validation"],
+            {"root": str(tmp_path / "validation2"), "episodes": [0], "frames": 3}], "frames": 6}
     monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_data", lambda *args, **kwargs: prepared)
     data_args = ["--train-root", str(tmp_path / "train"), "--train-evidence", str(tmp_path / "te"),
                  "--validation-root", str(tmp_path / "validation"), "--validation-evidence", str(tmp_path / "ve")]
@@ -206,7 +240,12 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
         "--base-path", str(base), "--vlm-path", str(vlm), "--output", str(output), *data_args]) == 0
     assert json.loads((output / "reload_check.json").read_text())["identical_prediction"]
     assert len((output / "training.jsonl").read_text().splitlines()) == 2
-    assert json.loads((output / "validation.json").read_text())["activate_samples"] == 1
+    assert json.loads((output / "validation.json").read_text())["activate_samples"] == (2 if multiple_sources else 1)
+    prediction_sources = np.load(output / "heldout_predictions.npz")["source_index"]
+    assert prediction_sources.tolist() == ([0, 0, 0, 1, 1, 1] if multiple_sources else [0, 0, 0])
+    by_source = json.loads((output / "validation_by_source.json").read_text())["sources"]
+    assert [item["frames"] for item in by_source] == ([3, 3] if multiple_sources else [3])
+    assert [item["activate_samples"] for item in by_source] == ([1, 1] if multiple_sources else [1])
     assert entry.main(["--stage", "evaluate", "--checkpoint", str(output / "final"),
                        "--output", str(tmp_path / "evaluation"), *data_args]) == 0
     assert json.loads((tmp_path / "evaluation/complete.json").read_text())["completed"]

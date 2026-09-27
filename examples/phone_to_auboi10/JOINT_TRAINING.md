@@ -11,7 +11,7 @@
 - 新部署：`/home/rentao/program/lerobot-aubo-smolvla-joint-legacy-v2-20260922`。
 - 复用 Python：`/home/rentao/program/lerobot-aubo-smolvla-c0-pilot-b3a9c8a/.venv/bin/python`，不安装依赖。
 - 工作站准备证据：`artifacts/aubo_joint_legacy_preparation_20260922/`。
-- `sources.json` 使用 `AuboJointTrainingSourcesV1`：`train` 为 8 个来源列表，`validation` 为一个来源对象。每个来源含 `root`、`evidence_root`、`source_dataset_root`；前两项相对于清单目录解析，最后一项保留采集时的绝对路径。
+- `sources.json` 使用 `AuboJointTrainingSourcesV1`：`train` 为来源列表，`validation` 可为一个来源对象或来源列表。每个来源含 `root`、`evidence_root`、`source_dataset_root`；前两项相对于清单目录解析，最后一项保留采集时的绝对路径。多个验证来源分别保留于预检结果，并在 `heldout_predictions.npz` 的 `source_index` 和 `validation_by_source.json` 中区分。
 - 训练入口增加 `--data-manifest`，与原来的独立目录参数互斥；原单目录用法保留。数据各自构造 50 步动作块后再拼接，不重写原始条目或证据。
 - 归一化只使用选中的成功训练帧，按帧数合并统计；工作站已与全部原始训练行直接计算的均值、标准差对比一致。
 

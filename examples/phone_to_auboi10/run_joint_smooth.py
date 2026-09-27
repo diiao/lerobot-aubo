@@ -20,20 +20,40 @@ from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
 from lerobot.bamboo_sorting.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
     MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace)
 
+MIXED_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-mixed-20260927'
+MIXED_MODEL_SHA='79eb23606f6aa4e77484dd4bbf16a8cd273bb6a17ccfc9668ef44a4e2ed22ac7'
+MIXED_CHECKPOINT=f'{MIXED_REMOTE_ROOT}/outputs/joint_mixed_single60_double50_run01/final'
+MIXED_INFERENCE_SCRIPT=f'{MIXED_REMOTE_ROOT}/artifacts/aubo_joint_two_strip_top45_pilot_20260927/joint_inference_stdio.py'
+
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
+    p.add_argument('--model',choices=('legacy-single','mixed-double'),default='legacy-single')
     args=p.parse_args(argv)
-    plan={'mode':'asynchronous_inference_continuous_servo','checkpoint_sha256':MODEL_SHA,
+    mixed=args.model=='mixed-double'
+    expected_cycles=2 if mixed else 1
+    max_seconds=360 if mixed else 120
+    servo_command_time=.08 if mixed else DT
+    max_camera_age_ms=250 if mixed else 100
+    model_sha=MIXED_MODEL_SHA if mixed else MODEL_SHA
+    pipe_options=({'remote_root':MIXED_REMOTE_ROOT,'checkpoint':MIXED_CHECKPOINT,
+                   'expected_sha256':MIXED_MODEL_SHA,'inference_script':MIXED_INFERENCE_SCRIPT}
+                  if mixed else {})
+    plan={'mode':'asynchronous_inference_continuous_servo','model':args.model,
+          'checkpoint_sha256':model_sha,'requested_suction_cycles':expected_cycles,
           'camera_set_sha256':hashlib.sha256(CAMERA_SET.read_bytes()).hexdigest(),'control_hz':1/DT,
           'joint_speed_deg_s':MAX_SPEED,'joint_acceleration_deg_s2':MAX_ACCEL,'tcp_speed_m_s':MAX_TCP_SPEED,
           'max_prediction_delta_deg':None,'max_prediction_delta_m':None,
           'max_servo_tracking_error_deg':MAX_TRACKING_ERROR_DEG,
           'max_prediction_age_s':MAX_PREDICTION_AGE,'watchdog_s':MAX_WITHOUT_PREDICTION,
           'max_camera_skew_s':MAX_CAMERA_SKEW,
+          'max_camera_age_ms':max_camera_age_ms,
           'rpc_timeout_ms':RPC_TIMEOUT_MS,'max_control_gap_s':.35,
-          'suction_writes':True,'max_seconds':120,'automatic_home':False,'automatic_release':False,
+          'max_state_age_s':.1,'stale_state_refreshes_per_step':1 if mixed else 0,
+          'servo_command_time_s':servo_command_time,
+          'suction_writes':True,'max_seconds':max_seconds,'automatic_home':False,'automatic_release':False,
+          'startup_release_if_unset':'operator_confirmed',
           'servo_disable_confirmation_timeout_s':1.0,'video_recording':{'enabled':True,'fps':25,'directory':'videos'}}
     if not args.execute:print(json.dumps(plan,indent=2));return 0
     if not sys.stdin.isatty():p.error('interactive terminal required')
@@ -44,29 +64,42 @@ def main(argv=None):
     output=args.output or Path('artifacts')/('joint_smooth_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
     output.mkdir(parents=True,exist_ok=False);write(output/'plan.json',plan)
     station=ReadOnlyStation();pipe=None;pool=None;servo=None;owned=False;failure=None
-    reason='not_started';sent=0;predictions=0;seen_on=False;cycle=False
+    initial_state_known=False
+    reason='not_started';sent=0;predictions=0;completed_cycles=0;cycle=False
     recorder=None;video_result=None
     trace=(output/'trace.jsonl').open('w',buffering=1)
     commands=(output/'commands.jsonl').open('w',buffering=1)
     def log(f,value):f.write(json.dumps(value,allow_nan=False)+'\n')
     try:
         print('加载模型、连接相机；尚未发送运动。',flush=True)
-        pipe=InferencePipe(output,task=task);station.connect()
-        state,tcp,_=station.current()
-        if state[-1]!=0 or max(abs(a-b) for a,b in zip(state[:6],START_DEG))>1.5:
-            raise ValueError('请先归位并关闭吸盘，再启动')
-        motion=station.iface.getMotionControl();servo=SingleStepSession(motion)
+        pipe=InferencePipe(output,task=task,**pipe_options);station.connect()
+        motion=station.iface.getMotionControl()
         if motion.isServoModeEnabled():raise RuntimeError('existing servo owner')
         from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot
         from lerobot.robots.aubo_i10.config_aubo_i10 import AuboI10Config
         suction=AuboI10Robot(AuboI10Config());suction.io_control=station.io_readback
+        try:
+            state,tcp,_=station.current()
+        except ValueError as exc:
+            if str(exc)!='unknown suction output pair: (False, False)':raise
+            print('DO2/DO3 均为低电平，当前吸盘指令状态未知。',flush=True)
+            if input('确认吸盘未持物。按回车仅发送释放指令并核对输出，输入 q 退出：').strip():
+                reason='cancelled';return 0
+            try:
+                if not suction.suction_release():raise RuntimeError('initial suction release failed')
+            finally:log(trace,{'initial_suction_release':suction.last_gripper_command_trace})
+            state,tcp,_=station.current()
+        initial_state_known=True
+        if state[-1]!=0 or max(abs(a-b) for a,b in zip(state[:6],START_DEG))>1.5:
+            raise ValueError('请先归位并关闭吸盘，再启动')
+        servo=SingleStepSession(motion)
         def fk(q):
             pose,ret=station.algorithm.forwardKinematics([math.radians(x) for x in q])
             if ret!=0:raise ValueError(f'FK failed: {ret}')
             return list(finite_vector(pose,6,'FK')[:3])
         if math.dist(fk(state[:6]),tcp)>.001:raise ValueError('FK/current TCP mismatch')
         print(f'记录：{output.resolve()}\n持续伺服；Ctrl+C停止，停止不自动释放吸盘。',flush=True)
-        if input('现场无人、急停在手边。按回车开始，输入q退出：').strip():
+        if input('确认工作区无人、操作者在场且急停在手边。按回车开始，输入q退出：').strip():
             reason='cancelled';return 0
         recorder=TrialVideoRecorder(station.cameras,output);recorder.start()
         print(f'双相机录像已启动：{output.resolve()}/videos/',flush=True)
@@ -80,7 +113,8 @@ def main(argv=None):
                         raise RuntimeError('snapshot save failed')
             return result
         future=None;goal=None;pending_suction=False;last_observation=None;trajectory=None
-        deadline=time.perf_counter()+120;next_tick=time.perf_counter();last_tick=next_tick
+        last_servo_sent_at=None
+        deadline=time.perf_counter()+max_seconds;next_tick=time.perf_counter();last_tick=next_tick
         prediction_deadline=None
         reason='time_limit';held_suction=0.
         while time.perf_counter()<deadline:
@@ -111,9 +145,21 @@ def main(argv=None):
                     raise TimeoutError('suction transition target not reached within 1.5 seconds')
                 q,target_tcp=trajectory.advance(goal[:6],fk)
                 require_joint_target(q,state[:6],station.lower,station.upper,MAX_TRACKING_ERROR_DEG)
-                if time.perf_counter()-stamp>.1:raise TimeoutError('current state expired')
+                state_age=time.perf_counter()-stamp
+                if state_age>.1:
+                    if not mixed:raise TimeoutError('current state expired')
+                    state,tcp,stamp=station.current(require_stationary=False)
+                    if state[-1]!=held_suction:raise ValueError('external suction state change')
+                    workspace(tcp)
+                    require_joint_target(q,state[:6],station.lower,station.upper,MAX_TRACKING_ERROR_DEG)
+                    if time.perf_counter()-stamp>.1:raise TimeoutError('current state expired after refresh')
+                    log(trace,{'state_refresh_before_servo':{'previous_age_s':state_age}})
+                command_started_at=time.perf_counter()
+                if mixed and last_servo_sent_at is not None and command_started_at-last_servo_sent_at>.35:
+                    raise TimeoutError('servo command gap exceeded 350 ms')
                 servo._require_zero(motion.servoJoint([math.radians(x) for x in q],math.radians(MAX_ACCEL),
-                    math.radians(MAX_SPEED),DT,0.,200.),'servoJoint')
+                    math.radians(MAX_SPEED),servo_command_time,0.,200.),'servoJoint')
+                last_servo_sent_at=command_started_at
                 sent+=1
                 log(commands,{'time':time.perf_counter(),'state':state,'command':q,'velocity':trajectory.v,
                     'target':goal,'tcp':tcp,'command_tcp':target_tcp})
@@ -122,9 +168,14 @@ def main(argv=None):
                     suction.is_suction_on=held_suction==100
                     try:suction._control_suction_based_on_gripper(goal[-1])
                     finally:log(trace,{'suction':suction.last_gripper_command_trace})
-                    held_suction=goal[-1];pending_suction=False;seen_on=seen_on or held_suction==100
-                    cycle=seen_on and held_suction==0
-                    if cycle:reason='model_suction_cycle_completed';break
+                    previous_suction=held_suction
+                    held_suction=goal[-1];pending_suction=False
+                    if previous_suction==100 and held_suction==0:
+                        completed_cycles+=1
+                        if completed_cycles==expected_cycles:
+                            cycle=True
+                            reason='model_suction_cycle_completed' if not mixed else 'model_suction_cycles_completed'
+                            break
                     # IO readback can take 175 ms; do not catch up missed ticks.
                     last_tick=time.perf_counter();next_tick=last_tick+DT
                     # A separate deadline allows a post-IO observation; original
@@ -135,8 +186,10 @@ def main(argv=None):
                     state,tcp,stamp=station.current(require_stationary=False)
                 if sent%25==0:print(f'已发送 {sent} 帧，预测 {predictions} 次，吸盘 {held_suction:.0f}',flush=True)
             if future is None and not pending_suction:
-                observed_state,images,sensor_times=station.observe(require_stationary=False,state_snapshot=(state,tcp,stamp))
-                if time.perf_counter()-min(sensor_times)>.1:raise ValueError('stale input at capture')
+                observed_state,images,sensor_times=station.observe(require_stationary=False,
+                    state_snapshot=(state,tcp,stamp),max_camera_age_ms=max_camera_age_ms)
+                if time.perf_counter()-min(sensor_times)>max_camera_age_ms/1000:
+                    raise ValueError('stale input at capture')
                 future=pool.submit(infer,predictions,observed_state,images)
         if not owned:reason='no_motion'
     except KeyboardInterrupt:reason='operator_interrupt'
@@ -148,7 +201,7 @@ def main(argv=None):
             try:
                 servo._require_zero(servo.motion.setServoMode(False),'disable servo');servo._wait_servo(False,timeout_s=1.)
             except BaseException as exc:failure=f'{failure or ""}; stop: {exc}'
-        if getattr(station,'iface',None) is not None:
+        if initial_state_known and getattr(station,'iface',None) is not None:
             try:
                 q,tcp,stamp=wait_until_stationary(lambda:station.current(require_stationary=False),station.state.isSteady)
                 write(output/'final_state.json',{'state':q,'tcp':tcp,'is_steady':station.state.isSteady(),
@@ -167,6 +220,7 @@ def main(argv=None):
             except BaseException as exc:failure=f'{failure or ""}; cleanup: {exc}'
         trace.close();commands.close()
         write(output/'complete.json',{'reason':reason,'sent_frames':sent,'predictions':predictions,
+            'requested_suction_cycles':expected_cycles,'completed_suction_cycles':completed_cycles,
             'failure':failure,'suction_cycle_commanded':cycle,'physical_grasp_success':None,'video':video_result})
         print(f'结束：{reason}，记录：{output.resolve()}',flush=True)
     return 1 if failure else 0
