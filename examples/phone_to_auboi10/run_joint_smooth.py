@@ -19,7 +19,7 @@ from lerobot.bamboo_sorting.joint_trial import START_DEG,SingleStepSession,wait_
 from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
 from lerobot.bamboo_sorting.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
     MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace,
-    validated_action_chunk,select_approach_action)
+    select_approach_action)
 
 MIXED_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-mixed-20260927'
 MIXED_MODEL_SHA='79eb23606f6aa4e77484dd4bbf16a8cd273bb6a17ccfc9668ef44a4e2ed22ac7'
@@ -157,7 +157,8 @@ def main(argv=None):
                     'sensor_times':sensor_times,'prediction':result,'received_at':time.perf_counter()})
                 candidate=result['action']
                 if approach:
-                    active_chunk=validated_action_chunk(result);active_times=list(sensor_times)
+                    # InferencePipe already checked and normalized the full chunk.
+                    active_chunk=result['action_chunk'];active_times=list(sensor_times)
                     selection=None
                     if held_suction==0:
                         candidate,selection=select_approach_action(active_chunk,active_times,time.perf_counter())

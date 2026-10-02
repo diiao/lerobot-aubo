@@ -120,9 +120,12 @@ class InferencePipe:
         result=self.receive(2)
         if result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256 or result.get('shape')!=[50,7]:
             raise ValueError('invalid prediction identity or shape')
-        finite_vector(result['raw_action'],7,'raw model action')
-        finite_vector(result['action'],7,'decoded model action')
-        if self.return_action_chunk:validated_action_chunk(result)
+        if self.return_action_chunk:
+            # Validate the full wire response once, before any consumer uses it.
+            result['action_chunk']=validated_action_chunk(result)
+        else:
+            finite_vector(result['raw_action'],7,'raw model action')
+            finite_vector(result['action'],7,'decoded model action')
         result['transport'] = {'codec':codec, 'request_bytes':len(wire.encode()),
             'encode_s':encoded_at-start, 'roundtrip_s':time.perf_counter()-start}
         return result
