@@ -3,6 +3,8 @@
 更新：2026-10-02。操作命令以 [README](README.md) 及其三个工作流页面为准。
 本文只索引证据，不把历史部署记录当作远端当前状态。
 
+本轮文档与旧功能的删除范围、保留理由及验证见[清理记录](../../docs/AUBO_CLEANUP_2026-10-02.md)。
+
 ## 当前双摆放模型
 
 | 项目 | 记录 |
@@ -46,6 +48,7 @@
 清理前代码和文档基线为 `69435fe`。下列已替代文档从日常目录移除，原文完整保留于该提交：
 
 - `AGENT.md`、`CLAUDE.md`、本目录旧 README：历史 ACT 操作与工具背景。
+- `BAMBOO_GEOMETRY_ASSISTED_ACT_PLAN.md`：已退役几何预览对应的旧 ACT 增强计划。
 - `examples/phone_to_auboi10/HANDOFF_12D_POSE_IK_FIX.md`：12维 ACT 实机失败定位。
 - `examples/phone_to_auboi10/JOINT_CHAIN_REVIEW.md`：固定 J5 / 早期七维准备。
 - `examples/phone_to_auboi10/REMOTE_TRAINING.md`：旧 ACT 远端入口。
