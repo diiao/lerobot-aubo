@@ -15,6 +15,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -761,29 +762,17 @@ def test_binding_fps_drift_is_blocked_at_manifest_level() -> None:
 
 
 _IMPORT_PROBE = r"""
-import importlib.util
+import importlib
 import json
 import os
 import sys
 import threading
-import types
 
-# Stub the parent packages so importing the new modules does NOT execute the
-# pre-existing lerobot.bamboo_sorting __init__ (which pulls in heavy modules
-# such as torch via smolvla_adapter). Only the new modules and their genuine
-# import closure are loaded, so the forbidden-module check is meaningful.
-def _stub_package(name):
-    spec = importlib.util.find_spec(name)
-    module = types.ModuleType(name)
-    module.__path__ = list(spec.submodule_search_locations)
-    sys.modules[name] = module
-
-_stub_package("lerobot")
-_stub_package("lerobot.bamboo_sorting")
-
+# Import the real parent packages too, from this checkout in a fresh process.
+sys.path.insert(0, sys.argv[2])
 baseline_modules = set(sys.modules)
 
-import lerobot.bamboo_sorting.c0_gripper_contract  # noqa: F401
+importlib.import_module(sys.argv[1])
 
 forbidden_roots = {"cv2", "pyaubo_sdk", "torch"}
 new_modules = sorted(set(sys.modules) - baseline_modules)
@@ -802,28 +791,35 @@ print(
             "forbidden_modules": forbidden_modules,
             "extra_threads": extra_threads,
             "sockets": sockets,
-            "package_init_executed": "lerobot.bamboo_sorting.smolvla_adapter" in sys.modules,
-            "contract_loaded": "lerobot.bamboo_sorting.c0_gripper_contract" in sys.modules,
+            "module_loaded": sys.argv[1] in sys.modules,
         }
     )
 )
 """
 
 
-def test_importing_gripper_modules_touches_no_hardware_network_or_threads() -> None:
+@pytest.mark.parametrize(
+    "module_name",
+    ["c0_gripper_contract", "c0_gripper_capture_journal", "c0_gripper_controller_sidecar"],
+)
+def test_importing_gripper_modules_touches_no_hardware_network_threads_or_files(
+    module_name: str, tmp_path: Path,
+) -> None:
     result = subprocess.run(
-        [sys.executable, "-c", _IMPORT_PROBE],
+        [
+            sys.executable, "-B", "-c", _IMPORT_PROBE,
+            f"lerobot.bamboo_sorting.{module_name}", str(Path(__file__).resolve().parents[2] / "src"),
+        ],
         capture_output=True,
         text=True,
         timeout=180,
         check=True,
+        cwd=tmp_path,
     )
     state = json.loads(result.stdout.strip().splitlines()[-1])
 
-    # The probe is only meaningful if the modules really loaded and the heavy
-    # package __init__ was genuinely bypassed.
-    assert state["contract_loaded"] is True
-    assert state["package_init_executed"] is False
+    assert state["module_loaded"] is True
     assert state["forbidden_modules"] == []
     assert state["extra_threads"] == []
     assert state["sockets"] == []
+    assert list(tmp_path.iterdir()) == []

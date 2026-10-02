@@ -15,8 +15,6 @@
 import copy
 import dataclasses
 import json
-import subprocess
-import sys
 
 import pytest
 
@@ -904,75 +902,3 @@ def test_untampered_objects_remain_deterministic() -> None:
     assert json.dumps(first.to_manifest_record(), sort_keys=True, allow_nan=False) == (
         json.dumps(second.to_manifest_record(), sort_keys=True, allow_nan=False)
     )
-
-
-# --- D. import side-effect probe --------------------------------------------
-
-_IMPORT_PROBE = r"""
-import importlib.util
-import json
-import os
-import sys
-import threading
-import types
-
-# Stub the parent packages so importing the audited module does NOT execute
-# the pre-existing lerobot.bamboo_sorting __init__ (which pulls in heavy
-# modules such as torch via smolvla_adapter).
-def _stub_package(name):
-    spec = importlib.util.find_spec(name)
-    module = types.ModuleType(name)
-    module.__path__ = list(spec.submodule_search_locations)
-    sys.modules[name] = module
-
-_stub_package("lerobot")
-_stub_package("lerobot.bamboo_sorting")
-
-baseline_modules = set(sys.modules)
-
-import lerobot.bamboo_sorting.c0_gripper_controller_sidecar  # noqa: F401
-
-forbidden_roots = {"cv2", "pyaubo_sdk", "torch"}
-new_modules = sorted(set(sys.modules) - baseline_modules)
-forbidden_modules = [name for name in new_modules if name.split(".")[0] in forbidden_roots]
-extra_threads = [
-    thread.name for thread in threading.enumerate() if thread is not threading.main_thread()
-]
-sockets = []
-for fd in os.listdir("/proc/self/fd"):
-    path = f"/proc/self/fd/{fd}"
-    if os.path.islink(path) and "socket" in os.readlink(path):
-        sockets.append(fd)
-print(
-    json.dumps(
-        {
-            "forbidden_modules": forbidden_modules,
-            "extra_threads": extra_threads,
-            "sockets": sockets,
-            "package_init_executed": "lerobot.bamboo_sorting.smolvla_adapter" in sys.modules,
-            "module_loaded": "lerobot.bamboo_sorting.c0_gripper_controller_sidecar" in sys.modules,
-        }
-    )
-)
-"""
-
-
-def test_importing_sidecar_module_touches_no_hardware_network_threads_or_files(
-    tmp_path,
-) -> None:
-    result = subprocess.run(
-        [sys.executable, "-c", _IMPORT_PROBE],
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=True,
-        cwd=tmp_path,
-    )
-    state = json.loads(result.stdout.strip().splitlines()[-1])
-
-    assert state["module_loaded"] is True
-    assert state["package_init_executed"] is False
-    assert state["forbidden_modules"] == []
-    assert state["extra_threads"] == []
-    assert state["sockets"] == []
-    assert list(tmp_path.iterdir()) == []
