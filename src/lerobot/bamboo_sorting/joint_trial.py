@@ -190,8 +190,10 @@ def home_to_start(motion, read_state, *, lower, upper, is_steady,
     # Homing is a complete moveJoint trajectory, not a single policy step.
     # Validate actual/target joint limits without the old 10-degree proximity cap.
     require_joint_target(START_DEG, state[:6], lower, upper, max(distance, .1))
-    if state[-1] != 0 or not is_steady():
-        raise ValueError('homing requires a stationary robot and suction off')
+    if state[-1] != 0:
+        raise ValueError(f'homing requires suction off: gripper_pos={state[-1]:g}')
+    if not is_steady():
+        raise ValueError('homing requires a stationary robot: isSteady=False')
     if motion.isServoModeEnabled():
         raise RuntimeError('existing servo owner; refusing homing')
     if distance <= .1:

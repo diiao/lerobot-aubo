@@ -147,6 +147,42 @@ def test_plan_never_connects(monkeypatch):
     assert module.main([])==0
 
 
+@pytest.mark.parametrize('requested,available,bad_chunk',[
+    (False,False,False),(True,False,False),(True,True,False),(True,True,True),
+])
+def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,requested,available,bad_chunk):
+    import io
+    module=load_entry();launch=[]
+    class Process:
+        def __init__(self,args,**kwargs):
+            launch.extend(args);self.stdin=io.StringIO();self.waited=False
+        def wait(self,timeout):self.waited=True
+    monkeypatch.setattr(module.subprocess,'Popen',Process)
+    ready={'ready':True,'checkpoint_sha256':module.MODEL_SHA,
+        'contract':module.joint_contract_record(),'action_chunk_available':available}
+    chunk=[[*START_DEG,0.] for _ in range(50)]
+    response={'id':3,'checkpoint_sha256':module.MODEL_SHA,'shape':[50,7],
+        'action':chunk[0],'raw_action':chunk[0]}
+    if available:
+        response.update(action_chunk=[row.copy() for row in chunk],raw_action_chunk=chunk)
+        if bad_chunk:response['action_chunk'][9][-1]=100.
+    responses=iter([ready,response])
+    monkeypatch.setattr(module.InferencePipe,'receive',lambda self,timeout:next(responses))
+    if requested and not available:
+        with pytest.raises(ValueError,match='does not provide full actions'):
+            module.InferencePipe(tmp_path,return_action_chunk=requested)
+        return
+    pipe=module.InferencePipe(tmp_path,return_action_chunk=requested)
+    assert ('--return-action-chunk' in launch[-1])==requested
+    try:
+        if bad_chunk:
+            with pytest.raises(ValueError,match='inconsistent decoded'):
+                pipe.predict(3,[*START_DEG,0],{})
+        else:assert pipe.predict(3,[*START_DEG,0],{})['action']==chunk[0]
+    finally:pipe.close()
+    assert pipe.process.waited and pipe.log.closed
+
+
 def test_failed_shadow_never_gets_motion(tmp_path,monkeypatch):
     import json
     import numpy as np
@@ -273,6 +309,7 @@ def test_home_timeout_stops():
 
 def test_home_entry_no_policy_or_cameras(tmp_path,monkeypatch):
     module=load_entry();events=[]
+    monkeypatch.chdir(tmp_path)
     class State:
         def isSteady(self):return True
     class Station:
@@ -286,8 +323,81 @@ def test_home_entry_no_policy_or_cameras(tmp_path,monkeypatch):
     def fail(*args):raise AssertionError('homing loaded inference')
     monkeypatch.setattr(module,'ReadOnlyStation',Station)
     monkeypatch.setattr(module,'InferencePipe',fail)
-    assert module.main(['--stage','home','--onsite-confirmed','--output',str(tmp_path/'home')])==0
+    assert module.main(['--stage','home','--onsite-confirmed'])==0
     assert events==['connect','close']
+    assert list(tmp_path.iterdir())==[]
+
+
+@pytest.mark.parametrize('pins,release_ok,servo_owned,expected_release,expected_home,release_option',[
+    ((False,False),True,False,True,True,'--release-if-unset'),
+    ((False,False),False,False,True,False,'--release-if-unset'),
+    ((False,True),True,False,False,True,'--release-if-unset'),
+    ((True,False),True,False,False,False,'--release-if-unset'),
+    ((True,True),True,False,False,False,'--release-if-unset'),
+    ((False,False),True,True,False,False,'--release-if-unset'),
+    ((True,False),True,False,True,True,'--release-before-home'),
+    ((True,False),False,False,True,False,'--release-before-home'),
+    ((False,False),True,False,True,True,'--release-before-home'),
+    ((True,False),True,True,False,False,'--release-before-home'),
+    ((False,True),True,False,False,True,None),
+    ((True,False),True,False,True,True,None),
+    ((False,False),True,False,True,True,None),
+    ((True,True),True,False,True,True,None),
+    ((True,False),False,False,True,False,None),
+])
+@pytest.mark.parametrize('write_logs',[False,True])
+def test_home_release_if_unset_before_motion(tmp_path,monkeypatch,pins,release_ok,
+                                           servo_owned,expected_release,expected_home,release_option,write_logs):
+    import json
+    from lerobot.robots.aubo_i10 import aubo_i10
+    module=load_entry();events=[];outputs=[pins]
+    monkeypatch.chdir(tmp_path)
+    class Station:
+        lower=[-360]*6;upper=[360]*6
+        def __init__(self):self.iface=self;self.state=self;self.io_readback=self
+        def connect(self,*,include_cameras):assert not include_cameras
+        def getMotionControl(self):return self
+        def isServoModeEnabled(self):return servo_owned
+        def isSteady(self):return True
+        def current(self,**kwargs):
+            if outputs[0]==(False,True):suction=0
+            elif outputs[0]==(True,False):suction=100
+            else:raise ValueError(f'unknown suction output pair: {outputs[0]}')
+            return [*START_DEG,suction],None,None
+        def close(self):events.append('close')
+    class Suction:
+        last_gripper_command_trace=None
+        def __init__(self,*args):pass
+        def suction_release(self):
+            events.append('release')
+            self.last_gripper_command_trace={'do_api_success':release_ok}
+            if release_ok:outputs[0]=(False,True)
+            return release_ok
+    original_home=module.home_to_start
+    def home(*args,**kwargs):
+        result=original_home(*args,**kwargs);events.append('home');return result
+    def fail(*args,**kwargs):raise AssertionError('home loaded inference')
+    monkeypatch.setattr(module,'ReadOnlyStation',Station)
+    monkeypatch.setattr(module,'InferencePipe',fail)
+    monkeypatch.setattr(module,'home_to_start',home)
+    monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
+    def no_prompt(*args):raise AssertionError('home must not request interactive confirmation')
+    monkeypatch.setattr(module.sys.stdin,'isatty',lambda:False)
+    monkeypatch.setattr('builtins.input',no_prompt)
+    out=tmp_path/'home'
+    args=['--stage','home','--onsite-confirmed']
+    if release_option:args.append(release_option)
+    if write_logs:args.extend(['--output',str(out)])
+    assert module.main(args)==(0 if expected_home else 1)
+    assert ('release' in events)==expected_release
+    assert ('home' in events)==expected_home
+    if expected_release and expected_home:assert events.index('release')<events.index('home')
+    if write_logs:
+        assert (out/'initial_suction_release.json').exists()==expected_release
+        result=json.loads((out/'complete.json').read_text())
+        assert result['passed']==expected_home
+    else:assert list(tmp_path.iterdir())==[]
+    assert events[-1]=='close'
 
 
 def test_static_step_duration_preserves_velocity_limits_and_start_envelope():
