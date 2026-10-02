@@ -14,48 +14,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline-only C0 gripper controller attempt records and episode sidecar.
+"""Adapt AUBO suction traces into capture events and per-command attempts.
 
-This module adapts the *already serialized* AUBO ``last_gripper_command_trace``
-dict into the frozen :class:`C0GripperEventV1` contract, and wraps one or more
-such events into per-attempt records and a per-episode controller sidecar. It
-is pure data plumbing: importing, constructing, adapting, or serializing these
-records never reads a camera, connects to AUBO, performs gripper DO/IO, moves
-the arm, starts training or inference, or creates live authorization.
-
-Scope and trust boundaries:
-
-- The adapter only handles *switch* events (``requested_transition=True``).
-  It never re-invents an event outcome from the action value, never rewrites a
-  failed event into a success, and never drops the SDK-exception semantics
-  where ``do_write_attempt_count == len(do_writes) + 1``.
-- DO readback only proves what the controller output register holds. It is NOT
-  vacuum pressure, NOT physical jaw position, and NOT grasp success feedback.
-- ``source_trace_sha256`` is a content-change detector over the stored trace
-  copy. It is NOT a signature, NOT authentication, and can never prove that a
-  trace genuinely came from the real AUBO driver.
-- The sidecar is not wired into ``record_loop`` in this round, so it never
-  claims ``live_capture_integration_verified``.
-- ``dataclass(frozen=True)`` does not freeze nested dicts/lists. Every later
-  use of these records therefore re-validates the CURRENT content with the
-  deterministic :func:`verify_c0_gripper_controller_attempt_integrity` /
-  :func:`verify_c0_gripper_controller_sidecar_integrity` checks (schema,
-  recomputed digests, event-vs-trace field consistency, frame and commit
-  semantics), and ``to_manifest_record`` fails closed instead of serializing
-  a record that would mix changed content with a stale digest.
-"""
+The current journal uses these records; the retired finalized C0 sidecar is omitted."""
 
 from __future__ import annotations
 
 import copy
 import json
-import math
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Final
 
-from .c0_capture_contract import _require_sha256
 from .c0_gripper_contract import (
     C0_GRIPPER_EVENT_SCHEMA_VERSION,
     GRIPPER_COMMANDED_ON,
@@ -63,16 +33,10 @@ from .c0_gripper_contract import (
     C0GripperEventV1,
     _require_json_pure,
     _require_non_negative_int,
-    _require_nonempty_string,
 )
 
 C0_GRIPPER_CONTROLLER_ATTEMPT_SCHEMA_VERSION: Final = "C0GripperControllerAttemptV1"
-C0_GRIPPER_CONTROLLER_SIDECAR_SCHEMA_VERSION: Final = "C0GripperControllerSidecarV1"
 
-# Exact field set of the current AUBO driver trace as produced by
-# ``AuboI10Robot._set_suction_outputs`` for a requested transition. Any driver
-# schema change must bump these contracts to a new schema version; V1 fails
-# closed on unknown or missing fields instead of silently ignoring them.
 AUBO_GRIPPER_TRACE_REQUIRED_FIELDS: Final = frozenset(
     {
         "requested_transition",
@@ -93,7 +57,9 @@ AUBO_GRIPPER_TRACE_REQUIRED_FIELDS: Final = frozenset(
         "error",
     }
 )
+
 AUBO_GRIPPER_TRACE_OPTIONAL_FIELDS: Final = frozenset({"do_readback_attempts"})
+
 AUBO_GRIPPER_TRACE_WRITE_RECORD_FIELDS: Final = frozenset({"pin", "value", "return_code"})
 
 _NO_TRANSITION_ERROR: Final = (
@@ -453,42 +419,6 @@ class C0GripperControllerAttemptV1:
         return copy.deepcopy(record)
 
 
-def _validate_sidecar_attempts(sidecar: C0GripperControllerSidecarV1) -> None:
-    """Validate the CURRENT attempts sequence of a sidecar; raises ValueError.
-
-    Shared by ``__post_init__`` and the post-construction integrity check so a
-    structurally corrupted sidecar (for example via ``object.__setattr__``) is
-    judged by exactly the same rules as a freshly built one. Attempt frames
-    must be strictly increasing and unique: the episode timeline is ordered,
-    so an off event can never precede an on event at a lower frame.
-    """
-
-    previous_frame = -1
-    for position, attempt in enumerate(sidecar.attempts):
-        if attempt.attempt_index != position:
-            raise ValueError("attempt_index must be exactly 0..N-1 in order, no gaps")
-        if attempt.event.event_index != position:
-            raise ValueError("event.event_index must equal the attempt position 0..N-1")
-        if attempt.event.episode_id != sidecar.episode_id:
-            raise ValueError("attempt event episode_id must equal the sidecar episode_id")
-        if attempt.dataset_frame_committed:
-            if attempt.candidate_frame_index >= sidecar.frame_count:
-                raise ValueError(
-                    "a committed attempt must reference an existing dataset frame: "
-                    "candidate_frame_index < frame_count"
-                )
-        elif attempt.candidate_frame_index > sidecar.frame_count:
-            raise ValueError(
-                "an uncommitted attempt may use candidate_frame_index == frame_count "
-                "for a candidate after the last saved frame, never beyond it"
-            )
-        if attempt.candidate_frame_index <= previous_frame:
-            raise ValueError(
-                "candidate_frame_index must be strictly increasing and unique across attempts"
-            )
-        previous_frame = attempt.candidate_frame_index
-
-
 def verify_c0_gripper_controller_attempt_integrity(
     attempt: C0GripperControllerAttemptV1,
 ) -> tuple[str, ...]:
@@ -532,208 +462,3 @@ def verify_c0_gripper_controller_attempt_integrity(
     if attempt.dataset_frame_committed and not attempt.event.do_api_success:
         details.append("commit_semantics_mismatch")
     return tuple(sorted(set(details)))
-
-
-def verify_c0_gripper_controller_sidecar_integrity(
-    sidecar: C0GripperControllerSidecarV1,
-) -> tuple[str, ...]:
-    """Deterministically re-validate the CURRENT content of a sidecar.
-
-    Re-runs the full attempts structural rules on the current state, re-verifies
-    every attempt, and recomputes the sidecar digest against the pinned
-    ``sidecar_sha256``. Returns a sorted tuple of stable detail codes; an empty
-    tuple means the sidecar is intact. Detail codes:
-    ``sidecar_structure_invalid``, ``attempt_integrity_mismatch``,
-    ``sidecar_sha256_mismatch``.
-    """
-
-    if not isinstance(sidecar, C0GripperControllerSidecarV1):
-        raise TypeError("sidecar must be a C0GripperControllerSidecarV1")
-    details: list[str] = []
-    try:
-        _validate_sidecar_attempts(sidecar)
-    except ValueError:
-        details.append("sidecar_structure_invalid")
-    attempts_intact = True
-    for attempt in sidecar.attempts:
-        if verify_c0_gripper_controller_attempt_integrity(attempt):
-            attempts_intact = False
-    if not attempts_intact:
-        details.append("attempt_integrity_mismatch")
-    else:
-        # The digest payload renders each event; only recompute it when every
-        # attempt is intact so tampered content can never crash the check.
-        try:
-            if _sidecar_sha256(sidecar) != sidecar.sidecar_sha256:
-                details.append("sidecar_sha256_mismatch")
-        except ValueError:
-            details.append("sidecar_sha256_mismatch")
-    return tuple(sorted(set(details)))
-
-
-def _sidecar_sha256(sidecar: C0GripperControllerSidecarV1) -> str:
-    """Derive the sidecar digest internally; callers can never inject one.
-
-    The payload is exactly: the sidecar schema version, ``episode_id``,
-    ``episode_index``, ``fps``, ``frame_count``,
-    ``dataset_gripper_slice_sha256``, ``finalized``, and for each attempt in
-    order its ``attempt_index``, ``candidate_frame_index``,
-    ``dataset_frame_committed``, the event's manifest record, and the attempt's
-    ``source_trace_sha256``. Canonicalized with sorted keys, compact
-    separators, UTF-8, and ``allow_nan=False``. Content-change detection only;
-    not authentication.
-    """
-
-    payload = {
-        "schema_version": sidecar.schema_version,
-        "episode_id": sidecar.episode_id,
-        "episode_index": sidecar.episode_index,
-        "fps": sidecar.fps,
-        "frame_count": sidecar.frame_count,
-        "dataset_gripper_slice_sha256": sidecar.dataset_gripper_slice_sha256,
-        "finalized": sidecar.finalized,
-        "attempts": [
-            {
-                "attempt_index": attempt.attempt_index,
-                "candidate_frame_index": attempt.candidate_frame_index,
-                "dataset_frame_committed": attempt.dataset_frame_committed,
-                "event": attempt.event.to_manifest_record(),
-                "source_trace_sha256": attempt.source_trace_sha256,
-            }
-            for attempt in sidecar.attempts
-        ],
-    }
-    return _canonical_json_sha256(payload)
-
-
-@dataclass(frozen=True)
-class C0GripperControllerSidecarV1:
-    """Per-episode sidecar of gripper controller switch attempts.
-
-    Committed attempts reference dataset frames (``0 <= candidate_frame_index <
-    frame_count``). An uncommitted failure attempt may use
-    ``candidate_frame_index == frame_count`` to mark a candidate frame that
-    occurred after the last saved frame and never entered the parquet data; it
-    must never be presented as an existing dataset frame. ``finalized=False``
-    sidecars preserve interrupted/failed capture evidence but cannot pass the
-    final binding audit.
-
-    ``sidecar_sha256`` is derived internally over the canonical payload (see
-    ``_sidecar_sha256``) and can never be supplied by a caller.
-    """
-
-    schema_version: str
-    episode_id: str
-    episode_index: int
-    fps: float
-    frame_count: int
-    dataset_gripper_slice_sha256: str
-    attempts: Sequence[C0GripperControllerAttemptV1]
-    finalized: bool
-    _sidecar_sha256: str = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.schema_version != C0_GRIPPER_CONTROLLER_SIDECAR_SCHEMA_VERSION:
-            raise ValueError(
-                f"schema_version must be {C0_GRIPPER_CONTROLLER_SIDECAR_SCHEMA_VERSION!r}"
-            )
-        _require_nonempty_string("episode_id", self.episode_id)
-        _require_non_negative_int("episode_index", self.episode_index)
-
-        if isinstance(self.fps, bool) or not isinstance(self.fps, (int, float)):
-            raise ValueError("fps must be a finite positive number, not bool")
-        fps = float(self.fps)
-        if not math.isfinite(fps) or fps <= 0:
-            raise ValueError("fps must be a finite positive number")
-        object.__setattr__(self, "fps", fps)
-
-        if isinstance(self.frame_count, bool) or not isinstance(self.frame_count, int):
-            raise ValueError("frame_count must be a positive integer, not bool or float")
-        if self.frame_count <= 0:
-            raise ValueError("frame_count must be a positive integer")
-
-        _require_sha256("dataset_gripper_slice_sha256", self.dataset_gripper_slice_sha256)
-
-        if isinstance(self.attempts, (str, bytes)):
-            raise ValueError("attempts must be a sequence of C0GripperControllerAttemptV1")
-        attempts = tuple(self.attempts)
-        if not all(isinstance(attempt, C0GripperControllerAttemptV1) for attempt in attempts):
-            raise ValueError("attempts must contain only C0GripperControllerAttemptV1 records")
-        object.__setattr__(self, "attempts", attempts)
-
-        _validate_sidecar_attempts(self)
-
-        if not isinstance(self.finalized, bool):
-            raise ValueError("finalized must be bool")
-
-        # Construction-time integrity gate: every attempt must pass the same
-        # deterministic revalidation that later audits apply, so a corrupted
-        # attempt can never enter a sidecar silently.
-        for attempt in attempts:
-            details = verify_c0_gripper_controller_attempt_integrity(attempt)
-            if details:
-                raise ValueError(
-                    f"controller_attempt_integrity_mismatch at construction: {list(details)}"
-                )
-
-        object.__setattr__(self, "_sidecar_sha256", _sidecar_sha256(self))
-
-    @property
-    def sidecar_sha256(self) -> str:
-        """Internally derived digest of the sidecar payload (never caller-supplied)."""
-
-        return self._sidecar_sha256
-
-    @property
-    def committed_attempts(self) -> tuple[C0GripperControllerAttemptV1, ...]:
-        return tuple(attempt for attempt in self.attempts if attempt.dataset_frame_committed)
-
-    @property
-    def failed_or_uncommitted_attempt_count(self) -> int:
-        return sum(
-            1
-            for attempt in self.attempts
-            if not attempt.dataset_frame_committed or not attempt.event.do_api_success
-        )
-
-    def to_manifest_record(self) -> dict[str, object]:
-        """Return a detached JSON-compatible record with fixed boundary fields.
-
-        The sidecar is not wired into ``record_loop`` in this round, so
-        ``live_capture_integration_verified`` stays False; serialization never
-        grants capture, training, or execution authorization.
-
-        Fail closed: if the current content no longer passes the deterministic
-        integrity revalidation, this raises ValueError instead of serializing a
-        record that would mix changed content with the pinned digest.
-        """
-
-        details = verify_c0_gripper_controller_sidecar_integrity(self)
-        if details:
-            raise ValueError(
-                f"sidecar_integrity_mismatch; refusing to serialize a record "
-                f"mixing changed content with the pinned digest: {list(details)}"
-            )
-        record = {
-            "schema_version": self.schema_version,
-            "episode_id": self.episode_id,
-            "episode_index": self.episode_index,
-            "fps": self.fps,
-            "frame_count": self.frame_count,
-            "dataset_gripper_slice_sha256": self.dataset_gripper_slice_sha256,
-            "sidecar_sha256": self._sidecar_sha256,
-            "finalized": self.finalized,
-            "attempt_count": len(self.attempts),
-            "committed_attempt_count": len(self.committed_attempts),
-            "failed_or_uncommitted_attempt_count": self.failed_or_uncommitted_attempt_count,
-            "attempts": [attempt.to_manifest_record() for attempt in self.attempts],
-            "physical_gripper_feedback_available": False,
-            "physical_grasp_success_proven": False,
-            "controller_event_origin_authenticated": False,
-            "live_capture_integration_verified": False,
-            "training_authorized": False,
-            "policy_execution_authorized": False,
-            "serialized_record_grants_live_authorization": False,
-            "hardware_access_performed_by_serialization": False,
-        }
-        return copy.deepcopy(record)

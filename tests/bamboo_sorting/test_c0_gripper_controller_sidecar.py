@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Suction trace adapters and per-command integrity used by current capture."""
+
 import copy
-import dataclasses
 import json
 
 import pytest
@@ -21,21 +22,19 @@ import pytest
 from lerobot.bamboo_sorting.c0_gripper_contract import C0_GRIPPER_EVENT_SCHEMA_VERSION
 from lerobot.bamboo_sorting.c0_gripper_controller_sidecar import (
     C0_GRIPPER_CONTROLLER_ATTEMPT_SCHEMA_VERSION,
-    C0_GRIPPER_CONTROLLER_SIDECAR_SCHEMA_VERSION,
     C0GripperControllerAttemptV1,
-    C0GripperControllerSidecarV1,
     build_c0_gripper_event_from_aubo_trace,
     validate_aubo_gripper_transition_trace,
     verify_c0_gripper_controller_attempt_integrity,
-    verify_c0_gripper_controller_sidecar_integrity,
 )
 
 EPISODE_ID = "c0-controller-sidecar-episode-00"
+
 FPS = 25.0
-FRAME_COUNT = 100
+
 ON_FRAME = 10
+
 OFF_FRAME = 50
-SLICE_SHA = "ab" * 32
 
 
 def _success_trace(target_on: bool = True, **changes) -> dict:
@@ -276,36 +275,6 @@ def _attempt(
     )
 
 
-def _sidecar(
-    attempts=None,
-    *,
-    episode_id: str = EPISODE_ID,
-    episode_index: int = 0,
-    fps: float = FPS,
-    frame_count: int = FRAME_COUNT,
-    dataset_gripper_slice_sha256: str = SLICE_SHA,
-    finalized: bool = True,
-) -> C0GripperControllerSidecarV1:
-    if attempts is None:
-        attempts = (
-            _attempt(attempt_index=0, frame_index=ON_FRAME, target_suction_on=True),
-            _attempt(attempt_index=1, frame_index=OFF_FRAME, target_suction_on=False),
-        )
-    return C0GripperControllerSidecarV1(
-        schema_version=C0_GRIPPER_CONTROLLER_SIDECAR_SCHEMA_VERSION,
-        episode_id=episode_id,
-        episode_index=episode_index,
-        fps=fps,
-        frame_count=frame_count,
-        dataset_gripper_slice_sha256=dataset_gripper_slice_sha256,
-        attempts=tuple(attempts),
-        finalized=finalized,
-    )
-
-
-# --- A. AUBO trace adaptation ---------------------------------------------
-
-
 def test_adapter_command_on_success_full_writes_and_matching_readback() -> None:
     event = _adapt(_success_trace(True), frame_index=ON_FRAME)
 
@@ -540,277 +509,9 @@ def test_source_trace_sha256_deterministic_and_content_sensitive() -> None:
     assert failed.source_trace_sha256 != first.source_trace_sha256
 
 
-# --- B. attempt / sidecar contract -----------------------------------------
-
-
-def test_committed_success_attempt() -> None:
-    attempt = _attempt(frame_index=ON_FRAME, committed=True)
-
-    assert attempt.dataset_frame_committed is True
-    assert attempt.event.do_api_success is True
-    assert attempt.event.frame_index == attempt.candidate_frame_index == ON_FRAME
-    assert isinstance(attempt.source_trace_sha256, str)
-
-
-def test_uncommitted_failure_attempt_is_preserved() -> None:
-    attempt = _attempt(
-        _second_call_exception_trace(),
-        attempt_index=2,
-        event_index=2,
-        frame_index=FRAME_COUNT,
-        committed=False,
-    )
-    sidecar = _sidecar(
-        (
-            _attempt(attempt_index=0, frame_index=ON_FRAME, target_suction_on=True),
-            _attempt(attempt_index=1, frame_index=OFF_FRAME, target_suction_on=False),
-            attempt,
-        ),
-        finalized=False,
-    )
-
-    stored = sidecar.attempts[2]
-    assert stored.dataset_frame_committed is False
-    assert stored.event.do_api_success is False
-    assert stored.event.error == "sdk timeout on second write"
-    assert stored.event.partial_write_possible is True
-    assert stored.event.do_readback_after_failure == {"2": False, "3": False}
-    assert sidecar.failed_or_uncommitted_attempt_count == 1
-
-
 def test_failed_attempt_cannot_be_marked_committed() -> None:
     with pytest.raises(ValueError, match="do_api_success"):
         _attempt(_return_code_failure_trace(), committed=True)
-
-
-def test_committed_event_frame_must_be_inside_dataset() -> None:
-    attempt = _attempt(frame_index=ON_FRAME, committed=True)
-    with pytest.raises(ValueError, match="candidate_frame_index < frame_count"):
-        _sidecar((attempt,), frame_count=ON_FRAME)
-    with pytest.raises(ValueError, match="candidate_frame_index < frame_count"):
-        _sidecar((attempt,), frame_count=ON_FRAME - 1)
-
-
-def test_uncommitted_candidate_frame_at_frame_count_is_legal() -> None:
-    attempt = _attempt(
-        _first_call_exception_trace(), frame_index=FRAME_COUNT, committed=False
-    )
-    sidecar = _sidecar((attempt,), finalized=False)
-    assert sidecar.attempts[0].candidate_frame_index == FRAME_COUNT
-    # Beyond frame_count is never a legal candidate.
-    beyond = _attempt(
-        _first_call_exception_trace(), frame_index=FRAME_COUNT + 1, committed=False
-    )
-    with pytest.raises(ValueError, match="never beyond"):
-        _sidecar((beyond,), finalized=False)
-
-
-def test_attempt_index_out_of_order_duplicate_or_gap_rejected() -> None:
-    on = _attempt(attempt_index=0, frame_index=ON_FRAME, target_suction_on=True)
-    off = _attempt(attempt_index=1, frame_index=OFF_FRAME, target_suction_on=False)
-
-    with pytest.raises(ValueError, match="0..N-1"):
-        _sidecar((off, on))  # out of order
-    with pytest.raises(ValueError, match="0..N-1"):
-        _sidecar((on, on))  # duplicate
-    with pytest.raises(ValueError, match="0..N-1"):
-        _sidecar(
-            (
-                on,
-                _attempt(attempt_index=2, event_index=2, frame_index=OFF_FRAME, target_suction_on=False),
-            )
-        )  # gap
-
-
-def test_event_index_must_match_attempt_position() -> None:
-    mismatched = _attempt(
-        attempt_index=0, event_index=1, frame_index=ON_FRAME, target_suction_on=True
-    )
-    with pytest.raises(ValueError, match="event_index"):
-        _sidecar((mismatched,))
-
-
-def test_sidecar_rejects_event_episode_id_mismatch() -> None:
-    mismatched = _attempt(episode_id="c0-other-episode")
-    with pytest.raises(ValueError, match="episode_id"):
-        _sidecar((mismatched,))
-
-
-def test_sidecar_rejects_invalid_fps() -> None:
-    for bad in (0.0, -25.0, float("nan"), float("inf"), True, "25"):
-        with pytest.raises(ValueError, match="fps"):
-            _sidecar(fps=bad)
-
-
-def test_sidecar_rejects_invalid_frame_count() -> None:
-    for bad in (0, -1, 25.0, True, "100"):
-        with pytest.raises(ValueError, match="frame_count"):
-            _sidecar(frame_count=bad)
-
-
-def test_sidecar_rejects_invalid_episode_index() -> None:
-    for bad in (-1, 1.5, True, "0"):
-        with pytest.raises(ValueError, match="episode_index"):
-            _sidecar(episode_index=bad)
-
-
-def test_sidecar_rejects_invalid_slice_digest() -> None:
-    for bad in ("", "AB" * 32, "ab" * 31, "zz" * 32, 123):
-        with pytest.raises(ValueError, match="dataset_gripper_slice_sha256"):
-            _sidecar(dataset_gripper_slice_sha256=bad)
-
-
-def test_unfinalized_sidecar_is_constructible_evidence() -> None:
-    sidecar = _sidecar(finalized=False)
-    assert sidecar.finalized is False
-    assert len(sidecar.attempts) == 2
-
-
-def test_sidecar_sha256_deterministic_and_content_sensitive() -> None:
-    first = _sidecar()
-    second = _sidecar()
-    assert first.sidecar_sha256 == second.sidecar_sha256
-    assert len(first.sidecar_sha256) == 64
-
-    perturbed_timestamp = _sidecar(
-        (
-            _attempt(
-                attempt_index=0,
-                frame_index=ON_FRAME,
-                target_suction_on=True,
-                dataset_timestamp_s=ON_FRAME / FPS + 0.01,
-            ),
-            _attempt(attempt_index=1, frame_index=OFF_FRAME, target_suction_on=False),
-        )
-    )
-    assert perturbed_timestamp.sidecar_sha256 != first.sidecar_sha256
-    assert _sidecar(finalized=False).sidecar_sha256 != first.sidecar_sha256
-    assert _sidecar(frame_count=101).sidecar_sha256 != first.sidecar_sha256
-    other_episode = _sidecar(
-        (
-            _attempt(
-                attempt_index=0,
-                frame_index=ON_FRAME,
-                target_suction_on=True,
-                episode_id="c0-other",
-            ),
-            _attempt(
-                attempt_index=1,
-                frame_index=OFF_FRAME,
-                target_suction_on=False,
-                episode_id="c0-other",
-            ),
-        ),
-        episode_id="c0-other",
-    )
-    assert other_episode.sidecar_sha256 != first.sidecar_sha256
-
-
-def test_caller_cannot_inject_digests_or_derived_fields() -> None:
-    attempt = _attempt()
-    with pytest.raises(TypeError):
-        C0GripperControllerAttemptV1(
-            schema_version=C0_GRIPPER_CONTROLLER_ATTEMPT_SCHEMA_VERSION,
-            attempt_index=0,
-            candidate_frame_index=ON_FRAME,
-            dataset_frame_committed=True,
-            event=attempt.event,
-            source_trace=_success_trace(True),
-            source_trace_sha256="00" * 32,
-        )
-    with pytest.raises(TypeError):
-        C0GripperControllerSidecarV1(
-            schema_version=C0_GRIPPER_CONTROLLER_SIDECAR_SCHEMA_VERSION,
-            episode_id=EPISODE_ID,
-            episode_index=0,
-            fps=FPS,
-            frame_count=FRAME_COUNT,
-            dataset_gripper_slice_sha256=SLICE_SHA,
-            attempts=(),
-            finalized=True,
-            sidecar_sha256="00" * 32,
-        )
-
-
-def test_frozen_instances_and_readonly_properties() -> None:
-    attempt = _attempt()
-    sidecar = _sidecar()
-    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-        attempt.attempt_index = 5
-    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-        attempt.source_trace_sha256 = "00" * 32
-    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-        sidecar.finalized = False
-    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-        sidecar.sidecar_sha256 = "00" * 32
-
-
-def test_manifest_records_json_stable_no_nan_and_detached() -> None:
-    sidecar = _sidecar(
-        (
-            _attempt(attempt_index=0, frame_index=ON_FRAME, target_suction_on=True),
-            _attempt(attempt_index=1, frame_index=OFF_FRAME, target_suction_on=False),
-            _attempt(
-                _readback_exception_trace(),
-                attempt_index=2,
-                event_index=2,
-                frame_index=FRAME_COUNT,
-                committed=False,
-            ),
-        ),
-        finalized=False,
-    )
-
-    first = sidecar.to_manifest_record()
-    second = sidecar.to_manifest_record()
-    encoded = json.dumps(first, sort_keys=True, allow_nan=False)
-    assert encoded == json.dumps(second, sort_keys=True, allow_nan=False)
-
-    # Mutating the returned record must not reach back into the sidecar.
-    first["attempts"][2]["source_trace"]["error"] = "mutated"
-    first["attempts"][0]["event"]["event_type"] = "command_off"
-    assert sidecar.attempts[2].source_trace["error"] == "getStandardDigitalOutput raised: io offline"
-    assert sidecar.attempts[0].event.event_type == "command_on"
-
-    boundary_fields = {
-        "physical_gripper_feedback_available": False,
-        "physical_grasp_success_proven": False,
-        "controller_event_origin_authenticated": False,
-        "live_capture_integration_verified": False,
-        "training_authorized": False,
-        "policy_execution_authorized": False,
-        "serialized_record_grants_live_authorization": False,
-        "hardware_access_performed_by_serialization": False,
-    }
-    record = sidecar.to_manifest_record()
-    for key, value in boundary_fields.items():
-        assert record[key] is value
-    for attempt_record in record["attempts"]:
-        for key, value in boundary_fields.items():
-            assert attempt_record[key] is value
-
-
-# --- Rework: ordering and post-construction integrity (A-H) -----------------
-
-
-def test_sidecar_rejects_cross_direction_reversed_frame_order() -> None:
-    # Codex counterexample H: attempt 0 = command_off@50, attempt 1 =
-    # command_on@10 must be rejected at construction.
-    off_first = _attempt(attempt_index=0, frame_index=OFF_FRAME, target_suction_on=False)
-    on_second = _attempt(attempt_index=1, frame_index=ON_FRAME, target_suction_on=True)
-    with pytest.raises(ValueError, match="strictly increasing"):
-        _sidecar((off_first, on_second))
-
-    # Equal frames are never unique either.
-    duplicate_a = _attempt(attempt_index=0, frame_index=ON_FRAME, target_suction_on=True)
-    duplicate_b = _attempt(
-        _first_call_exception_trace(),
-        attempt_index=1,
-        frame_index=ON_FRAME,
-        committed=False,
-    )
-    with pytest.raises(ValueError, match="strictly increasing"):
-        _sidecar((duplicate_a, duplicate_b))
 
 
 def test_attempt_integrity_detects_target_suction_on_tampering() -> None:
@@ -855,50 +556,4 @@ def test_attempt_integrity_detects_event_field_tampering() -> None:
     attempt.event.do_writes[0]["return_code"] = -1
     assert "event_trace_inconsistent" in verify_c0_gripper_controller_attempt_integrity(
         attempt
-    )
-
-
-def test_sidecar_integrity_detects_attempt_tampering_and_order_corruption() -> None:
-    sidecar = _sidecar()
-    assert verify_c0_gripper_controller_sidecar_integrity(sidecar) == ()
-
-    # Attempt tampered after the sidecar was constructed.
-    sidecar.attempts[1].source_trace["error"] = "tampered after validation"
-    details = verify_c0_gripper_controller_sidecar_integrity(sidecar)
-    assert "attempt_integrity_mismatch" in details
-
-    # Controlled simulation of a structurally corrupted object: attempts swapped
-    # past the constructor. Structure and pinned digest both disagree.
-    sidecar = _sidecar()
-    object.__setattr__(sidecar, "attempts", (sidecar.attempts[1], sidecar.attempts[0]))
-    details = verify_c0_gripper_controller_sidecar_integrity(sidecar)
-    assert "sidecar_structure_invalid" in details
-    assert "sidecar_sha256_mismatch" in details
-
-
-def test_manifest_record_fails_closed_after_tampering() -> None:
-    sidecar = _sidecar()
-    sidecar.attempts[0].source_trace["error"] = "tampered after validation"
-
-    with pytest.raises(ValueError, match="controller_attempt_integrity_mismatch"):
-        sidecar.attempts[0].to_manifest_record()
-    with pytest.raises(ValueError, match="sidecar_integrity_mismatch"):
-        sidecar.to_manifest_record()
-
-    # An event-only tamper must also fail closed (not only source_trace).
-    sidecar = _sidecar()
-    sidecar.attempts[0].event.requested_do["2"] = False
-    with pytest.raises(ValueError, match="integrity_mismatch"):
-        sidecar.to_manifest_record()
-
-
-def test_untampered_objects_remain_deterministic() -> None:
-    first = _sidecar()
-    second = _sidecar()
-    assert first == second
-    assert first.sidecar_sha256 == second.sidecar_sha256
-    assert first.attempts[0].source_trace_sha256 == second.attempts[0].source_trace_sha256
-    assert verify_c0_gripper_controller_sidecar_integrity(first) == ()
-    assert json.dumps(first.to_manifest_record(), sort_keys=True, allow_nan=False) == (
-        json.dumps(second.to_manifest_record(), sort_keys=True, allow_nan=False)
     )
