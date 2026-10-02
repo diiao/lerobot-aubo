@@ -1,5 +1,7 @@
 # Robot Arm Technical Documentation — AUBO i10 竹条抓取 ACT 恢复示教阶段（run06）
 
+本文是2026-08-03的历史实验记录。当前模型、命令和部署以[七维 SmolVLA 工作流](../examples/phone_to_auboi10/README.md)为准，旧脚本可从 `69435fe` 查阅。
+
 > 状态：已完成离线验收，并完成 1 次真实端到端成功验证。
 >
 > 更新日期：2026-08-03
