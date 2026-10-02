@@ -12,8 +12,6 @@ from numbers import Real
 JOINT_SCHEMA_VERSION = "AuboI10JointLegacyTeleopV2"
 JOINT_NAMES = tuple(f"J{i}" for i in range(1, 7))
 LEARNED_JOINT_NAMES = JOINT_NAMES
-FIXED_J5_DEG = 90.0
-FIXED_J5_TOLERANCE_DEG = 0.5
 JOINT_FIELDS = (*LEARNED_JOINT_NAMES, "gripper_pos")
 JOINT_DIM = len(JOINT_FIELDS)
 GRIPPER_INDEX = JOINT_FIELDS.index("gripper_pos")
@@ -43,12 +41,6 @@ def joint_command(action: Mapping) -> dict[str, float]:
 def expand_joint_command(action: Mapping) -> dict[str, float]:
     """All six joint targets are already explicit in the legacy-teleop contract."""
     return joint_command(action)
-
-
-def require_fixed_j5(value):
-    value = finite_vector([value], 1, "J5")[0]
-    if abs(value - FIXED_J5_DEG) > FIXED_J5_TOLERANCE_DEG:
-        raise ValueError("J5 must remain within 0.5 deg of fixed 90 deg")
 
 
 def joint_observation_features() -> dict:

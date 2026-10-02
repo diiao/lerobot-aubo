@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from lerobot.bamboo_sorting.aubo_joint_contract import (
-    FIXED_J5_DEG, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command,
+    JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command,
     joint_command, joint_contract_record, joint_dataset_features, require_joint_dataset,
 )
 from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, JointFrameObserver

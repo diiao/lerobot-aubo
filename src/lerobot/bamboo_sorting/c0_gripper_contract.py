@@ -14,35 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline-only C0 gripper command event and episode trace contracts.
+"""Suction command events used by the current capture journal.
 
-These records describe gripper *command* switches and their controller
-evidence after the fact. Importing, constructing, or serializing them never
-reads a camera, connects to AUBO, performs gripper IO, starts training or
-inference, or creates live authorization.
-
-The recorded gripper values are software command latches (the last commanded
-0/100 state), not vacuum pressure, not physical jaw position, and not grasp
-success feedback. Controller DO readback only proves what the controller
-output register holds; it is never physical gripper feedback. This contract
-does not assign physical meaning to specific DO pin numbers: it records which
-pins were requested and what was read back, nothing more.
-
-Latch semantics follow the AUBO execution layer: the software latch is only
-updated after the DO writes (and readback, when supported) succeed. A failed
-transition request therefore keeps ``commanded_state_after ==
-commanded_state_before`` and must retain its failure evidence (``error``,
-partial-write flag, after-failure readback) instead of being rewritten into a
-successful switch.
-
-Timing model follows ``record_loop``: the observation is captured *before*
-the action is sent on each control cycle. A transition is *requested* at frame
-``t`` exactly when ``action[t] != observation[t]``; each requested transition
-owns exactly one event, and ``observation[t+1]`` equals that event's actual
-``commanded_state_after``. When every event succeeds this reduces to the
-normal ``observation[t] == action[t-1]`` relation; failed events deliberately
-break it, and the contract models that instead of hiding it.
-"""
+DO evidence describes controller commands, not physical vacuum feedback."""
 
 from __future__ import annotations
 
@@ -52,17 +26,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from .c0_capture_contract import C0_HUMAN_OUTCOMES, C0EpisodeManifestV1
-from .contracts import GRIPPER_BINARY_VALUES
+GRIPPER_BINARY_VALUES: Final = (0.0, 100.0)
 
 C0_GRIPPER_EVENT_SCHEMA_VERSION: Final = "C0GripperEventV1"
-C0_GRIPPER_EPISODE_TRACE_SCHEMA_VERSION: Final = "C0GripperEpisodeTraceV1"
-C0_GRIPPER_EPISODE_BINDING_SCHEMA_VERSION: Final = "C0GripperEpisodeBindingV1"
 
 C0_GRIPPER_EVENT_TYPES: Final = frozenset({"command_on", "command_off"})
 
 GRIPPER_RELEASED: Final = 0.0
+
 GRIPPER_COMMANDED_ON: Final = 100.0
+
 DO_WRITE_SUCCESS_RETURN_CODES: Final = (0, None)
 
 
@@ -138,35 +111,6 @@ def _require_optional_str_bool_map(name: str, value: object) -> dict[str, bool] 
     if value is None:
         return None
     return _require_str_bool_map(name, value)
-
-
-def derive_gripper_transition_frames(
-    action_gripper_values: Sequence[float],
-    observation_gripper_values: Sequence[float],
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Derive (command_on frames, command_off frames) of requested transitions.
-
-    A transition is requested at frame ``t`` exactly when
-    ``action[t] != observation[t]`` (the observation holds the latch from
-    before the action is applied). Both sequences must already be validated
-    binary 0/100 values of equal length. This helper is pure and never mutates
-    its inputs.
-    """
-
-    if len(action_gripper_values) != len(observation_gripper_values):
-        raise ValueError("action and observation sequences must have equal length")
-    on_frames: list[int] = []
-    off_frames: list[int] = []
-    for index, (observation, action) in enumerate(
-        zip(observation_gripper_values, action_gripper_values, strict=True)
-    ):
-        if action == observation:
-            continue
-        if observation == GRIPPER_RELEASED and action == GRIPPER_COMMANDED_ON:
-            on_frames.append(index)
-        else:
-            off_frames.append(index)
-    return tuple(on_frames), tuple(off_frames)
 
 
 @dataclass(frozen=True)
@@ -510,251 +454,6 @@ class C0GripperEventV1:
             "error": self.error,
             "physical_gripper_feedback_available": False,
             "physical_grasp_success_proven": False,
-            "serialized_record_grants_live_authorization": False,
-            "hardware_access_performed_by_serialization": False,
-        }
-        return copy.deepcopy(record)
-
-
-@dataclass(frozen=True)
-class C0GripperEpisodeTraceV1:
-    """Pure-data gripper trajectory for one synthetic C0 episode.
-
-    ``synthetic`` must stay ``True`` in this schema version: a synthetic trace
-    can never be presented as real capture evidence. Binding real captures
-    requires a new schema version with explicit capture evidence.
-
-    Structural invariants enforced at construction:
-
-    - action and observation lengths equal ``frame_count`` and hold only 0/100;
-    - a transition request exists at frame ``t`` exactly when
-      ``action[t] != observation[t]``; events correspond one-to-one with those
-      frames, in direction and in requested/before states;
-    - the latch chain holds: ``observation[0] == 0.0``, and for ``t >= 1``,
-      ``observation[t]`` equals the previous latch when no transition was
-      requested, or the event's actual ``commanded_state_after`` when one was
-      (so failed events leave the latch unchanged);
-    - event frames are strictly increasing, unique, and inside the episode.
-    """
-
-    schema_version: str
-    episode_id: str
-    fps: float
-    frame_count: int
-    action_gripper_values: Sequence[object]
-    observation_gripper_values: Sequence[object]
-    events: Sequence[C0GripperEventV1]
-    lift_start_frame_index: int | None
-    placement_complete_frame_index: int | None
-    human_outcome: str
-    synthetic: bool
-    finalized: bool
-
-    def __post_init__(self) -> None:
-        if self.schema_version != C0_GRIPPER_EPISODE_TRACE_SCHEMA_VERSION:
-            raise ValueError(
-                f"schema_version must be {C0_GRIPPER_EPISODE_TRACE_SCHEMA_VERSION!r}"
-            )
-        _require_nonempty_string("episode_id", self.episode_id)
-
-        if isinstance(self.fps, bool) or not isinstance(self.fps, (int, float)):
-            raise ValueError("fps must be a finite positive number, not bool")
-        fps = float(self.fps)
-        if not math.isfinite(fps) or fps <= 0:
-            raise ValueError("fps must be a finite positive number")
-        object.__setattr__(self, "fps", fps)
-
-        if isinstance(self.frame_count, bool) or not isinstance(self.frame_count, int):
-            raise ValueError("frame_count must be a positive integer, not bool or float")
-        if self.frame_count <= 0:
-            raise ValueError("frame_count must be a positive integer")
-
-        for name in ("action_gripper_values", "observation_gripper_values"):
-            raw = getattr(self, name)
-            if isinstance(raw, (str, bytes)):
-                raise ValueError(f"{name} must be a sequence of binary gripper values")
-            values = tuple(
-                _require_gripper_value(f"{name}[{index}]", item)
-                for index, item in enumerate(raw)
-            )
-            if len(values) != self.frame_count:
-                raise ValueError(f"{name} length must equal frame_count ({self.frame_count})")
-            object.__setattr__(self, name, values)
-
-        if isinstance(self.events, (str, bytes)):
-            raise ValueError("events must be a sequence of C0GripperEventV1")
-        events = tuple(self.events)
-        if not all(isinstance(event, C0GripperEventV1) for event in events):
-            raise ValueError("events must contain only C0GripperEventV1 records")
-        object.__setattr__(self, "events", events)
-
-        previous_frame = -1
-        for position, event in enumerate(events):
-            if event.episode_id != self.episode_id:
-                raise ValueError("event episode_id must equal the trace episode_id")
-            if event.event_index != position:
-                raise ValueError("event_index must be exactly 0..N-1 in order")
-            if event.frame_index >= self.frame_count:
-                raise ValueError("event frame_index must be inside the episode")
-            if event.frame_index <= previous_frame:
-                raise ValueError("event frame_index must be strictly increasing and unique")
-            previous_frame = event.frame_index
-
-        # Latch chain: the observation carries the latch before each action.
-        # The start state is checked before the event correspondence so a
-        # corrupted initial latch reports its own cause.
-        observation = self.observation_gripper_values
-        if observation[0] != GRIPPER_RELEASED:
-            raise ValueError("observation_gripper_values[0] must be 0.0 (released at start)")
-
-        action = self.action_gripper_values
-        on_frames, off_frames = derive_gripper_transition_frames(action, observation)
-        event_on_frames = tuple(e.frame_index for e in events if e.event_type == "command_on")
-        event_off_frames = tuple(e.frame_index for e in events if e.event_type == "command_off")
-        if event_on_frames != on_frames or event_off_frames != off_frames:
-            raise ValueError(
-                "events must correspond one-to-one with requested action gripper transitions"
-            )
-        events_by_frame = {event.frame_index: event for event in events}
-        for event in events:
-            frame = event.frame_index
-            if (
-                event.commanded_state_before != observation[frame]
-                or event.requested_state_after != action[frame]
-                or event.action_gripper_pos != action[frame]
-            ):
-                raise ValueError(
-                    "event commanded/requested states must match the action and "
-                    "observation trajectory at its frame"
-                )
-
-        for index in range(1, self.frame_count):
-            previous = index - 1
-            if action[previous] == observation[previous]:
-                expected = observation[previous]
-            else:
-                expected = events_by_frame[previous].commanded_state_after
-            if observation[index] != expected:
-                raise ValueError(
-                    "record_loop timing requires observation[t] to carry the latch after "
-                    "action[t-1]: unchanged without a request, or the event's actual "
-                    "commanded_state_after"
-                )
-
-        for name in ("lift_start_frame_index", "placement_complete_frame_index"):
-            value = getattr(self, name)
-            if value is None:
-                continue
-            index = _require_non_negative_int(name, value)
-            if index >= self.frame_count:
-                raise ValueError(f"{name} must be inside the episode")
-
-        if self.human_outcome not in C0_HUMAN_OUTCOMES:
-            raise ValueError(f"human_outcome must be one of {sorted(C0_HUMAN_OUTCOMES)}")
-        if not isinstance(self.synthetic, bool):
-            raise ValueError("synthetic must be bool")
-        if not self.synthetic:
-            raise ValueError(
-                "synthetic must be True in this schema version; real captures require "
-                "a new schema version with explicit capture evidence"
-            )
-        if not isinstance(self.finalized, bool):
-            raise ValueError("finalized must be bool")
-        if not self.finalized:
-            raise ValueError("finalized must be True for a completed trace")
-
-    def to_manifest_record(self) -> dict[str, object]:
-        """Return a detached JSON-compatible record that never claims real capture."""
-
-        on_frames, off_frames = derive_gripper_transition_frames(
-            self.action_gripper_values, self.observation_gripper_values
-        )
-        record = {
-            "schema_version": self.schema_version,
-            "episode_id": self.episode_id,
-            "fps": self.fps,
-            "frame_count": self.frame_count,
-            "action_gripper_values": list(self.action_gripper_values),
-            "observation_gripper_values": list(self.observation_gripper_values),
-            "events": [event.to_manifest_record() for event in self.events],
-            "lift_start_frame_index": self.lift_start_frame_index,
-            "placement_complete_frame_index": self.placement_complete_frame_index,
-            "human_outcome": self.human_outcome,
-            "synthetic": self.synthetic,
-            "finalized": self.finalized,
-            "derived_command_on_frames": list(on_frames),
-            "derived_command_off_frames": list(off_frames),
-            "real_capture_evidence": False,
-            "physical_gripper_feedback_available": False,
-            "physical_grasp_success_proven": False,
-            "training_authorized": False,
-            "policy_execution_authorized": False,
-            "serialized_record_grants_live_authorization": False,
-            "hardware_access_performed_by_serialization": False,
-        }
-        return copy.deepcopy(record)
-
-
-@dataclass(frozen=True)
-class C0GripperEpisodeBindingV1:
-    """Offline binding between a gripper trace and a C0 episode manifest.
-
-    This wrapper cross-checks identity and consistency fields only
-    (``episode_id``, ``frame_count``, ``fps``, ``human_outcome``) and requires
-    the manifest's dataset episode reference and SHA-256 to be present. It
-    never reads or re-hashes dataset files, so it does not prove that the
-    trace arrays came from the referenced dataset episode; that step belongs
-    to the dataset-content audit. Because V1 traces are synthetic-only, this
-    binding is currently a structural rehearsal of the future real-capture
-    binding and never constitutes real capture evidence.
-    """
-
-    schema_version: str
-    trace: C0GripperEpisodeTraceV1
-    episode_manifest: C0EpisodeManifestV1
-
-    def __post_init__(self) -> None:
-        if self.schema_version != C0_GRIPPER_EPISODE_BINDING_SCHEMA_VERSION:
-            raise ValueError(
-                f"schema_version must be {C0_GRIPPER_EPISODE_BINDING_SCHEMA_VERSION!r}"
-            )
-        if not isinstance(self.trace, C0GripperEpisodeTraceV1):
-            raise ValueError("trace must be a C0GripperEpisodeTraceV1")
-        if not isinstance(self.episode_manifest, C0EpisodeManifestV1):
-            raise ValueError("episode_manifest must be a C0EpisodeManifestV1")
-
-        manifest = self.episode_manifest
-        if self.trace.episode_id != manifest.episode_id:
-            raise ValueError("trace episode_id must equal the manifest episode_id")
-        if self.trace.frame_count != manifest.frame_count:
-            raise ValueError("trace frame_count must equal the manifest frame_count")
-        if self.trace.fps != manifest.fps:
-            raise ValueError("trace fps must equal the manifest fps")
-        if self.trace.human_outcome != manifest.human_outcome:
-            raise ValueError("trace human_outcome must equal the manifest human_outcome")
-        if not (manifest.dataset_episode_ref and manifest.dataset_episode_sha256):
-            raise ValueError(
-                "the manifest must carry dataset_episode_ref and dataset_episode_sha256"
-            )
-        if not (manifest.human_outcome_evidence_ref and manifest.human_outcome_evidence_sha256):
-            raise ValueError(
-                "the manifest must carry human outcome evidence ref and sha256"
-            )
-
-    def to_manifest_record(self) -> dict[str, object]:
-        """Return a detached JSON-compatible binding that grants no authorization."""
-
-        record = {
-            "schema_version": self.schema_version,
-            "episode_id": self.trace.episode_id,
-            "trace": self.trace.to_manifest_record(),
-            "episode_manifest": self.episode_manifest.to_manifest_record(),
-            "dataset_content_rehashed_by_binding": False,
-            "binding_is_real_capture_evidence": False,
-            "physical_gripper_feedback_available": False,
-            "physical_grasp_success_proven": False,
-            "training_authorized": False,
-            "policy_execution_authorized": False,
             "serialized_record_grants_live_authorization": False,
             "hardware_access_performed_by_serialization": False,
         }
