@@ -783,7 +783,6 @@ _stub_package("lerobot.bamboo_sorting")
 
 baseline_modules = set(sys.modules)
 
-import lerobot.bamboo_sorting.c0_gripper_auditor  # noqa: F401
 import lerobot.bamboo_sorting.c0_gripper_contract  # noqa: F401
 
 forbidden_roots = {"cv2", "pyaubo_sdk", "torch"}
@@ -805,7 +804,6 @@ print(
             "sockets": sockets,
             "package_init_executed": "lerobot.bamboo_sorting.smolvla_adapter" in sys.modules,
             "contract_loaded": "lerobot.bamboo_sorting.c0_gripper_contract" in sys.modules,
-            "auditor_loaded": "lerobot.bamboo_sorting.c0_gripper_auditor" in sys.modules,
         }
     )
 )
@@ -825,7 +823,6 @@ def test_importing_gripper_modules_touches_no_hardware_network_or_threads() -> N
     # The probe is only meaningful if the modules really loaded and the heavy
     # package __init__ was genuinely bypassed.
     assert state["contract_loaded"] is True
-    assert state["auditor_loaded"] is True
     assert state["package_init_executed"] is False
     assert state["forbidden_modules"] == []
     assert state["extra_threads"] == []

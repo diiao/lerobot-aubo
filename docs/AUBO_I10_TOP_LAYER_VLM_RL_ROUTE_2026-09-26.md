@@ -13,7 +13,7 @@
 
 这里的“最上层”不是图像里最高的一个像素。对每对在交叉处接触的竹条，记录谁在上、谁在下，以及是否看不清。用 `A -> B` 表示 A 在交叉处压住 B、应先于 B 取走；没有被其他条压住且吸盘有可见接触区域的竹条才是候选。若层序或吸附区域证据不足，输出 `uncertain`，不能猜测下层目标。这个定义要用真实摆放和人工复核检查；RGB 图像本身不保证能判定所有接触关系。
 
-当前七维 SmolVLA 使用双路 CameraSetV2 RGB、固定任务文字 `Pick one strip and place it in the collection area.`，输出六个绝对关节目标和吸盘指令。已有单根及双根抓放示范，但没有多根层序真值。当前适配器要求固定任务文字，也没有目标竹条 ID、框或掩码输入；`run_joint_smooth.py` 的旧单根模式在一次吸附—释放后结束，混训双根模式在两次释放后结束。既有 `rl_contract.py` / `rl_episode_contract.py` 绑定旧的 8D TCP 路线，不能当作本七维路线的在线 RL 接口。
+当前七维 SmolVLA 使用双路 CameraSetV2 RGB、固定任务文字 `Pick one strip and place it in the collection area.`，输出六个绝对关节目标和吸盘指令。已有单根及双根抓放示范，但没有多根层序真值。当前适配器要求固定任务文字，也没有目标竹条 ID、框或掩码输入；`run_joint_smooth.py` 的旧单根模式在一次吸附—释放后结束，混训双根模式在两次释放后结束。历史 `rl_contract.py` / `rl_episode_contract.py` 绑定旧8维TCP路线，已随旧功能退役；原文可从 `69435fe` 查阅，当前没有七维在线RL接口。
 
 ## 2. 拟研究的分工与接口
 
