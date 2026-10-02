@@ -12,18 +12,55 @@ MAX_WITHOUT_PREDICTION=.6
 MAX_CAMERA_SKEW=.1
 
 
+def validated_action_chunk(result):
+    """Check the optional full-chunk wire response, including discrete IO rows."""
+    decoded=result.get('action_chunk');raw=result.get('raw_action_chunk')
+    if (result.get('shape')!=[50,7] or not isinstance(decoded,list) or len(decoded)!=50
+            or not isinstance(raw,list) or len(raw)!=50):
+        raise ValueError('full prediction must contain 50 x 7 actions')
+    checked=[]
+    for action,unrounded in zip(decoded,raw):
+        action=finite_vector(action,7,'chunk action')
+        unrounded=finite_vector(unrounded,7,'raw chunk action')
+        if action[:6]!=unrounded[:6] or action[-1]!=(100. if unrounded[-1]>=50. else 0.):
+            raise ValueError('inconsistent decoded action chunk')
+        checked.append(list(action))
+    if (list(finite_vector(result['action'],7,'first action'))!=checked[0]
+            or finite_vector(result['raw_action'],7,'first raw action')!=finite_vector(raw[0],7,'raw chunk start')):
+        raise ValueError('first action does not match chunk')
+    return checked
+
+
+def select_approach_action(chunk,timestamps,now):
+    """Age-align one coherent 7D row; never skip a predicted closure boundary.
+
+    Input chunk must pass validated_action_chunk. The caller still validates
+    age, FK/workspace and limits, and freezes the selected closure row.
+    """
+    ts=finite_vector(timestamps,3,'sensor timestamps')
+    now=finite_vector([now],1,'clock')[0]
+    if min(ts)<0 or max(ts)>now:raise ValueError('invalid selection clock')
+    age=now-min(ts);nominal_index=math.floor(age/DT)
+    if nominal_index>=len(chunk):raise ValueError('action chunk exhausted')
+    index=next((i for i in range(nominal_index+1) if chunk[i][-1]==100.),nominal_index)
+    return list(chunk[index]),{'nominal_index':nominal_index,'selected_index':index,
+        'observation_age_s':age,'closure_boundary':chunk[index][-1]==100.}
+
+
 def workspace(tcp):
     tcp=finite_vector(tcp,3,'TCP')
     if any(not lo<=x<=hi for x,lo,hi in zip(tcp,(-.8,-1.2,0.),(1.,0.,.8))):
         raise ValueError('outside capture workspace')
 
 
-def validate_prediction(action,state,tcp,target_tcp,lower,upper,timestamps,now):
+def validate_prediction(action,state,tcp,target_tcp,lower,upper,timestamps,now,*,
+                        max_prediction_age=MAX_PREDICTION_AGE):
     action=finite_vector(action,7,'prediction')
     state=finite_vector(state,7,'state')
     ts=finite_vector(timestamps,3,'sensor timestamps')
-    if not 0<=now-min(ts)<=MAX_PREDICTION_AGE or max(ts)>now:
-        raise ValueError('expired prediction')
+    age=now-min(ts)
+    if not 0<=age<=max_prediction_age or max(ts)>now:
+        raise ValueError(f'expired prediction: age={age*1000:.1f} ms, limit={max_prediction_age*1000:.0f} ms')
     if abs(ts[0]-ts[1])>MAX_CAMERA_SKEW:raise ValueError('camera skew')
     if state[-1] not in (0.,100.) or action[-1] not in (0.,100.):raise ValueError('invalid suction')
     lower=finite_vector(lower,6,'joint lower limits')

@@ -3,8 +3,9 @@
 
 No hardware/model imports in plan mode. Shadow obtains state/config/algorithm
 and IO-readback interfaces, calls no motion API and no digital-output setter.
-Only explicit home/single-step modes may obtain MotionControl. No suction writes
-or retries. Homing never loads a policy or opens cameras.
+Only explicit home/single-step modes may obtain MotionControl. Homing ensures
+suction is released before moving; already released outputs are left unchanged.
+No motion retries. Homing never loads a policy or opens cameras.
 """
 import argparse
 import base64
@@ -21,6 +22,7 @@ import time
 import zlib
 
 from lerobot.bamboo_sorting.aubo_joint_contract import finite_vector, joint_contract_record
+from lerobot.bamboo_sorting.joint_smooth import validated_action_chunk
 from lerobot.bamboo_sorting.joint_trial import TrialLimits, check_step, SingleStepSession, home_to_start, stationary_step_limits, short_loop_limits, wait_until_stationary
 
 REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-legacy-v2-20260922'
@@ -57,9 +59,10 @@ def encode_images(images, codec):
 class InferencePipe:
     def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None,
                  remote_root=REMOTE_ROOT, checkpoint=None, expected_sha256=MODEL_SHA,
-                 inference_script=None):
+                 inference_script=None,return_action_chunk=False):
         self.log=(output/'inference_stderr.log').open('w')
         self.expected_sha256=expected_sha256
+        self.return_action_chunk=return_action_chunk
         deployment = 'joint_live_bf16_20260922' if bf16 else 'joint_live_matmul_20260922'
         script = 'joint_inference_stdio.py'
         if cuda_graph:
@@ -76,6 +79,8 @@ class InferencePipe:
             args.append('--fast-matmul')
         if bf16:
             args.append('--bf16')
+        if return_action_chunk:
+            args.append('--return-action-chunk')
         if task is not None:
             args.extend(['--task',task])
         self.process=subprocess.Popen(['ssh','-T','gpu',shlex.join(args)],stdin=subprocess.PIPE,
@@ -88,6 +93,8 @@ class InferencePipe:
                 raise ValueError('inference precision mismatch')
             if task is not None and ready.get('task') != task:
                 raise ValueError('inference task mismatch')
+            if return_action_chunk and ready.get('action_chunk_available') is not True:
+                raise ValueError('inference worker does not provide full actions')
         except BaseException:
             self.close()
             raise
@@ -115,6 +122,7 @@ class InferencePipe:
             raise ValueError('invalid prediction identity or shape')
         finite_vector(result['raw_action'],7,'raw model action')
         finite_vector(result['action'],7,'decoded model action')
+        if self.return_action_chunk:validated_action_chunk(result)
         result['transport'] = {'codec':codec, 'request_bytes':len(wire.encode()),
             'encode_s':encoded_at-start, 'roundtrip_s':time.perf_counter()-start}
         return result
@@ -221,9 +229,19 @@ def main(argv=None):
     p.add_argument('--output',type=Path)
     p.add_argument('--shadow-report',type=Path)
     p.add_argument('--onsite-confirmed',action='store_true')
+    release=p.add_mutually_exclusive_group()
+    release.add_argument('--release-if-unset',action='store_true',
+                   help='Home only: send release if both suction outputs are low, without an input prompt')
+    release.add_argument('--release-before-home',action='store_true',
+                   help='Home default: ensure suction is released before homing, without an input prompt')
     p.add_argument('--stationary-step',action='store_true',
                    help='Explicit static-scene, unchanged-state single-step timing; not continuous execution')
     args=p.parse_args(argv)
+    if args.stage=='home' and not args.release_if_unset:
+        args.release_before_home=True
+    release_requested=args.release_if_unset or args.release_before_home
+    if release_requested and args.stage!='home':
+        p.error('suction release options are only valid with --stage home')
     if args.stage in ('short-loop','short-shadow') and not args.stationary_step:
         p.error('short-loop requires --stationary-step (stop between observations)')
     expected_samples=12 if args.stage in ('shadow','short-shadow') else 3 if args.stage=='short-loop' else 1
@@ -233,12 +251,15 @@ def main(argv=None):
           'transport_codec':'jpeg95','fast_matmul':False,
           'timing_mode':'stationary_single_step' if args.stationary_step else 'continuous',
           'limits':asdict(limits),'contract':joint_contract_record(),
-          'suction_writes':False,'automatic_homing':False,'continuous_execution':False}
+          'suction_writes':release_requested,'release_if_unset':args.release_if_unset,
+          'release_before_home':args.release_before_home,
+          'automatic_homing':False,'continuous_execution':False}
     plan['explicit_homing'] = args.stage=='home'
     plan['stop_between_steps'] = args.stage=='short-loop'
     plan['max_steps'] = expected_samples
     if args.stage=='plan':print(json.dumps(plan,indent=2));return 0
-    if args.output is None or args.output.exists():p.error('fresh --output required')
+    if args.output is None and args.stage!='home':p.error('fresh --output required')
+    if args.output is not None and args.output.exists():p.error('fresh --output required')
     if not args.onsite_confirmed:p.error('onsite confirmation required for live observation or motion')
     if args.stage in ('single-step','short-loop'):
         if not args.shadow_report:p.error('--shadow-report required')
@@ -259,18 +280,44 @@ def main(argv=None):
             p.error('shadow limits mismatch')
         age=time.time()-report.get('completed_at_unix',0)
         if not 0<=age<=120:p.error('shadow evidence expired (120 seconds)')
-    args.output.mkdir(parents=True,exist_ok=False);write(args.output/'plan.json',plan)
+    if args.output is not None:
+        args.output.mkdir(parents=True,exist_ok=False);write(args.output/'plan.json',plan)
     station=ReadOnlyStation();pipe=None;records=[];passed=False;failure=None
     try:
         if args.stage=='home':
             station.connect(include_cameras=False)
+            if release_requested:
+                if station.iface.getMotionControl().isServoModeEnabled():
+                    raise RuntimeError('existing servo owner; refusing homing')
+                should_release=False
+                try:
+                    state,_,_=station.current()
+                    should_release=args.release_before_home and state[-1]!=0
+                except ValueError as exc:
+                    allowed={'unknown suction output pair: (False, False)'}
+                    if args.release_before_home:allowed.add('unknown suction output pair: (True, True)')
+                    if str(exc) not in allowed:raise
+                    should_release=True
+                if should_release:
+                    print('发送夹爪释放指令，核对读回后归位。',flush=True)
+                    from lerobot.robots.aubo_i10.aubo_i10 import AuboI10Robot
+                    from lerobot.robots.aubo_i10.config_aubo_i10 import AuboI10Config
+                    suction=AuboI10Robot(AuboI10Config());suction.io_control=station.io_readback
+                    try:
+                        if not suction.suction_release():raise RuntimeError('initial suction release failed')
+                    finally:
+                        if args.output is not None:
+                            write(args.output/'initial_suction_release.json',suction.last_gripper_command_trace)
+                    state,_,_=station.current()
+                    if state[-1]!=0:raise ValueError('release state not confirmed; refusing homing')
             def home_progress(event):
-                with (args.output/'home_progress.jsonl').open('a') as f:
-                    f.write(json.dumps(event,allow_nan=False)+'\n')
+                if args.output is not None:
+                    with (args.output/'home_progress.jsonl').open('a') as f:
+                        f.write(json.dumps(event,allow_nan=False)+'\n')
             receipt=home_to_start(station.iface.getMotionControl(),
                 lambda:station.current(require_stationary=False)[0],lower=station.lower,upper=station.upper,
                 is_steady=station.state.isSteady,progress=home_progress)
-            write(args.output/'home.json',receipt)
+            if args.output is not None:write(args.output/'home.json',receipt)
             passed=True
         else:
             pipe=InferencePipe(args.output)  # Load/warm GPU BEFORE connecting cameras/robot.
@@ -330,7 +377,8 @@ def main(argv=None):
                  'completed':failure is None and (args.stage=='home' and passed or len(records)==expected_samples),
                  'gate_pass_count':sum(r['gate']['passed'] for r in records),
                  'completed_at_unix':time.time(),'physical_success_verified':False}
-        write(args.output/'complete.json',summary)
+        if args.output is not None:write(args.output/'complete.json',summary)
+        if args.stage=='home':print('归位完成' if summary['passed'] else '归位失败',flush=True)
     return 0 if summary['passed'] else 1
 
 if __name__=='__main__':

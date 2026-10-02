@@ -18,35 +18,53 @@ from lerobot.bamboo_sorting.aubo_joint_contract import finite_vector,require_joi
 from lerobot.bamboo_sorting.joint_trial import START_DEG,SingleStepSession,wait_until_stationary
 from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
 from lerobot.bamboo_sorting.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
-    MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace)
+    MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace,
+    validated_action_chunk,select_approach_action)
 
 MIXED_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-mixed-20260927'
 MIXED_MODEL_SHA='79eb23606f6aa4e77484dd4bbf16a8cd273bb6a17ccfc9668ef44a4e2ed22ac7'
 MIXED_CHECKPOINT=f'{MIXED_REMOTE_ROOT}/outputs/joint_mixed_single60_double50_run01/final'
 MIXED_INFERENCE_SCRIPT=f'{MIXED_REMOTE_ROOT}/artifacts/aubo_joint_two_strip_top45_pilot_20260927/joint_inference_stdio.py'
+BOTH_ORDERS_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-both-orders-20260928'
+BOTH_ORDERS_MODEL_SHA='c24b61b8d902d395c88890a3243879507d75333d5deb0bc99c13572ecddbfc3b'
+BOTH_ORDERS_CHECKPOINT=f'{BOTH_ORDERS_REMOTE_ROOT}/outputs/joint_mixed_single60_top45_50_top90_50_30k_run01/final'
+BOTH_ORDERS_INFERENCE_SCRIPT=f'{BOTH_ORDERS_REMOTE_ROOT}/artifacts/aubo_joint_both_orders_20260928/joint_inference_stdio.py'
+BOTH_ORDERS_APPROACH_SCRIPT=f'{BOTH_ORDERS_REMOTE_ROOT}/artifacts/joint_age_aligned_approach_20260928/joint_inference_stdio.py'
 
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
-    p.add_argument('--model',choices=('legacy-single','mixed-double'),default='legacy-single')
+    p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders'),default='legacy-single')
+    p.add_argument('--approach-age-aligned',action='store_true',
+                   help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
-    mixed=args.model=='mixed-double'
+    approach=args.approach_age_aligned
+    if approach and args.model!='mixed-both-orders':p.error('--approach-age-aligned requires --model mixed-both-orders')
+    mixed=args.model in ('mixed-double','mixed-both-orders')
     expected_cycles=2 if mixed else 1
     max_seconds=360 if mixed else 120
     servo_command_time=.08 if mixed else DT
     max_camera_age_ms=250 if mixed else 100
+    max_prediction_age=.5 if args.model=='mixed-both-orders' else MAX_PREDICTION_AGE
     model_sha=MIXED_MODEL_SHA if mixed else MODEL_SHA
     pipe_options=({'remote_root':MIXED_REMOTE_ROOT,'checkpoint':MIXED_CHECKPOINT,
                    'expected_sha256':MIXED_MODEL_SHA,'inference_script':MIXED_INFERENCE_SCRIPT}
                   if mixed else {})
+    if args.model=='mixed-both-orders':
+        model_sha=BOTH_ORDERS_MODEL_SHA
+        pipe_options={'remote_root':BOTH_ORDERS_REMOTE_ROOT,'checkpoint':BOTH_ORDERS_CHECKPOINT,
+                      'expected_sha256':model_sha,'inference_script':BOTH_ORDERS_INFERENCE_SCRIPT}
+        if approach:pipe_options.update(inference_script=BOTH_ORDERS_APPROACH_SCRIPT,return_action_chunk=True)
     plan={'mode':'asynchronous_inference_continuous_servo','model':args.model,
+          'action_selection':'observation_age_while_open_first_step_while_closed' if approach else 'first_step',
+          'pending_suction_policy':'continue_inference_while_open' if approach else 'accept_fresh_inflight_before_io',
           'checkpoint_sha256':model_sha,'requested_suction_cycles':expected_cycles,
           'camera_set_sha256':hashlib.sha256(CAMERA_SET.read_bytes()).hexdigest(),'control_hz':1/DT,
           'joint_speed_deg_s':MAX_SPEED,'joint_acceleration_deg_s2':MAX_ACCEL,'tcp_speed_m_s':MAX_TCP_SPEED,
           'max_prediction_delta_deg':None,'max_prediction_delta_m':None,
           'max_servo_tracking_error_deg':MAX_TRACKING_ERROR_DEG,
-          'max_prediction_age_s':MAX_PREDICTION_AGE,'watchdog_s':MAX_WITHOUT_PREDICTION,
+          'max_prediction_age_s':max_prediction_age,'watchdog_s':MAX_WITHOUT_PREDICTION,
           'max_camera_skew_s':MAX_CAMERA_SKEW,
           'max_camera_age_ms':max_camera_age_ms,
           'rpc_timeout_ms':RPC_TIMEOUT_MS,'max_control_gap_s':.35,
@@ -113,6 +131,8 @@ def main(argv=None):
                         raise RuntimeError('snapshot save failed')
             return result
         future=None;goal=None;pending_suction=False;last_observation=None;trajectory=None
+        active_chunk=None;active_times=None;selection=None;prediction_id=None
+        discard_pending_result=False;request_index=0;inflight_index=None
         last_servo_sent_at=None
         deadline=time.perf_counter()+max_seconds;next_tick=time.perf_counter();last_tick=next_tick
         prediction_deadline=None
@@ -126,13 +146,29 @@ def main(argv=None):
             state,tcp,stamp=station.current(require_stationary=False)
             if state[-1]!=held_suction:raise ValueError('external suction state change')
             workspace(tcp)
+            if future is not None and future.done() and discard_pending_result:
+                result=future.result();future=None;discard_pending_result=False
+                log(trace,{'index':inflight_index,'discarded_prediction':result,'reason':'observation_precedes_suction_change',
+                    'observed_state':observed_state,'sensor_times':sensor_times})
             if future is not None and future.done():
                 result=future.result();future=None
-                log(trace,{'index':predictions,'task':task,'observed_state':observed_state,
+                previous_pending_target=goal.copy() if approach and pending_suction else None
+                log(trace,{'index':inflight_index,'task':task,'observed_state':observed_state,
                     'sensor_times':sensor_times,'prediction':result,'received_at':time.perf_counter()})
-                accepted=validate_prediction(result['action'],state,tcp,fk(result['action'][:6]),
-                    station.lower,station.upper,sensor_times,time.perf_counter())
+                candidate=result['action']
+                if approach:
+                    active_chunk=validated_action_chunk(result);active_times=list(sensor_times)
+                    selection=None
+                    if held_suction==0:
+                        candidate,selection=select_approach_action(active_chunk,active_times,time.perf_counter())
+                    prediction_id=inflight_index
+                accepted=validate_prediction(candidate,state,tcp,fk(candidate[:6]),
+                    station.lower,station.upper,sensor_times,time.perf_counter(),
+                    max_prediction_age=max_prediction_age)
                 predictions+=1;goal=accepted;last_observation=min(sensor_times)
+                if previous_pending_target is not None:
+                    log(trace,{'pending_suction_replanned':{'previous_target':previous_pending_target,
+                        'updated_target':goal,'prediction_index':prediction_id}})
                 prediction_deadline=last_observation+MAX_WITHOUT_PREDICTION
                 pending_suction=goal[-1]!=held_suction
                 if not owned:
@@ -143,6 +179,16 @@ def main(argv=None):
                     raise TimeoutError(f'no fresh prediction within {MAX_WITHOUT_PREDICTION*1000:.0f} ms')
                 if pending_suction and time.perf_counter()-last_observation>1.5:
                     raise TimeoutError('suction transition target not reached within 1.5 seconds')
+                if approach and active_chunk is not None and held_suction==0 and not pending_suction:
+                    candidate,new_selection=select_approach_action(active_chunk,active_times,time.perf_counter())
+                    if new_selection['selected_index']!=selection['selected_index']:
+                        goal=validate_prediction(candidate,state,tcp,fk(candidate[:6]),
+                            station.lower,station.upper,active_times,time.perf_counter(),
+                            max_prediction_age=max_prediction_age)
+                    selection=new_selection
+                    pending_suction=goal[-1]!=held_suction
+                # Hold this coherent closure row while awaiting arrival, but
+                # let an in-flight fresh observation replan BEFORE IO changes.
                 q,target_tcp=trajectory.advance(goal[:6],fk)
                 require_joint_target(q,state[:6],station.lower,station.upper,MAX_TRACKING_ERROR_DEG)
                 state_age=time.perf_counter()-stamp
@@ -161,8 +207,11 @@ def main(argv=None):
                     math.radians(MAX_SPEED),servo_command_time,0.,200.),'servoJoint')
                 last_servo_sent_at=command_started_at
                 sent+=1
-                log(commands,{'time':time.perf_counter(),'state':state,'command':q,'velocity':trajectory.v,
-                    'target':goal,'tcp':tcp,'command_tcp':target_tcp})
+                command_record={'time':time.perf_counter(),'state':state,'command':q,'velocity':trajectory.v,
+                    'target':goal,'tcp':tcp,'command_tcp':target_tcp}
+                if approach:command_record.update(prediction_index=prediction_id,action_selection=selection,
+                    suction_target_frozen=pending_suction)
+                log(commands,command_record)
                 if pending_suction and max(abs(a-b) for a,b in zip(goal[:6],state[:6]))<.15 and max(abs(v) for v in trajectory.v)<.3:
                     # Goal is held while switching IO; no averaging of discrete suction.
                     suction.is_suction_on=held_suction==100
@@ -170,6 +219,9 @@ def main(argv=None):
                     finally:log(trace,{'suction':suction.last_gripper_command_trace})
                     previous_suction=held_suction
                     held_suction=goal[-1];pending_suction=False
+                    if approach:
+                        discard_pending_result=future is not None
+                        active_chunk=None;active_times=None;selection=None
                     if previous_suction==100 and held_suction==0:
                         completed_cycles+=1
                         if completed_cycles==expected_cycles:
@@ -185,12 +237,15 @@ def main(argv=None):
                     # must contain the new suction state, not the old snapshot.
                     state,tcp,stamp=station.current(require_stationary=False)
                 if sent%25==0:print(f'已发送 {sent} 帧，预测 {predictions} 次，吸盘 {held_suction:.0f}',flush=True)
-            if future is None and not pending_suction:
+            # The gripper is still open while approaching a closure goal.
+            # Keep observing/replanning instead of treating that goal as final.
+            if future is None and (not pending_suction or (approach and held_suction==0)):
                 observed_state,images,sensor_times=station.observe(require_stationary=False,
                     state_snapshot=(state,tcp,stamp),max_camera_age_ms=max_camera_age_ms)
                 if time.perf_counter()-min(sensor_times)>max_camera_age_ms/1000:
                     raise ValueError('stale input at capture')
-                future=pool.submit(infer,predictions,observed_state,images)
+                inflight_index=request_index;request_index+=1
+                future=pool.submit(infer,inflight_index,observed_state,images)
         if not owned:reason='no_motion'
     except KeyboardInterrupt:reason='operator_interrupt'
     except BaseException as exc:
@@ -220,6 +275,7 @@ def main(argv=None):
             except BaseException as exc:failure=f'{failure or ""}; cleanup: {exc}'
         trace.close();commands.close()
         write(output/'complete.json',{'reason':reason,'sent_frames':sent,'predictions':predictions,
+            'approach_age_aligned':approach,
             'requested_suction_cycles':expected_cycles,'completed_suction_cycles':completed_cycles,
             'failure':failure,'suction_cycle_commanded':cycle,'physical_grasp_success':None,'video':video_result})
         print(f'结束：{reason}，记录：{output.resolve()}',flush=True)

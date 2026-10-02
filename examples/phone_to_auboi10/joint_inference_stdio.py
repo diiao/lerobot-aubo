@@ -42,6 +42,7 @@ def main():
     p.add_argument('--task',help='Explicit task entered by the onsite operator')
     p.add_argument('--fast-matmul',action='store_true',help='Use high float32 matmul precision; weights stay unchanged')
     p.add_argument('--bf16', action='store_true', help='Offline comparison of CUDA BF16 autocast')
+    p.add_argument('--return-action-chunk',action='store_true',help='Include the full 50-step prediction')
     args=p.parse_args()
     # Reject shared GPU occupancy; never kill, wait for, or modify other jobs.
     busy=subprocess.check_output(['nvidia-smi','--query-compute-apps=pid','--format=csv,noheader'],text=True).strip()
@@ -84,7 +85,7 @@ def main():
         for _ in range(2):predict(warm)
         model.reset()
     print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':joint_contract_record(),
-                      'bf16':args.bf16,'task':task}),flush=True)
+                      'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk}),flush=True)
     for line in sys.stdin:
         start=time.perf_counter()
         try:
@@ -101,6 +102,8 @@ def main():
             response={'id':req['id'],'checkpoint_sha256':digest.hexdigest(),'action':decoded[0].tolist(),
                 'raw_action':adapter.raw_actions[0].tolist(),'shape':list(decoded.shape),'inference_s':time.perf_counter()-start,
                 'decode_s':decoded_at-start,'model_path_s':time.perf_counter()-decoded_at}
+            if args.return_action_chunk:
+                response.update(action_chunk=decoded.tolist(),raw_action_chunk=adapter.raw_actions.tolist())
             print(json.dumps(response,allow_nan=False),flush=True)
         except Exception as exc:
             print(json.dumps({'error':f'{type(exc).__name__}: {exc}'}),flush=True)
