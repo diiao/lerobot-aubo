@@ -1,339 +1,50 @@
-# Phone to Aubo I10 — pure ACT workflow
+# AUBO i10：七维 SmolVLA 竹条抓放
 
-本目录用于手机遥操作 AUBO I10、分批录制新视角数据、训练和拆分式纯 ACT 推理。
+当前主线使用双 RGB 和六关节＋吸盘状态，由 SmolVLA 预测七维绝对关节动作。
+从仓库根目录 `/home/rentao/program/lerobot-aubo` 运行下列说明中的命令。
 
-## 运行机器
+| 工作 | 入口 | 说明 |
+| --- | --- | --- |
+| 手机遥操采集 | `record_joint.py` | [采集说明](JOINT_CAPTURE.md) |
+| 数据审计、微调、离线评价 | `audit_joint_dataset.py`、`train_joint_smolvla.py` | [训练说明](JOINT_TRAINING.md) |
+| 归位、持续抓放 | `run_joint_trial.py --stage home`、`run_joint_smooth.py` | [运行说明](JOINT_TRIAL.md) |
+| 模型身份、实机结果、历史回溯 | — | [证据索引](EVIDENCE.md) |
+| 两三根静态层序评价 | `evaluate_layer_order.py` | [研究范围与标注格式](../../docs/AUBO_I10_TOP_LAYER_VLM_RL_ROUTE_2026-09-26.md) |
 
-- 工作站：连接机器人和相机，负责录制数据以及运行 `evaluate_split.py`。
-- GPU 机：Tailscale 设备名 `510`，IP `100.88.143.45`，SSH 用户 `rentao`。
-- GPU 机的 Linux 主机名是 `WP`，配备 NVIDIA GeForce RTX 4090 D。
+## 当前契约
 
-从工作站连接 GPU 机：
+- `CameraSetV2`：`global_rgb` 为固定全局视角，`grasp_rgb` 为腕部视角，两路 RGB 为 640×480。
+- 状态和动作均为 `[J1,J2,J3,J4,J5,J6,gripper_pos]`。关节使用度；进入机器人 SDK 时转换为弧度。J5 参与模型预测。
+- 吸盘指令为 0（释放）或 100（吸附）；不是物理吸附传感器。
+- 固定任务文字：`Pick one strip and place it in the collection area.`。
+- 当前模型：`mixed-both-orders`，单根 60＋上45°下90° 50＋上90°下45° 50，共 160 条训练、22 条验证。
 
-```bash
-ssh rentao@100.88.143.45
-```
+## 当前能力与限制
 
-## 相机约定
+两种熟悉双根摆放各有一次两根抓放成功反馈。单根抓放已有成功反馈，但混训入口仍要求两个
+吸附→释放周期，可能在单根放下后再执行一轮。周期数不能由命令独立指定，也没有自动清空判断。
+现有结果不能当作未知位置或三根以上堆叠的成功率。
 
-- `handeye`：当前重新调整的眼在手外相机。
-- `fixed`：另一视角相机。
-- 录制、训练、推理期间，两台物理相机与以上键名的对应关系必须保持不变。
+最新现场模式为 `--model mixed-both-orders --approach-age-aligned`：吸盘指令为释放时按观测年龄选择完整动作行，
+等待闭合期间继续单请求推理；吸附后使用首步预测。具体命令与停止行为见运行说明。
 
-## 1. 录制前检查
+## 开发与诊断
 
-以下工作站命令均从本目录执行：
+日常检查使用 `.venv/bin/python`。计划模式不连接硬件、不加载模型；相机、机械臂、IO、运动及
+实际训练由现场操作者单独启动。模型输出不加人为接触高度或固定姿态补偿。
 
-```bash
-cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
-../../.venv/bin/python diag_preflight_cams.py
-../../.venv/bin/python diag_cam_latency.py
-```
+当前采集仍复用旧命名的 `record.py`、`record_c0_batch.py` 和部分 `c0_*` 模块，
+不得按“旧文件名”整批删除。ACT 和旧 TCP 路线的历史说明在证据索引中，不作为当前命令入口。
 
-`diag_preflight_cams.py` 会同时打开两台相机，并将预览图写到
-`/tmp/aubo_camera_preflight/`。必须人工确认：
-
-- `handeye.jpg` 是眼在手外的全局视角；
-- `fixed.jpg` 是预期的第二视角；
-- 竹条、吸盘接触区和放置区在任务关键阶段不会被遮挡。
-
-机械臂上电后先运行只读连通检查：
-
-```bash
-../../.venv/bin/python read_pose.py
-```
-
-只有相机体检和 `read_pose.py` 都成功后才开始录制。
-
-## 2. 分批录制
-
-先只录 3 条试验数据，不要一开始录完整批次：
+软件回归可使用：
 
 ```bash
-DATASET_PATH=./datasets/bamboo_newview_s01 \
-NUM_EPISODES=3 \
-../../.venv/bin/python record.py
+PYTHONPATH=src .venv/bin/python -m pytest -q \
+  tests/bamboo_sorting/test_joint_smooth.py \
+  tests/bamboo_sorting/test_joint_trial.py \
+  tests/bamboo_sorting/test_joint_training.py \
+  tests/bamboo_sorting/test_layer_order_eval.py
+git diff --check
 ```
 
-录制完成后先运行 `aggregate.py` 的硬性验收，再逐条可视化：
-
-```bash
-../../.venv/bin/python aggregate.py
-
-../../.venv/bin/lerobot-dataset-viz \
-  --repo-id ./datasets/bamboo_newview_s01 \
-  --episode-index 0
-```
-
-将 `--episode-index` 改成 `1`、`2`，检查所有试验 episode。确认动作、两路视频和
-吸盘标签都正确后，再以新名称分批录制，每批建议 5～10 条：
-
-```bash
-DATASET_PATH=./datasets/bamboo_newview_s02 \
-NUM_EPISODES=8 \
-../../.venv/bin/python record.py
-```
-
-同一个 `bamboo_newview_sXX` 名称不要重复使用；每批使用新编号，避免覆盖或混入半成品。
-录制动作中的吸盘目标是持续的 `0/100` 状态，不需要再执行夹爪锁存或标签前移脚本。
-
-### 数据变化原则
-
-- 相机位置、焦距、曝光、`handeye/fixed` 键名保持不变。
-- 竹条位置和朝向做小范围、可复现的变化，不要每条完全相同。
-- 首个基线可以保持机器人起始关节位一致，先隔离“物体变化”这一因素。
-- 只保留完整、成功、动作连贯的抓取和放置；明显犹豫、碰撞、抓空应立即重录。
-- episode 开始后尽快操作，完成放置和释放后立即结束，减少无意义静止帧。
-- 3 条试录通过后，先累计至少 20～30 条训练首个基线；条件允许时逐步增加到
-  40～60 条，分批录制和聚合即可。
-
-### 常规录制与推理复用的统一起始位姿
-
-以下为当前标准起始关节位，单位均为**度**，顺序为 `J1`～`J6`：
-
-```text
-[-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
-```
-
-`record.py`、`evaluate_split.py` 和 `move_to_start.py` 必须使用同一组值；它对应当前
-30 条基线的正常任务起点（TCP 约为 `x=0.11, y=-0.72, z=0.15 m`）。后续常规推理先通过
-`r` 或 `move_to_start.py` 回到此姿态，再开始 episode。不要把它改成恢复示教的悬停起点：
-恢复示教有意从偏离状态开始，需单独记录和标注。
-
-## 3. 聚合
-
-`aggregate.py`默认自动发现所有 `bamboo_newview_sXX`：
-
-```bash
-../../.venv/bin/python aggregate.py
-```
-
-输出为 `./datasets/bamboo_newview_full`。也可以显式指定：
-
-```bash
-DATASET_SOURCES=./datasets/bamboo_newview_s01,./datasets/bamboo_newview_s02 \
-OUTPUT_DATASET_PATH=./datasets/bamboo_newview_full \
-../../.venv/bin/python aggregate.py
-```
-
-聚合后会检查图像标准差，并确认夹爪标签只有持续状态 `0/100` 且两种状态都存在；
-还会逐条报告时长、运动占比、吸取时长和最大位置跳变。发现非 25 FPS、缺失相机、
-旧的 `50` 中立命令、非法数值或异常统计时会拒绝进入训练。
-
-## 4. 同步到 GPU 机
-
-GPU 机原仓库有未提交实验文件，不要执行 `reset --hard` 或直接覆盖。先在 GPU 机建立
-隔离工作树：
-
-```bash
-ssh rentao@100.88.143.45
-cd /home/rentao/program/lerobot-aubo
-git fetch ssh://git@ssh.github.com:443/diiao/lerobot-aubo.git pyc
-git worktree add /home/rentao/program/lerobot-aubo-pure-act FETCH_HEAD
-exit
-```
-
-然后在工作站同步聚合数据集：
-
-```bash
-rsync -av --info=progress2 \
-  ~/.cache/huggingface/lerobot/datasets/bamboo_newview_full/ \
-  rentao@100.88.143.45:~/.cache/huggingface/lerobot/datasets/bamboo_newview_full/
-```
-
-## 5. GPU 训练
-
-GPU 机已安装 `tmux`，且 ResNet18 权重已缓存。进入独立会话：
-
-```bash
-ssh rentao@100.88.143.45
-tmux new -s aubo-act
-
-cd /home/rentao/program/lerobot-aubo-pure-act/examples/phone_to_auboi10
-export PYTHONPATH=/home/rentao/program/lerobot-aubo-pure-act/src
-mkdir -p logs
-
-HF_HUB_OFFLINE=1 \
-DATASET_PATH=./datasets/bamboo_newview_full \
-MODEL_PATH=./models/bamboo_newview_act_run01 \
-TRAINING_STEPS=30000 \
-NUM_WORKERS=8 \
-/home/rentao/program/lerobot-aubo/.venv/bin/python train.py \
-2>&1 | tee logs/train_run01.log
-```
-
-默认设置：
-
-- 数据集：`bamboo_newview_full`
-- 模型：`models/bamboo_newview_act`
-- 从头训练，不加载旧视角 checkpoint
-- 按完整 episode 保留最后 20% 作为验证集
-- 新数据以 25 Hz 录制；ACT 默认使用约 1 秒预测窗口（25 帧）
-- 每次执行约 0.16 秒（25 Hz 时为 4 步）后重新规划
-- 首个基线不使用图像增强
-
-可通过环境变量覆盖数据集、模型路径和训练步数。
-
-按 `Ctrl-b`、再按 `d` 可退出 tmux 但保持训练运行；重新查看：
-
-```bash
-tmux attach -t aubo-act
-```
-
-GPU 系统盘当前剩余空间约 37 GB。每次实验使用独立 `MODEL_PATH`，训练前后用
-`df -h /home/rentao` 检查空间，不要无限保留重复 checkpoint。
-
-## 6. 纯 ACT 推理
-
-GPU 机 `510`：
-
-```bash
-cd /home/rentao/program/lerobot-aubo-pure-act/examples/phone_to_auboi10
-export PYTHONPATH=/home/rentao/program/lerobot-aubo-pure-act/src
-MODEL_PATH=./models/bamboo_newview_act_run06_recovery/best \
-/home/rentao/program/lerobot-aubo/.venv/bin/python inference_server.py
-```
-
-机器人端：
-
-```bash
-DATASET_PATH=./datasets/bamboo_newview_full_recovery_v1 \
-EVAL_DATASET_PATH=./datasets/bamboo_newview_eval_run06_trialNN \
-../../.venv/bin/python evaluate_split.py
-```
-
-`run06_recovery/best` 是当前已通过离线验收、并完成一次真实端到端成功验证的模型；`run05/best`
-保留为历史对照。每次评估都要将 `trialNN` 改为新的未使用编号。客户端出现等待提示后，先按
-`r` 回到常规起点 `[-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]°` 并确认吸盘释放，再按
-右箭头开始；恢复示教起点不会被常规推理自动使用。
-
-服务端不会根据固定 xyz 阈值覆盖轨迹或夹爪；机器人端仅保留工作空间、单步位移限制和控制模式注入。
-
-默认启用 ACT temporal ensembling（系数 `0.01`），它会融合相邻动作块以减少块边界跳变；
-如需做旧队列模式对照实验，显式设置 `TEMPORAL_ENSEMBLE_COEFF=0`。推理客户端的通用
-单帧末端位移限幅默认为 `8 mm`，可通过 `MAX_EE_STEP_M` 在 `1–50 mm` 范围内调整。两者
-都是通用控制平滑/安全机制，不会根据竹条位置覆盖模型动作。
-
-### 恢复示教（闭环偏离数据）
-
-若模型悬在竹条上方、未下降或未吸取，不要在 `evaluate_split.py` 的同一轮中混入手机操控。
-应安全结束推理，并使用固定的恢复起点准备脚本，以新的 `bamboo_newview_sXX_recovery`
-数据集运行 `record.py`，从该姿态开始用手机完整示范“下降、吸取、抬升、放置、释放”。
-这些 episode 与原始成功示教分开审核、聚合到新的训练集，并使用新的模型目录重训；它们让
-ACT 在下次遇到偏离状态时学习恢复，而不是只能依赖理想轨迹。
-
-## 7. 当前基线与下一轮恢复训练（2026-08-02）
-
-当前 `bamboo_newview_full` 已由 `s01`～`s04` 聚合完成，共 **30 episodes / 26,939
-frames**。GPU 机上的首个 30 条模型为 `bamboo_newview_act_run05/best`，训练 30,000
-steps，最佳保留集 loss 为 `0.05918`。这只是第一条端到端基线，不能据此宣称真实抓取已
-成功。
-
-离线审计显示：模型在专家示教轨迹上能正确下降和开吸盘，但真实闭环推理一旦悬在高处、
-错过下降阶段，就无法回到训练中常见的正确状态，继而持续输出释放和悬停动作。下列恢复
-示教用于补足这一类“模型已偏离”的状态；它不是在现有推理轮中插入人工动作。
-
-### 7.1 录制恢复示教
-
-先完成相机预检和 `read_pose.py`。机械臂、急停和工作区必须由现场操作者确认安全。恢复起点
-取自 run05 trial02 的真实闭环失败状态，不要求操作者凭目测悬停在某个高度；首次使用必须先在
-无竹条、清空工位的条件下做一次低速演练，确认关节路径和 TCP 位置都安全。
-
-先用正常起点归位，再预览固定恢复起点。预览只读取状态，不会移动机械臂：
-
-```bash
-cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
-
-# 由现场操作者确认安全后执行；该脚本会产生真实机械臂运动
-../../.venv/bin/python move_to_start.py
-
-# 只读预览：要求当前位于正常起点 ±5° 内
-../../.venv/bin/python move_to_recovery_start.py
-```
-
-预览显示的当前关节角、目标关节角均合理，且无竹条演练已通过后，才执行以下命令。它以 20%
-速度移动，并在到位后将吸盘设为释放：
-
-```bash
-../../.venv/bin/python move_to_recovery_start.py --confirm
-```
-
-若脚本提示“当前姿态不在统一正常起点 ±5° 内”，不要绕过检查；先安全归位再运行。该检查是为了
-避免从未知姿态直接执行关节运动。到位后即可开始下列录制命令。
-
-```bash
-cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
-
-DATASET_PATH=./datasets/bamboo_newview_s05_recovery \
-NUM_EPISODES=20 \
-RECORD_START_MODE=recovery \
-../../.venv/bin/python record.py
-```
-
-每条 episode 的人工操作顺序：
-
-1. `record.py` 出现“按 -> 开始录制”后，按 **`r`**。恢复模式会先回标准位、再以 20% 速度到
-   固定恢复起点并释放吸盘；只有终端显示“已到固定恢复起点”后才允许右箭头开始。不要在
-   `record.py` 运行时从另一终端执行 `move_to_recovery_start.py`，避免两个程序同时控制机器人。
-2. 在固定恢复起点摆好竹条后按右箭头开始录制。不要凭目测手动调节高度；起点的一致性比
-   “看起来接近”更重要。
-3. 在该悬停位置保留约 0.5～1 秒，然后使用手机连续示范：下降、吸取、确认吸住、抬升、
-   搬运、放置、释放。
-4. 释放后立即按右箭头结束。不要只录下降/抓取，也不要在抓住后停下；应录完整的任务后半段。
-5. 明显碰撞、抓空、犹豫过久或相机断流的 episode 用左箭头重录，不进入训练数据。
-
-录完后逐条可视化并审核。恢复轨迹的起始位姿不同是预期现象；相机映射、分辨率、25 FPS、
-action 定义和吸盘持续 `0/100` 标签必须与 `s01`～`s04` 一致。
-
-### 7.2 新聚合、训练和离线验收
-
-`s05_recovery` 带后缀，`aggregate.py` 不会自动发现它。因此显式列出所有来源，并写到新的
-输出目录，保留原 `bamboo_newview_full` 作为可回退基线：
-
-```bash
-cd /home/rentao/program/lerobot-aubo/examples/phone_to_auboi10
-
-DATASET_SOURCES=./datasets/bamboo_newview_s01,./datasets/bamboo_newview_s02,./datasets/bamboo_newview_s03,./datasets/bamboo_newview_s04,./datasets/bamboo_newview_s05_recovery \
-OUTPUT_DATASET_PATH=./datasets/bamboo_newview_full_recovery_v1 \
-../../.venv/bin/python aggregate.py
-```
-
-审核通过后同步这个新目录到 GPU 机，并使用新的模型目录（例如
-`bamboo_newview_act_run06_recovery`）从头训练；不要覆盖 `run05`。训练结束后必须先运行
-`audit_act_offline.py`，确认保留 episode 的吸盘召回、抓取高度误差和动作跳变，再决定是否
-进行真实机械臂推理。
-
-恢复训练的验收重点不是只看总 loss：
-
-- 吸盘首次开启时，预测值必须跨过执行阈值 `60`；
-- 抓取点的预测高度要接近示教高度，误差应以厘米以下为目标；
-- 正常保留轨迹与恢复起始轨迹都不能出现大量超过 1 cm 的单帧跳变；
-- 真实推理时若再次偏离，应能下降并完成吸取，而不是持续悬停。
-
-### 7.3 run06 已完成：当前可复现基线（2026-08-03）
-
-恢复数据已补录并聚合为 `bamboo_newview_full_recovery_v1`：**60 episodes / 51,797 frames**。
-GPU 隔离工作树中的 `models/bamboo_newview_act_run06_recovery/best` 完成 30,000 steps 训练，最佳
-validation loss 为 `0.13953`（step 29,000）。离线验收覆盖常规起点、s05 恢复和 s06 保留集：XYZ
-平均误差为毫米量级，吸盘 precision/recall 均约为 99%，且队列模拟中没有超过 3 cm 的单帧 XYZ
-跳变。
-
-2026-08-03 的 `bamboo_newview_eval_run06_trial01` 记录了 1 次真实成功：竹条完成抓取、搬运、目标区
-放置和释放；推理输出零帧超过 8 mm 单帧限幅。该结果证明当前固定场景下端到端流程可行，但仍只是
-1/1 单次证据，不能直接作为稳定成功率或几何泛化结论。训练集、成功评估数据和部署模型已复制到项目
-内 Git 忽略的 `artifacts/run06_recovery/`，并由 `MANIFEST.sha256` 校验。
-
-完整的实验方法、代码改动、指标、保存位置和论文表述边界见
-[`docs/robot_arm_technical_documentation.md`](../../docs/robot_arm_technical_documentation.md)。
-
-## 辅助工具
-
-- `teleoperate.py`：手动遥操作检查。
-- `move_to_start.py`：移动到统一起始姿态。
-- `move_to_recovery_start.py`：从统一起始姿态低速移动到固定恢复示教起点；缺省只预览，须加
-  `--confirm` 才会运动。
-- `read_pose.py`：只读当前 TCP 位姿。
-- `test_io.py`：确认吸盘 IO。
-- `test_servo.py`：诊断伺服接口。
-
-旧视角、启发式夹爪、脚本化下降/提起、不兼容当前绝对末端动作的旧回放脚本及旧数据专项诊断已从主流程移除；改造前版本保存在 Git 提交 `c4dfa2c`。
+修改采集、驱动或视频链路时，另运行对应测试。假设备测试通过不代表实机验收。

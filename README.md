@@ -1,3 +1,5 @@
+本仓库的 AUBO i10 竹条抓放入口见 [当前七维 SmolVLA 工作流](examples/phone_to_auboi10/README.md)，维护约定见 [AGENT.md](AGENT.md)。下文为上游 LeRobot 通用介绍。
+
 <p align="center">
   <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
 </p>
