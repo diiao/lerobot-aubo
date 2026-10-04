@@ -1,0 +1,48 @@
+{
+  "schema_version": "AuboCameraSet",
+  "status": "mounting_pending_review",
+  "based_on": "CameraSetV2.json",
+  "camera_streams": ["global_rgb", "grasp_rgb"],
+  "capture_profiles": {
+    "global_rgb": {
+      "device": "/dev/v4l/by-id/usb-2MP_USB_Camera_2MP_USB_Camera_04434000_P120800_SN0002-video-index0",
+      "model": "2MP USB Camera",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0,
+      "fourcc": "MJPG",
+      "model_color_layout": "RGB_uint8"
+    },
+    "grasp_rgb": {
+      "device": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
+      "model": "Sonix USB2.0_CAM1",
+      "width": 640,
+      "height": 480,
+      "fps": 25.0,
+      "fourcc": "MJPG",
+      "model_color_layout": "RGB_uint8"
+    }
+  },
+  "physical_roles": {
+    "global_rgb": "replacement external RGB camera; final mount and field of view pending",
+    "grasp_rgb": "existing eye-in-hand camera; mount unchanged"
+  },
+  "verification": {
+    "date": "2026-10-03",
+    "scope": "new_global_camera_only",
+    "report_path": "artifacts/new_global_camera_20261003_nkaq9n8h/report.json",
+    "tested_global_profiles": [
+      {"width": 640, "height": 480, "fourcc": "MJPG", "requested_fps": 30, "measured_fps": 30.006881258515484, "duration_s": 15, "read_errors": 0},
+      {"width": 1920, "height": 1080, "fourcc": "MJPG", "requested_fps": 30, "measured_fps": 29.99831071794661, "duration_s": 8, "read_errors": 0}
+    ],
+    "final_view_reviewed": false,
+    "dual_camera_capture_tested": false,
+    "policy_with_new_view_tested": false
+  },
+  "notes": [
+    "Selected by record_joint.py and diag_preflight_cams.py with --camera-set wide-global (their default). Existing policy execution retains its original camera configuration.",
+    "Capture and save global_rgb at 1920x1080 and grasp_rgb at 640x480. Model resizing is separate from original image capture.",
+    "The original global camera remains at its original mount for rollback using CameraSetV2.",
+    "Report and preview paths are repository-relative local artifacts, not included in Git."
+  ]
+}

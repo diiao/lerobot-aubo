@@ -1,50 +1,37 @@
 """录制前双相机体检。
 
-使用与 record.py 相同的设备、编码和采样策略，同时打开两台相机，检查：
+使用与 record_joint.py 相同的可选相机配置，同时打开两台相机，检查：
 1. 能否连接并持续出帧；
 2. 实际 cadence 是否满足 25 Hz 控制循环；
 3. 最新帧是否过旧或接近全黑/纯色；
 4. 保存现场预览图，供人工确认 global_rgb/grasp_rgb 没有接反。
 
-本脚本不连接机械臂。预览图只写到 /tmp/aubo_camera_preflight。
+本脚本不连接机械臂。--plan 只显示配置；实际测试默认写入新的临时目录。
 """
 
+import argparse
+import json
+import math
 import os
 import statistics
+import tempfile
 import time
 from pathlib import Path
 
-import cv2
-import numpy as np
-
-from lerobot.cameras.opencv import OpenCVCamera
-from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+from lerobot.bamboo_sorting.joint_camera_config import (
+    CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
+)
 
 CONTROL_FPS = 25
 MIN_ACCEPTABLE_FPS = 23.0
 MAX_FRAME_AGE_MS = 80.0
-MEASURE_SECONDS = float(os.environ.get("CAMERA_TEST_SECONDS", "2"))
-PREVIEW_DIR = Path("/tmp/aubo_camera_preflight")
+def measure_camera(name, camera, *, seconds, output) -> list[str]:
+    import cv2
+    import numpy as np
 
-CAMERA_CONFIGS = {
-    # 该相机驱动只接受 30 FPS，但硬件时间戳实测约 25 FPS。
-    "global_rgb": {
-        "device": "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0",
-        "capture_fps": 30,
-        "fourcc": "MJPG",
-    },
-    "grasp_rgb": {
-        "device": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
-        "capture_fps": 25,
-        "fourcc": "MJPG",
-    },
-}
-
-
-def measure_camera(name: str, camera: OpenCVCamera) -> list[str]:
     failures: list[str] = []
     timestamps: list[float] = []
-    end = time.perf_counter() + MEASURE_SECONDS
+    end = time.perf_counter() + seconds
 
     while time.perf_counter() < end:
         with camera.frame_lock:
@@ -69,18 +56,16 @@ def measure_camera(name: str, camera: OpenCVCamera) -> list[str]:
         remaining = target - time.perf_counter()
         if remaining > 0:
             time.sleep(remaining)
-        frame = camera.read_latest(max_age_ms=500)
-        with camera.frame_lock:
-            capture_time = camera.latest_timestamp
+        frame, capture_time = camera.read_latest_with_timestamp(max_age_ms=500)
         ages_ms.append((time.perf_counter() - capture_time) * 1000)
 
     if frame is None:
         failures.append(f"{name}: 没有获得预览帧")
         return failures
 
-    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-    preview_path = PREVIEW_DIR / f"{name}.jpg"
-    cv2.imwrite(str(preview_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    preview_path = output / f"{name}.jpg"
+    if not cv2.imwrite(str(preview_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)):
+        raise RuntimeError(f"failed to save {preview_path}")
 
     frame_mean = float(np.mean(frame))
     frame_std = float(np.std(frame))
@@ -117,38 +102,61 @@ def measure_camera(name: str, camera: OpenCVCamera) -> list[str]:
     return failures
 
 
-def main() -> int:
-    cameras: dict[str, OpenCVCamera] = {}
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET)
+    parser.add_argument("--plan", action="store_true", help="Print configuration without opening devices")
+    parser.add_argument("--seconds", type=float, default=float(os.environ.get("CAMERA_TEST_SECONDS", "2")))
+    parser.add_argument("--output", type=Path, help="New output directory; default: unique /tmp directory")
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.seconds) or args.seconds <= 0:
+        parser.error("seconds must be finite and positive")
+    configuration = load_joint_camera_configuration(args.camera_set)
+    print(json.dumps(configuration, ensure_ascii=False, indent=2))
+    if args.plan:
+        return 0
+
+    import cv2
+    from lerobot.cameras.opencv import OpenCVCamera
+    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+
+    output = args.output
+    if output is None:
+        output = Path(tempfile.mkdtemp(prefix=f"aubo_camera_preflight_{args.camera_set}_"))
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+    (output / "camera_configuration.json").write_text(json.dumps(configuration, indent=2) + "\n")
+    cameras = {}
     failures: list[str] = []
 
     try:
-        # 保持两台相机同时运行，测量条件才与 record.py 一致。
-        for name, values in CAMERA_CONFIGS.items():
+        # 保持两台相机同时运行，测量条件才与 record_joint.py 一致。
+        for name, values in configuration["camera_mapping"].items():
             print(f"\n连接 [{name}] {values['device']}")
             config = OpenCVCameraConfig(
                 index_or_path=values["device"],
-                width=640,
-                height=480,
-                fps=values["capture_fps"],
+                width=values["width"],
+                height=values["height"],
+                fps=values["fps"],
                 fourcc=values["fourcc"],
                 warmup_s=3,
             )
             camera = OpenCVCamera(config)
-            camera.connect(warmup=True)
             cameras[name] = camera
+            camera.connect(warmup=True)
             actual_fourcc_code = int(camera.videocapture.get(cv2.CAP_PROP_FOURCC))
             actual_fourcc = "".join(
                 chr((actual_fourcc_code >> (8 * index)) & 0xFF)
                 for index in range(4)
             )
             print(
-                f"  configured={values['fourcc']}@{values['capture_fps']} FPS, "
+                f"  configured={values['fourcc']}@{values['fps']} FPS, "
                 f"actual={actual_fourcc}@{camera.videocapture.get(cv2.CAP_PROP_FPS):.1f} FPS"
             )
 
         for name, camera in cameras.items():
             print(f"\n检查 [{name}]")
-            failures.extend(measure_camera(name, camera))
+            failures.extend(measure_camera(name, camera, seconds=args.seconds, output=output))
     except Exception as exc:
         failures.append(f"相机连接或读取异常: {type(exc).__name__}: {exc}")
     finally:

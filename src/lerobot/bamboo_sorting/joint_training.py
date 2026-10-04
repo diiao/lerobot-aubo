@@ -38,7 +38,12 @@ def prepare_training_data(train_root, train_evidence, validation_root, validatio
     records = []
     for root, evidence, split, source in zip(roots, (train_evidence, validation_evidence), ("train", "validation"),
                                            (train_source_root, validation_source_root), strict=True):
+        # This existing trainer constructs the original dual-640x480 adapter.
+        # Native-resolution recordings need matched model preprocessing first.
         report = audit_joint_dataset(root, evidence, source_dataset_root=source)
+        if any(tuple(shape) != (480, 640, 3) for shape in report.get("image_shapes", {}).values()):
+            raise ValueError("this trainer uses dual 640x480 inputs; configure native-resolution model "
+                             "preprocessing before training new camera recordings; keep originals unchanged")
         if not report["gripper_quality_passed"]:
             raise ValueError(f"{split} gripper quality failed: {report['gripper_quality_issues']}")
         selected = report["supervised_candidate_episodes"]

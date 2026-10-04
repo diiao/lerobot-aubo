@@ -43,16 +43,28 @@ def expand_joint_command(action: Mapping) -> dict[str, float]:
     return joint_command(action)
 
 
-def joint_observation_features() -> dict:
-    return {**dict.fromkeys(JOINT_FIELDS, float), **dict.fromkeys(JOINT_IMAGE_KEYS, (480, 640, 3))}
+def joint_image_shapes(image_shapes=None) -> dict:
+    """Raw HWC image dimensions; omitted shapes retain the original model format."""
+    shapes = dict.fromkeys(JOINT_IMAGE_KEYS, (480, 640, 3)) if image_shapes is None else dict(image_shapes)
+    if set(shapes) != set(JOINT_IMAGE_KEYS):
+        raise ValueError("image shapes require global_rgb and grasp_rgb")
+    for name, shape in shapes.items():
+        if (len(shape) != 3 or any(type(v) is not int or v <= 0 for v in shape) or shape[2] != 3):
+            raise ValueError(f"invalid HWC RGB shape for {name}: {shape}")
+    return {name: tuple(shapes[name]) for name in JOINT_IMAGE_KEYS}
 
 
-def joint_dataset_features() -> dict:
+def joint_observation_features(image_shapes=None) -> dict:
+    return {**dict.fromkeys(JOINT_FIELDS, float), **joint_image_shapes(image_shapes)}
+
+
+def joint_dataset_features(image_shapes=None) -> dict:
+    shapes = joint_image_shapes(image_shapes)
     vector = {"dtype": "float32", "shape": (JOINT_DIM,), "names": list(JOINT_FIELDS)}
     return {
         "observation.state": dict(vector),
         "action": dict(vector),
-        **{f"observation.images.{key}": {"dtype": "video", "shape": (480, 640, 3),
+        **{f"observation.images.{key}": {"dtype": "video", "shape": shapes[key],
            "names": ["height", "width", "channels"]} for key in JOINT_IMAGE_KEYS},
     }
 
@@ -76,7 +88,8 @@ def joint_contract_record() -> dict:
     }
 
 
-def require_joint_dataset(features: Mapping, contract: Mapping, fps: float) -> None:
+def require_joint_dataset(features: Mapping, contract: Mapping, fps: float, *, image_shapes=None) -> None:
+    shapes = joint_image_shapes(image_shapes)
     expected = joint_contract_record()
     if any(contract.get(key) != value for key, value in expected.items()):
         raise ValueError("dataset must carry the exact AuboI10JointLegacyTeleopV2 contract")
@@ -89,9 +102,10 @@ def require_joint_dataset(features: Mapping, contract: Mapping, fps: float) -> N
             raise ValueError(f"{key} must have ordered AUBO 7D full-joint joint fields")
     images = {key for key in features if key.startswith("observation.images.")}
     if images != {f"observation.images.{key}" for key in JOINT_IMAGE_KEYS}:
-        raise ValueError("joint dataset requires exactly the CameraSetV2 RGB streams")
-    for key in images:
-        if tuple(features[key].get("shape", ())) != (480, 640, 3) or features[key].get("dtype") != "video":
+        raise ValueError("joint dataset requires exactly global_rgb and grasp_rgb")
+    for name in JOINT_IMAGE_KEYS:
+        key = f"observation.images.{name}"
+        if tuple(features[key].get("shape", ())) != shapes[name] or features[key].get("dtype") != "video":
             raise ValueError(f"invalid RGB video feature: {key}")
 
 

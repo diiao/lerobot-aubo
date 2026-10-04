@@ -28,7 +28,8 @@ class AuboI10JointCaptureRobot(AuboI10Robot):
 
     @property
     def observation_features(self):
-        return joint_observation_features()
+        return joint_observation_features({name: (camera.height, camera.width, 3)
+                                           for name, camera in self.cameras.items()})
 
     @property
     def action_features(self):

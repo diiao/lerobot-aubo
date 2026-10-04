@@ -17,7 +17,9 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     joint_command, joint_contract_record, joint_dataset_features,
 )
 from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, write_joint_json
-from lerobot.bamboo_sorting.c0_smoke_capture import frozen_c0_smoke_camera_mapping
+from lerobot.bamboo_sorting.joint_camera_config import (
+    CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
+)
 
 
 def parse_args(argv=None):
@@ -26,6 +28,8 @@ def parse_args(argv=None):
     parser.add_argument("--evidence-root", required=True, type=Path)
     parser.add_argument("--num-episodes", type=int, default=60)
     parser.add_argument("--split", choices=("train", "validation", "test"), required=True)
+    parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET,
+                        help="wide-global: new 1080p global camera (default); original-global: original camera")
     parser.add_argument("--record", action="store_true", help="Connect cameras/phone/AUBO and enable supervised motion/IO")
     args = parser.parse_args(argv)
     args.dataset_root = args.dataset_root.expanduser().resolve()
@@ -66,10 +70,13 @@ def required_text(prompt):
 
 def main(argv=None):
     args = parse_args(argv)
-    cameras = frozen_c0_smoke_camera_mapping()
+    camera_configuration = load_joint_camera_configuration(args.camera_set)
+    cameras = camera_configuration["camera_mapping"]
+    dataset_features = joint_dataset_features({name: (profile["height"], profile["width"], 3)
+                                              for name, profile in cameras.items()})
     plan = {"contract": joint_contract_record(), "dataset_root": str(args.dataset_root),
             "evidence_root": str(args.evidence_root), "num_episodes": args.num_episodes,
-            "split": args.split, "camera_mapping": cameras,
+            "split": args.split, **camera_configuration, "dataset_features": dataset_features,
             "teleoperation_profile": "legacy_abs_j6yaw",
             "mode": "supervised_capture" if args.record else "plan_only"}
     print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -116,8 +123,8 @@ def main(argv=None):
             )
 
     camera_configs = {name: OpenCVCameraConfig(index_or_path=cameras[name]["device"],
-                      width=640, height=480, fps=30 if name == "global_rgb" else 25,
-                      fourcc="MJPG", warmup_s=3) for name in JOINT_IMAGE_KEYS}
+                      width=cameras[name]["width"], height=cameras[name]["height"], fps=cameras[name]["fps"],
+                      fourcc=cameras[name]["fourcc"], warmup_s=3) for name in JOINT_IMAGE_KEYS}
     robot = FreshJointRobot(AuboI10Config(cameras=camera_configs, control_fps=JOINT_FPS))
     phone_config = PhoneConfig(phone_os=PhoneOS.ANDROID)
     phone = Phone(phone_config)
@@ -140,9 +147,10 @@ def main(argv=None):
         robot.connect()
         phone.connect()
         dataset = LeRobotDataset.create(repo_id=args.dataset_root.name, root=args.dataset_root,
-                    fps=JOINT_FPS, features=joint_dataset_features(), robot_type=robot.name,
+                    fps=JOINT_FPS, features=dataset_features, robot_type=robot.name,
                     use_videos=True, image_writer_threads=4)
         write_joint_json(args.dataset_root / "meta" / "aubo_joint_contract.json", joint_contract_record())
+        write_joint_json(args.dataset_root / "meta" / "camera_configuration.json", camera_configuration)
         write_joint_json(args.evidence_root / "controller_limits.json", {
             "lower_deg": list(robot.joint_lower_deg), "upper_deg": list(robot.joint_upper_deg),
             "teleoperation_profile": "legacy_abs_j6yaw"})
