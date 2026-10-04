@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 
 from .joint_gripper_quality import gripper_episode_quality, require_joint_normalization_stats
 
-from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, require_joint_dataset
+from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, joint_image_shapes, require_joint_dataset
 
 
 def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None):
@@ -21,7 +21,13 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
     identity = str(source)
     info = json.loads((root / "meta/info.json").read_text())
     contract = json.loads((root / "meta/aubo_joint_contract.json").read_text())
-    require_joint_dataset(info["features"], contract, info["fps"])
+    camera_path = root / "meta/camera_configuration.json"
+    image_shapes = None
+    if camera_path.exists():
+        camera_configuration = json.loads(camera_path.read_text())
+        image_shapes = {name: (profile["height"], profile["width"], 3)
+                        for name, profile in camera_configuration["camera_mapping"].items()}
+    require_joint_dataset(info["features"], contract, info["fps"], image_shapes=image_shapes)
     if info["robot_type"] != "aubo_i10":
         raise ValueError("joint dataset must identify AUBO i10")
     session = json.loads((evidence / "session.json").read_text())
@@ -108,6 +114,7 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
     if not candidates:
         quality_issues.append("no_complete_success_demonstrations")
     return {"schema_version": contract["schema_version"], "audit_passed": True,
+            "image_shapes": {name: list(shape) for name, shape in joint_image_shapes(image_shapes).items()},
             "storage_root": str(root), "source_dataset_root": identity,
             "episodes": result, "frames": len(ep), "capture_complete": session["capture_complete"],
             "video_decode_checked": False, "physical_success_verified": False,

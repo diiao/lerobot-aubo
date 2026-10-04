@@ -97,6 +97,14 @@ def test_metrics_expose_copy_state_failure_despite_high_accuracy():
     assert perfect["activate_recall"] == perfect["release_recall"] == 1
 
 
+def test_original_trainer_reports_native_image_preprocessing_requirement(tmp_path, monkeypatch):
+    monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.audit_joint_dataset", lambda *a, **kw: {
+        "image_shapes": {"global_rgb": [1080, 1920, 3], "grasp_rgb": [480, 640, 3]}})
+    with pytest.raises(ValueError, match="configure native-resolution model preprocessing"):
+        prepare_training_data(tmp_path / "train", tmp_path / "train-evidence",
+                              tmp_path / "validation", tmp_path / "validation-evidence")
+
+
 def test_manifest_pools_selected_frames_and_rejects_duplicate_sources(tmp_path, monkeypatch):
     import json
     from lerobot.bamboo_sorting.joint_training import prepare_training_manifest, read_data_manifest

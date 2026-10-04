@@ -62,11 +62,11 @@ def _robot():
     return robot
 
 
-def _observation():
+def _observation(image_shapes=None):
+    shapes = image_shapes or {"global_rgb": (480, 640, 3), "grasp_rgb": (480, 640, 3)}
     return {**dict.fromkeys(JOINT_NAMES, 0.0), "J5": 90.0, "gripper_pos": 0.0,
             **dict.fromkeys(("ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"), 0.0),
-            "global_rgb": np.zeros((480, 640, 3), np.uint8),
-            "grasp_rgb": np.zeros((480, 640, 3), np.uint8)}
+            **{name: np.zeros(shape, np.uint8) for name, shape in shapes.items()}}
 
 
 def _phone_target():
@@ -79,9 +79,9 @@ class Dataset:
     num_episodes = 0
     image_writer = None
 
-    def __init__(self, root):
+    def __init__(self, root, image_shapes=None):
         self.root = root
-        self.features = joint_dataset_features()
+        self.features = joint_dataset_features(image_shapes)
         self.episode_buffer = {"size": 0, "action": []}
         self.frames = []
         self.save_calls = 0
@@ -100,12 +100,15 @@ class Dataset:
         self.episode_buffer = {"size": 0, "action": []}
 
 
-def _record_one(tmp_path, observer=None, action_processor=None):
-    robot, dataset, entry = _robot(), Dataset(tmp_path / "data"), _entry()
+def _record_one(tmp_path, observer=None, action_processor=None, image_shapes=None):
+    robot, dataset, entry = _robot(), Dataset(tmp_path / "data", image_shapes), _entry()
+    robot.cameras = {name: SimpleNamespace(height=dataset.features[f"observation.images.{name}"]["shape"][0],
+                                           width=dataset.features[f"observation.images.{name}"]["shape"][1])
+                    for name in ("global_rgb", "grasp_rgb")}
     events = {"exit_early": False}
     def observation():
         robot.last_c0_sensor_timestamps = dict.fromkeys(("robot_state", "global_rgb", "grasp_rgb"), 1.0)
-        return _observation()
+        return _observation(image_shapes)
     robot.get_observation = observation
     actual_send = robot.send_action
     def send(command):
@@ -221,19 +224,27 @@ def _session(tmp_path):
         outcome_provider=lambda i: "single_success")
 
 
-def test_save_finalize_and_readonly_audit(tmp_path):
+@pytest.mark.parametrize("image_shapes", [None, {"global_rgb": (1080, 1920, 3), "grasp_rgb": (480, 640, 3)}])
+def test_save_finalize_and_readonly_audit(tmp_path, image_shapes):
     session = _session(tmp_path)
-    robot, dataset = _record_one(tmp_path, session.episode_frame_observer())
+    robot, dataset = _record_one(tmp_path, session.episode_frame_observer(), image_shapes=image_shapes)
     original = copy.deepcopy(dataset.frames)
+    for name in ("global_rgb", "grasp_rgb"):
+        shape = dataset.features[f"observation.images.{name}"]["shape"]
+        assert original[0][f"observation.images.{name}"].shape == shape
+        assert robot.observation_features[name] == shape
     session.save_episode(robot=robot, dataset=dataset, episode_index=0)
     session.on_dataset_finalize_success(dataset=dataset, recorded_episode_count=1)
     root = dataset.root
     (root / "meta").mkdir(parents=True)
     (root / "data/chunk-000").mkdir(parents=True)
-    info = {"features": joint_dataset_features(), "fps": 25, "robot_type": "aubo_i10",
+    info = {"features": joint_dataset_features(image_shapes), "fps": 25, "robot_type": "aubo_i10",
             "total_episodes": 1, "total_frames": 1}
     (root / "meta/info.json").write_text(json.dumps(info))
     (root / "meta/aubo_joint_contract.json").write_text(json.dumps(joint_contract_record()))
+    if image_shapes:
+        from lerobot.bamboo_sorting.joint_camera_config import load_joint_camera_configuration
+        (root / "meta/camera_configuration.json").write_text(json.dumps(load_joint_camera_configuration()))
     pq.write_table(pa.table({"task_index": [0], "__index_level_0__": [JOINT_TASK]}), root / "meta/tasks.parquet")
     data = {"observation.state": [original[0]["observation.state"].tolist()],
             "action": [original[0]["action"].tolist()], "episode_index": [0], "frame_index": [0], "task_index": [0]}
@@ -243,6 +254,14 @@ def test_save_finalize_and_readonly_audit(tmp_path):
     assert result["audit_passed"] and not result["capture_complete"]
     assert not result["gripper_quality_passed"]
     assert result["supervised_candidate_episodes"] == []
+    if image_shapes:
+        assert result["image_shapes"]["global_rgb"] == [1080, 1920, 3]
+        info["features"]["observation.images.global_rgb"]["shape"] = [480, 640, 3]
+        (root / "meta/info.json").write_text(json.dumps(info))
+        with pytest.raises(ValueError, match="invalid RGB video feature"):
+            audit_joint_dataset(root, tmp_path / "evidence")
+        info["features"]["observation.images.global_rgb"]["shape"] = [1080, 1920, 3]
+        (root / "meta/info.json").write_text(json.dumps(info))
     data["action"][0][0] += 0.25
     pq.write_table(pa.table(data), parquet)
     with pytest.raises(ValueError, match="labels differ"):
@@ -366,6 +385,8 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
             return_to_start=lambda robot: True)))
 
     def create(**kwargs):
+        assert kwargs["features"]["observation.images.global_rgb"]["shape"] == (1080, 1920, 3)
+        assert kwargs["features"]["observation.images.grasp_rgb"]["shape"] == (480, 640, 3)
         (kwargs["root"] / "meta").mkdir(parents=True)
         return Dataset(kwargs["root"])
     monkeypatch.setattr(LeRobotDataset, "create", create)
@@ -423,3 +444,8 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     assert "finalize" in calls
     assert calls.index("finalize") < calls.index("phone_disconnect") < calls.index("robot_disconnect")
     assert not any(listener.active for listener in listeners)
+    saved_camera = json.loads((tmp_path / "data/meta/camera_configuration.json").read_text())
+    saved_plan = json.loads((tmp_path / "evidence/plan.json").read_text())
+    assert saved_camera["camera_set"] == "wide-global"
+    assert saved_camera["camera_mapping"] == saved_plan["camera_mapping"]
+    assert saved_camera["camera_mapping"]["global_rgb"]["width"] == 1920

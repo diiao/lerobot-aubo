@@ -4,12 +4,69 @@
 采集复用手机遥操：手机控制平移和 J6，内部逆运动学生成六关节目标，吸盘由操作者切换。
 记录的 action 是控制器接受的目标，不能用实测关节角替代；TCP 不进入模型状态或动作。
 
+## 相机配置与体检
+
+本节统一维护相机更换的配置、测试证据、回退与后续操作，其他项目入口仅链接到这里。
+
+2026-10-03 起，新采集默认使用 `--camera-set wide-global`：新 `2MP USB Camera` 全局相机＋原 Sonix 腕部相机，
+读取 [camera_set_wide_global.json](../../configs/aubo_i10/camera_set_wide_global.json)。
+全局按1920×1080原图采集保存，腕部保持640×480；MJPG，全局30 FPS、腕部25 FPS。
+两路分辨率可以不同，采集入口按各自配置创建视频数据字段，不缩小全局原图。
+配置状态 `mounting_pending_review` 表示支架未固定、最终视野待复核；配置已接入采集和体检入口。
+首轮三根研究继续使用现有支撑物和工作区。
+
+旧全局相机保留原位置和角度。接回原相机后，采集／体检加 `--camera-set original-global` 即可恢复旧配置。
+旧模型执行入口仍使用原 `CameraSetV2.json` 及冻结校验，不随新采集配置切换。
+换机前代码与文档回退点为 `37fc88c`；通常只需切回相机选项，无需覆盖工作树或删除新配置。
+
+### 已完成的测试
+
+2026-10-03 使用项目 `OpenCVCamera` 驱动，仅打开新全局相机（序列号 `04434000_P120800_SN0002`），
+每种模式预热3秒后测量：
+
+| 图像模式 | 测量时长 | 实测帧率 | 消费端读取错误 |
+| --- | --- | --- | --- |
+| MJPG 640×480，请求30 FPS | 15秒 | 30.01 FPS | 0 |
+| MJPG 1920×1080，请求30 FPS | 8秒 | 30.00 FPS | 0 |
+
+测试正常退出，相机已关闭；未打开腕部相机、连接机械臂、发送IO或运行策略。
+这只证明短时单相机出帧，尚未验证双相机并发、最终视野、层序可判定性或新视角下的策略效果。
+临时样图主要覆盖机械臂和墙面，不能作为正式料堆视野。
+配置接入和不同尺寸数据处理另通过52项软件测试，不替代上述现场复核。
+
+本地证据（`artifacts/` 不随 Git 提交）：
+[测试报告](../../artifacts/new_global_camera_20261003_nkaq9n8h/report.json)、
+[测试脚本](../../artifacts/new_global_camera_20261003_nkaq9n8h/probe.py)、
+[640×480样图](../../artifacts/new_global_camera_20261003_nkaq9n8h/global_rgb_640x480.png)、
+[1920×1080样图](../../artifacts/new_global_camera_20261003_nkaq9n8h/global_rgb_1920x1080.png)。
+
+### 支架到位后的复核
+
+先固定视角，检查完整料堆、交叉处细节、收集区及机械臂遮挡，再进行双相机体检。
+
+只显示新相机配置，不打开设备、不写文件：
+
+```bash
+PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/diag_preflight_cams.py --camera-set wide-global --plan
+```
+
+支架固定后，由操作者启动双相机体检（会打开两台相机，但不连接机械臂）：
+
+```bash
+PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/diag_preflight_cams.py --camera-set wide-global --seconds 15
+```
+
+预览图和配置快照写入新建的 `/tmp/aubo_camera_preflight_wide-global_*` 目录。查看打印的实际路径，
+核对全局图能覆盖料堆及收集区、交叉处清楚，腕部图没有接反。
+可用 `--output <新目录>` 保留结果；原 `CAMERA_TEST_SECONDS` 环境变量仍可作为测量时长默认值。
+
 ## 先查看计划
 
 在仓库根目录运行。示例路径须选用尚不存在的新目录：
 
 ```bash
 .venv/bin/python examples/phone_to_auboi10/record_joint.py \
+  --camera-set wide-global \
   --dataset-root datasets/joint_train_run02 \
   --evidence-root artifacts/joint_train_run02 \
   --num-episodes 1 --split train
@@ -52,5 +109,9 @@
 ## 数据交接
 
 每个 `datasets/<name>` 与对应 `artifacts/<name>` 一起保留。不要重写原始证据中的源路径。
+新采集在证据 `plan.json` 和数据 `meta/camera_configuration.json` 中保存选中的相机配置快照。
+新旧视角使用不同数据目录；本次未更改训练清单，不自动将新相机数据并入现有160/22数据。
+审计按已保存的相机尺寸核对视频字段。旧训练入口及旧模型仍要求双640×480；新原图进入动作训练时，
+需要另行接入与新模型一致的等比例缩放／补边预处理，不能靠拉伸或覆盖原视频绕过尺寸要求。
 组合不同批次使用显式来源清单，见 [训练说明](JOINT_TRAINING.md)；
 当前 160/22 数据来源见 [证据索引](EVIDENCE.md)。
