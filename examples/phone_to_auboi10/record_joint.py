@@ -29,7 +29,7 @@ def parse_args(argv=None):
     parser.add_argument("--num-episodes", type=int, default=60)
     parser.add_argument("--split", choices=("train", "validation", "test"), required=True)
     parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET,
-                        help="wide-global: new 1080p global camera (default); original-global: original camera")
+                        help="original-global: original camera (default); wide-global: optional new 1080p camera")
     parser.add_argument("--record", action="store_true", help="Connect cameras/phone/AUBO and enable supervised motion/IO")
     args = parser.parse_args(argv)
     args.dataset_root = args.dataset_root.expanduser().resolve()

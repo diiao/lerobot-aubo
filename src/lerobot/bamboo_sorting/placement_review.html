@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>竹条轮廓复核</title>
+<style>
+body{font:16px sans-serif;max-width:1280px;margin:24px auto;background:#f6f7f9;color:#18202b;padding:0 16px}
+button,input,select{font:inherit;padding:8px;margin:4px}canvas{display:block;width:100%;height:auto;background:#222;touch-action:none}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}#status{padding:12px;background:#fff}small{color:#465467}
+</style>
+<h1>竹条轮廓复核</h1>
+<p>每页只修正本步新放入的一根。绿色轮廓是草稿，交叉处应按原图和真实摆放核对。画面外的部分不补画。</p>
+<div class="bar"><button id="prev">上一根</button><select id="step"></select><button id="next">下一根</button>
+<label><input type="checkbox" id="show" checked>显示轮廓</label>
+<label><input type="checkbox" id="truncated">竹条被画面截断</label></div>
+<p>拖动圆点修改顶点；Shift＋点击边附近添加顶点；右键顶点删除。改动后需重新确认当前轮廓。</p>
+<canvas id="canvas"></canvas>
+<div id="status"></div>
+<div class="bar">
+<button id="confirm">确认当前轮廓</button><button id="export">下载修正 JSON</button></div>
+<p>无需填写复核人。逐根检查后点击确认，下载前检查已确认数量。</p>
+<small>页面离线运行，不上传图片。下载只保存多边形；将文件交给生成工具后才能更新掩码。未确认项和截断项不会自动成为完整训练标签。</small>
+<script id="data" type="application/json">__REVIEW_DATA__</script>
+<script>
+const payload=JSON.parse(document.getElementById('data').textContent);
+const annotations=payload.annotations, objects=annotations.objects;
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const step=document.getElementById('step'),show=document.getElementById('show');
+const truncated=document.getElementById('truncated');
+canvas.width=annotations.image_size[0];canvas.height=annotations.image_size[1];
+let index=0,drag=-1,loaded=-1;const picture=new Image();
+objects.forEach((o,i)=>{const opt=document.createElement('option');opt.value=i;opt.textContent=`第 ${i+1} 根 · ${o.id}`;step.appendChild(opt)});
+function draw(){
+ ctx.clearRect(0,0,canvas.width,canvas.height);if(loaded!==index)return;ctx.drawImage(picture,0,0);
+ const obj=objects[index],p=obj.polygon;ctx.strokeStyle='#00ff66';ctx.lineWidth=1;
+ if(show.checked){ctx.beginPath();p.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.closePath();ctx.stroke();
+ p.forEach(([x,y],i)=>{ctx.fillStyle='#00ff66';ctx.beginPath();ctx.arc(x,y,3,0,2*Math.PI);ctx.fill();ctx.fillStyle='#000';ctx.font='10px sans-serif';ctx.fillText(i+1,x+5,y-5)})}
+ document.getElementById('status').textContent=`${obj.id}：${obj.reviewed?'轮廓已确认':'草稿，待复核'}${obj.truncated?'；画面截断':''}。分组：${annotations.placement_id}。共确认 ${objects.filter(o=>o.reviewed).length}/${objects.length} 根`;
+}
+function select(n){index=Math.max(0,Math.min(objects.length-1,n));drag=-1;step.value=index;truncated.checked=objects[index].truncated;loaded=-1;
+ picture.onload=()=>{loaded=index;draw()};picture.src='data:image/png;base64,'+payload.images[index]}
+function point(e){const r=canvas.getBoundingClientRect();return[Math.max(0,Math.min(canvas.width-1,(e.clientX-r.left)*canvas.width/r.width)),Math.max(0,Math.min(canvas.height-1,(e.clientY-r.top)*canvas.height/r.height))]}
+function nearest(p){let best=-1,d=10;objects[index].polygon.forEach((q,i)=>{const v=Math.hypot(p[0]-q[0],p[1]-q[1]);if(v<d){d=v;best=i}});return best}
+function changed(){objects[index].reviewed=false;draw()}
+canvas.onpointerdown=e=>{if(e.button!==0||loaded!==index||!show.checked)return;const p=point(e),poly=objects[index].polygon;
+ if(e.shiftKey){let edge=0,best=Infinity;poly.forEach((a,i)=>{const b=poly[(i+1)%poly.length],dx=b[0]-a[0],dy=b[1]-a[1];const t=Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/(dx*dx+dy*dy||1)));const d=Math.hypot(p[0]-a[0]-t*dx,p[1]-a[1]-t*dy);if(d<best){best=d;edge=i}});poly.splice(edge+1,0,p);changed();return}
+ drag=nearest(p);if(drag>=0)canvas.setPointerCapture(e.pointerId)};
+canvas.onpointermove=e=>{if(drag>=0){objects[index].polygon[drag]=point(e);changed()}};
+canvas.onpointerup=()=>drag=-1;canvas.onpointercancel=()=>drag=-1;
+canvas.oncontextmenu=e=>{e.preventDefault();const n=nearest(point(e));if(n>=0&&objects[index].polygon.length>3){objects[index].polygon.splice(n,1);changed()}};
+document.getElementById('prev').onclick=()=>select(index-1);document.getElementById('next').onclick=()=>select(index+1);
+step.onchange=()=>select(Number(step.value));show.onchange=draw;
+truncated.onchange=()=>{objects[index].truncated=truncated.checked;changed()};
+document.getElementById('confirm').onclick=()=>{objects[index].reviewed=true;draw()};
+document.getElementById('export').onclick=()=>{const blob=new Blob([JSON.stringify(annotations,null,2)+'\n'],{type:'application/json'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=annotations.placement_id+'_polygons.json';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000)};
+select(0);
+</script>
+</html>

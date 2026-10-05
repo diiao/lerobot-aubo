@@ -1,0 +1,13 @@
+{
+  "review_root": "../../artifacts/placement_sequences/review",
+  "image_size": [640, 480],
+  "strip_dimensions_mm": {"length": 400, "width": 25, "thickness": 8},
+  "dimensions_source": "User confirmed current 400x25x8 mm batch; independent test after frozen epoch-15 best.",
+  "placements": [
+    {"placement_id": "pile_047", "split": "test"},
+    {"placement_id": "pile_048", "split": "test"},
+    {"placement_id": "pile_049", "split": "test"},
+    {"placement_id": "pile_050", "split": "test"},
+    {"placement_id": "pile_051", "split": "test"}
+  ]
+}

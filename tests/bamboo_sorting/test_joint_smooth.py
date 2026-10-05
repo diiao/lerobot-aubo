@@ -125,6 +125,19 @@ def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
     assert plan['startup_release_if_unset']=='operator_confirmed'
 
 
+def test_explicit_cycle_count_preserves_mixed_control_limits(monkeypatch,capsys):
+    m=load_entry(monkeypatch)
+    def fail(*a,**kw):raise AssertionError('device touched')
+    monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
+    for invalid in ('0','-1','1.5'):
+        with pytest.raises(SystemExit):m.main(['--cycles',invalid])
+    assert m.main(['--model','mixed-both-orders','--approach-age-aligned','--cycles','1'])==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['requested_suction_cycles']==1
+    assert plan['max_seconds']==360 and plan['servo_command_time_s']==.08
+    assert plan['max_camera_age_ms']==250 and plan['max_prediction_age_s']==.5
+
+
 @pytest.mark.parametrize('answer,release_ok,expected_return',[
     ('q',True,0),('',True,0),('',False,1),
 ])
@@ -197,6 +210,10 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('mixed-both-orders',2,False,False,'replan_at_receipt'),
     ('mixed-both-orders',2,False,False,'discard'),
     ('mixed-both-orders',2,'pending_failure',False,2),
+    ('mixed-both-orders',1,False,False,False),
+    ('mixed-both-orders',1,False,False,7),
+    ('mixed-both-orders',1,True,False,7),
+    ('legacy-single',2,False,False,False),
 ])
 def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,inference_error,slow_fk,model,expected_cycles,approach):
     import numpy as np
@@ -224,7 +241,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             state_reads[0]+=1
             return state.copy(),[.2,-.5,.3],clock[0]
         def observe(self,**kw):
-            assert kw['max_camera_age_ms']==(250 if expected_cycles==2 else 100)
+            assert kw['max_camera_age_ms']==(100 if model=='legacy-single' else 250)
             if 'state_snapshot' in kw:
                 assert kw['state_snapshot'][0][-1]==state[-1]
             return state.copy(),{},[clock[0]-.050327,clock[0],clock[0]]
@@ -233,7 +250,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         def isServoModeEnabled(self):return enabled[0]
         def setServoMode(self,value):events.append(('mode',value));enabled[0]=value;return 0
         def servoJoint(self,q,*args):
-            assert args[2]==(.08 if expected_cycles==2 else DT)
+            assert args[2]==(DT if model=='legacy-single' else .08)
             events.append(('send',clock[0]));state[:6]=[math.degrees(x) for x in q];return 0
         def forwardKinematics(self,q):
             if slow_fk and not delayed[0] and len([e for e in events if e[0]=='send'])>=3:
@@ -300,7 +317,8 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                                 for row in chunk:row[3]+=.2;row[5]+=.4
                 return {'action':chunk[0], 'raw_action':chunk[0], 'shape':[50,7],
                     'action_chunk':chunk,'raw_action_chunk':chunk}
-            suction=0 if inference_error else (100 if index in ((0,2) if expected_cycles==2 else (0,)) else 0)
+            # The fake policy keeps proposing cycles; only the runner stops it.
+            suction=0 if inference_error else (100 if index%2==0 else 0)
             return {'action':[*START_DEG,suction]}
     class Future:
         def __init__(self,fn,args):self.fn=fn;self.args=args;self.ready=clock[0]+.14
@@ -337,6 +355,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     monkeypatch.setattr(m,'TrialVideoRecorder',Recorder)
     out=tmp_path/'run'
     argv=['--execute','--model',model,'--output',str(out)]
+    if expected_cycles!=(1 if model=='legacy-single' else 2):argv+=['--cycles',str(expected_cycles)]
     if approach:argv.append('--approach-age-aligned')
     assert m.main(argv)==int(bool(inference_error))
     assert [e for e in events if e[0]=='mode']==[('mode',True),('mode',False)]
@@ -347,8 +366,8 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     assert r['completed_suction_cycles']==(expected_cycles if not inference_error else 0)
     assert [x for kind,x in events if kind=='suction']==([100,0]*expected_cycles if not inference_error else [])
     if approach and not inference_error:
-        assert r['reason']=='model_suction_cycles_completed' and r['approach_age_aligned']
-        assert r['predictions']>=4
+        assert r['reason']==('model_suction_cycle_completed' if expected_cycles==1 else 'model_suction_cycles_completed')
+        assert r['approach_age_aligned'] and r['predictions']>=2*expected_cycles
         records=[json.loads(s) for s in (out/'commands.jsonl').read_text().splitlines()]
         frozen=[c for c in records if c['suction_target_frozen'] and c['target'][-1]==100]
         assert frozen and all(c['action_selection']['selected_index'] in (approach,0) for c in frozen)

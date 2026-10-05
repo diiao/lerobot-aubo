@@ -1,0 +1,175 @@
+{
+  "review_root": "../../artifacts/placement_sequences/review",
+  "image_size": [
+    640,
+    480
+  ],
+  "strip_dimensions_mm": {
+    "length": 400,
+    "width": 25,
+    "thickness": 8
+  },
+  "dimensions_source": "User confirmed short-strip length 40cm in chat on 2026-10-05; width and thickness unchanged.",
+  "placements": [
+    {
+      "placement_id": "pile_007",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_008",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_009",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_010",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_011",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_012",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_013",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_014",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_015",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_016",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_017",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_018",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_019",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_020",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_021",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_022",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_023",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_024",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_025",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_026",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_027",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_028",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_029",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_030",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_031",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_032",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_033",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_034",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_035",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_036",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_037",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_038",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_039",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_040",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_041",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_042",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_043",
+      "split": "train"
+    },
+    {
+      "placement_id": "pile_044",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_045",
+      "split": "validation"
+    },
+    {
+      "placement_id": "pile_046",
+      "split": "validation"
+    }
+  ]
+}
