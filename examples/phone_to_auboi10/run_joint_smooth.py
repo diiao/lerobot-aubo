@@ -36,13 +36,15 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
     p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders'),default='legacy-single')
+    p.add_argument('--cycles',type=int,help='Stop after this many close/open command cycles; defaults to the model setting')
     p.add_argument('--approach-age-aligned',action='store_true',
                    help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
+    if args.cycles is not None and args.cycles<1:p.error('--cycles must be a positive integer')
     approach=args.approach_age_aligned
     if approach and args.model!='mixed-both-orders':p.error('--approach-age-aligned requires --model mixed-both-orders')
     mixed=args.model in ('mixed-double','mixed-both-orders')
-    expected_cycles=2 if mixed else 1
+    expected_cycles=args.cycles if args.cycles is not None else (2 if mixed else 1)
     max_seconds=360 if mixed else 120
     servo_command_time=.08 if mixed else DT
     max_camera_age_ms=250 if mixed else 100
@@ -227,7 +229,7 @@ def main(argv=None):
                         completed_cycles+=1
                         if completed_cycles==expected_cycles:
                             cycle=True
-                            reason='model_suction_cycle_completed' if not mixed else 'model_suction_cycles_completed'
+                            reason='model_suction_cycle_completed' if expected_cycles==1 else 'model_suction_cycles_completed'
                             break
                     # IO readback can take 175 ms; do not catch up missed ticks.
                     last_tick=time.perf_counter();next_tick=last_tick+DT

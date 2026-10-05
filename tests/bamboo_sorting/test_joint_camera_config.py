@@ -20,8 +20,8 @@ def entry(name):
 
 
 @pytest.mark.parametrize("name", ["record_joint", "diag_preflight_cams"])
-@pytest.mark.parametrize("selection", [None, "original-global"])
-def test_plan_selects_new_camera_or_old_rollback_without_devices(name, selection, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("selection", [None, "original-global", "wide-global"])
+def test_plan_selects_old_camera_by_default_without_devices(name, selection, tmp_path, monkeypatch, capsys):
     module = entry(name)
     args = (["--dataset-root", str(tmp_path / "data"), "--evidence-root", str(tmp_path / "evidence"),
              "--split", "train"] if name == "record_joint" else ["--plan", "--output", str(tmp_path / "preview")])
@@ -37,10 +37,10 @@ def test_plan_selects_new_camera_or_old_rollback_without_devices(name, selection
     monkeypatch.setattr(builtins, "__import__", guarded)
     assert module.main(args) == 0
     plan, _ = json.JSONDecoder().raw_decode(capsys.readouterr().out)
-    assert plan["camera_set"] == (selection or "wide-global")
-    assert ("GENERAL_WEBCAM" if selection == "original-global" else "2MP_USB_Camera") in plan["camera_mapping"]["global_rgb"]["device"]
+    assert plan["camera_set"] == (selection or "original-global")
+    assert ("2MP_USB_Camera" if selection == "wide-global" else "GENERAL_WEBCAM") in plan["camera_mapping"]["global_rgb"]["device"]
     assert "Sonix" in plan["camera_mapping"]["grasp_rgb"]["device"]
-    expected_global_shape = [480, 640, 3] if selection == "original-global" else [1080, 1920, 3]
+    expected_global_shape = [1080, 1920, 3] if selection == "wide-global" else [480, 640, 3]
     if name == "record_joint":
         assert plan["dataset_features"]["observation.images.global_rgb"]["shape"] == expected_global_shape
         assert plan["dataset_features"]["observation.images.grasp_rgb"]["shape"] == [480, 640, 3]

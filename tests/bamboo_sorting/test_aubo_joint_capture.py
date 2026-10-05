@@ -244,7 +244,7 @@ def test_save_finalize_and_readonly_audit(tmp_path, image_shapes):
     (root / "meta/aubo_joint_contract.json").write_text(json.dumps(joint_contract_record()))
     if image_shapes:
         from lerobot.bamboo_sorting.joint_camera_config import load_joint_camera_configuration
-        (root / "meta/camera_configuration.json").write_text(json.dumps(load_joint_camera_configuration()))
+        (root / "meta/camera_configuration.json").write_text(json.dumps(load_joint_camera_configuration("wide-global")))
     pq.write_table(pa.table({"task_index": [0], "__index_level_0__": [JOINT_TASK]}), root / "meta/tasks.parquet")
     data = {"observation.state": [original[0]["observation.state"].tolist()],
             "action": [original[0]["action"].tolist()], "episode_index": [0], "frame_index": [0], "task_index": [0]}
@@ -385,7 +385,7 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
             return_to_start=lambda robot: True)))
 
     def create(**kwargs):
-        assert kwargs["features"]["observation.images.global_rgb"]["shape"] == (1080, 1920, 3)
+        assert kwargs["features"]["observation.images.global_rgb"]["shape"] == (480, 640, 3)
         assert kwargs["features"]["observation.images.grasp_rgb"]["shape"] == (480, 640, 3)
         (kwargs["root"] / "meta").mkdir(parents=True)
         return Dataset(kwargs["root"])
@@ -446,6 +446,6 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     assert not any(listener.active for listener in listeners)
     saved_camera = json.loads((tmp_path / "data/meta/camera_configuration.json").read_text())
     saved_plan = json.loads((tmp_path / "evidence/plan.json").read_text())
-    assert saved_camera["camera_set"] == "wide-global"
+    assert saved_camera["camera_set"] == "original-global"
     assert saved_camera["camera_mapping"] == saved_plan["camera_mapping"]
-    assert saved_camera["camera_mapping"]["global_rgb"]["width"] == 1920
+    assert saved_camera["camera_mapping"]["global_rgb"]["width"] == 640

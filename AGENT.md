@@ -1,24 +1,25 @@
 # AUBO i10 项目维护入口
 
-更新：2026-10-03。当前已验证模型使用 CameraSetV2 双 RGB、七维绝对关节 SmolVLA 竹条抓放。
+更新：2026-10-05。继续使用旧全局相机；当前已验证模型使用 CameraSetV2 双 RGB、七维绝对关节 SmolVLA 竹条抓放。
 
 ## 阅读顺序
 
 1. [当前工作流](examples/phone_to_auboi10/README.md)：采集、训练、现场运行入口。
 2. [证据与历史索引](examples/phone_to_auboi10/EVIDENCE.md)：模型、实验结果、历史版本。
-3. [逐层抓取研究范围](docs/AUBO_I10_TOP_LAYER_VLM_RL_ROUTE_2026-09-26.md)：后续三根以上自然叠放研究，尚未实施。
+3. [逐层抓取研究范围](docs/AUBO_I10_TOP_LAYER_VLM_RL_ROUTE_2026-09-26.md)：后续三根以上自然叠放研究，感知与执行闭环尚未验证。
 
 行为以当前代码为准。历史 ACT、C0 的末端动作和固定 J5 方案不能当作当前操作说明。
 
 ## 当前契约与状态
 
 - 状态和动作：`[J1,J2,J3,J4,J5,J6,gripper_pos]`，关节单位为度，J5 由模型预测。
+- 末端：Airtac HFKL20 气动平行二指夹爪。代码中的 `gripper_pos`、`suction_*` 和旧文档的“吸盘/吸附”都指它的开合指令（100 夹紧、0 松开）。
 - 图像：`global_rgb` 固定全局相机、`grasp_rgb` 腕部相机；配置见 `configs/aubo_i10/CameraSetV2.json`。
 - 新相机配置、测试、回退和待办统一维护在[采集说明](examples/phone_to_auboi10/JOINT_CAPTURE.md#相机配置与体检)。
 - 任务：`Pick one strip and place it in the collection area.`。
 - 当前模型选项：`mixed-both-orders`，160 条训练 / 22 条验证，30000 步。
 - 单根及两种熟悉双根摆放已有成功反馈；尚无未见堆叠泛化成功率。
-- 混训入口仍固定两个吸附→释放周期，单根自动结束尚未解决；当前没有独立周期数参数。
+- 混训入口默认两个夹紧→松开周期，可用 `--cycles 1` 指定单次；只计控制命令，不判断物理成败，见[运行说明](examples/phone_to_auboi10/JOINT_TRIAL.md)。
 - 后续目标：自然叠放中逐根取走可分离的上层；目标条件化、自动清空判断、VLM/RL 均未接通。
 
 ## 维护边界

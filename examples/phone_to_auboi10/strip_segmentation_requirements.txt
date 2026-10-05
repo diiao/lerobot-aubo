@@ -1,0 +1,3 @@
+# Supplement an existing compatible torch/torchvision environment; do not upgrade the robot environment.
+transformers==4.57.1
+scipy==1.15.3

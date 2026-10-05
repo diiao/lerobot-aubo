@@ -1,0 +1,85 @@
+{
+  "placement_id": "pile_004",
+  "image_size": [
+    640,
+    480
+  ],
+  "annotation_source": "assistant_visual_polygon_draft",
+  "placement_from_above_confirmed": true,
+  "older_strips_stationary_confirmed": true,
+  "placement_confirmation_source": "User confirmed for pile_004 in chat on 2026-10-05: 对，旧条未动且未明显倾斜; each strip added from above.",
+  "objects": [
+    {
+      "id": "strip_001",
+      "frame_index": 1,
+      "polygon": [
+        [
+          411,
+          230
+        ],
+        [
+          422,
+          225
+        ],
+        [
+          572,
+          452
+        ],
+        [
+          558,
+          458
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true
+    },
+    {
+      "id": "strip_002",
+      "frame_index": 2,
+      "polygon": [
+        [
+          344,
+          415
+        ],
+        [
+          568,
+          239
+        ],
+        [
+          581,
+          245
+        ],
+        [
+          354,
+          426
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true
+    },
+    {
+      "id": "strip_003",
+      "frame_index": 3,
+      "polygon": [
+        [
+          478,
+          212
+        ],
+        [
+          490,
+          213
+        ],
+        [
+          474,
+          455
+        ],
+        [
+          458,
+          452
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "placement_id": "pile_021",
+  "image_size": [
+    640,
+    480
+  ],
+  "annotation_source": "assistant_visual_polygon_draft",
+  "placement_from_above_confirmed": true,
+  "older_strips_stationary_confirmed": true,
+  "placement_confirmation_source": "User confirmed recaptured pile_017 and pile_018-pile_021 in chat on 2026-10-05: 五组均满足, in reply to whether strips were added from above and older strips did not move or visibly tilt.",
+  "strip_dimensions_mm": {
+    "length": null,
+    "width": 25,
+    "thickness": 8
+  },
+  "note": "Short-strip length not yet supplied. Assistant visual polygon drafts require per-strip human review; placement confirmation is not polygon confirmation.",
+  "objects": [
+    {
+      "id": "strip_001",
+      "frame_index": 1,
+      "polygon": [
+        [
+          420,
+          257
+        ],
+        [
+          432,
+          254
+        ],
+        [
+          538,
+          395
+        ],
+        [
+          525.591796875,
+          401.0390625
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true
+    },
+    {
+      "id": "strip_002",
+      "frame_index": 2,
+      "polygon": [
+        [
+          381.962890625,
+          364.908203125
+        ],
+        [
+          548,
+          269
+        ],
+        [
+          558.67578125,
+          274.42578125
+        ],
+        [
+          388.6875,
+          374.6484375
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true
+    },
+    {
+      "id": "strip_003",
+      "frame_index": 3,
+      "polygon": [
+        [
+          360,
+          296
+        ],
+        [
+          588.32421875,
+          324.2734375
+        ],
+        [
+          588.646484375,
+          333.2109375
+        ],
+        [
+          360.00390625,
+          305.1796875
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true
+    }
+  ]
+}

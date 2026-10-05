@@ -17,7 +17,7 @@ CAMERA_SET_PATHS = {
     "original-global": REPO / "configs/aubo_i10/CameraSetV2.json",
     "wide-global": REPO / "configs/aubo_i10/camera_set_wide_global.json",
 }
-DEFAULT_CAPTURE_CAMERA_SET = "wide-global"
+DEFAULT_CAPTURE_CAMERA_SET = "original-global"
 
 
 def load_joint_camera_configuration(camera_set=DEFAULT_CAPTURE_CAMERA_SET):

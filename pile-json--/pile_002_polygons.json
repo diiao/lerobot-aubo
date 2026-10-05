@@ -1,0 +1,86 @@
+{
+  "placement_id": "pile_002",
+  "image_size": [
+    640,
+    480
+  ],
+  "annotation_source": "assistant_visual_polygon_draft",
+  "reviewed_by": "第三根",
+  "placement_from_above_confirmed": true,
+  "older_strips_stationary_confirmed": true,
+  "placement_confirmation_source": "User confirmed in chat on 2026-10-05: strip 2 placed above strip 1, strip 3 above both, older strips did not move or visibly tilt.",
+  "objects": [
+    {
+      "id": "strip_001",
+      "frame_index": 1,
+      "polygon": [
+        [
+          326,
+          382
+        ],
+        [
+          615,
+          258
+        ],
+        [
+          622,
+          267
+        ],
+        [
+          334,
+          392
+        ]
+      ],
+      "truncated": false,
+      "reviewed": false
+    },
+    {
+      "id": "strip_002",
+      "frame_index": 2,
+      "polygon": [
+        [
+          499,
+          219
+        ],
+        [
+          513,
+          220
+        ],
+        [
+          450,
+          460
+        ],
+        [
+          433,
+          457
+        ]
+      ],
+      "truncated": false,
+      "reviewed": false
+    },
+    {
+      "id": "strip_003",
+      "frame_index": 3,
+      "polygon": [
+        [
+          314,
+          292
+        ],
+        [
+          639,
+          326
+        ],
+        [
+          639,
+          337.91796875
+        ],
+        [
+          313.841796875,
+          300.935546875
+        ]
+      ],
+      "truncated": true,
+      "reviewed": true
+    }
+  ]
+}
