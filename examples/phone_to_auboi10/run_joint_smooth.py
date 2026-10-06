@@ -37,10 +37,19 @@ def main(argv=None):
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
     p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders'),default='legacy-single')
     p.add_argument('--cycles',type=int,help='Stop after this many close/open command cycles; defaults to the model setting')
+    p.add_argument('--inference-timeout-s',type=float,
+                   help='Wait for a model response; does not relax observation age or servo watchdog limits')
+    p.add_argument('--latency-tolerant',action='store_true',
+                   help='mixed-both-orders trial: 400 ms camera age, 300 ms camera skew, 750 ms prediction age, 1 s watchdog, 5 s response wait')
     p.add_argument('--approach-age-aligned',action='store_true',
                    help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
     if args.cycles is not None and args.cycles<1:p.error('--cycles must be a positive integer')
+    inference_timeout_s=args.inference_timeout_s if args.inference_timeout_s is not None else (5. if args.latency_tolerant else 2.)
+    if not math.isfinite(inference_timeout_s) or inference_timeout_s<=0:
+        p.error('--inference-timeout-s must be finite and positive')
+    if args.latency_tolerant and args.model!='mixed-both-orders':
+        p.error('--latency-tolerant requires --model mixed-both-orders')
     approach=args.approach_age_aligned
     if approach and args.model!='mixed-both-orders':p.error('--approach-age-aligned requires --model mixed-both-orders')
     mixed=args.model in ('mixed-double','mixed-both-orders')
@@ -49,6 +58,11 @@ def main(argv=None):
     servo_command_time=.08 if mixed else DT
     max_camera_age_ms=250 if mixed else 100
     max_prediction_age=.5 if args.model=='mixed-both-orders' else MAX_PREDICTION_AGE
+    max_without_prediction=MAX_WITHOUT_PREDICTION
+    max_camera_skew=MAX_CAMERA_SKEW
+    if args.latency_tolerant:
+        max_prediction_age=.75;max_without_prediction=1.
+        max_camera_age_ms=400;max_camera_skew=.3
     model_sha=MIXED_MODEL_SHA if mixed else MODEL_SHA
     pipe_options=({'remote_root':MIXED_REMOTE_ROOT,'checkpoint':MIXED_CHECKPOINT,
                    'expected_sha256':MIXED_MODEL_SHA,'inference_script':MIXED_INFERENCE_SCRIPT}
@@ -58,6 +72,7 @@ def main(argv=None):
         pipe_options={'remote_root':BOTH_ORDERS_REMOTE_ROOT,'checkpoint':BOTH_ORDERS_CHECKPOINT,
                       'expected_sha256':model_sha,'inference_script':BOTH_ORDERS_INFERENCE_SCRIPT}
         if approach:pipe_options.update(inference_script=BOTH_ORDERS_APPROACH_SCRIPT,return_action_chunk=True)
+    pipe_options['request_timeout_s']=inference_timeout_s
     plan={'mode':'asynchronous_inference_continuous_servo','model':args.model,
           'action_selection':'observation_age_while_open_first_step_while_closed' if approach else 'first_step',
           'pending_suction_policy':'continue_inference_while_open' if approach else 'accept_fresh_inflight_before_io',
@@ -66,10 +81,11 @@ def main(argv=None):
           'joint_speed_deg_s':MAX_SPEED,'joint_acceleration_deg_s2':MAX_ACCEL,'tcp_speed_m_s':MAX_TCP_SPEED,
           'max_prediction_delta_deg':None,'max_prediction_delta_m':None,
           'max_servo_tracking_error_deg':MAX_TRACKING_ERROR_DEG,
-          'max_prediction_age_s':max_prediction_age,'watchdog_s':MAX_WITHOUT_PREDICTION,
-          'max_camera_skew_s':MAX_CAMERA_SKEW,
+          'latency_tolerant':args.latency_tolerant,
+          'max_prediction_age_s':max_prediction_age,'watchdog_s':max_without_prediction,
+          'max_camera_skew_s':max_camera_skew,
           'max_camera_age_ms':max_camera_age_ms,
-          'rpc_timeout_ms':RPC_TIMEOUT_MS,'max_control_gap_s':.35,
+          'rpc_timeout_ms':RPC_TIMEOUT_MS,'inference_timeout_s':inference_timeout_s,'max_control_gap_s':.35,
           'max_state_age_s':.1,'stale_state_refreshes_per_step':1 if mixed else 0,
           'servo_command_time_s':servo_command_time,
           'suction_writes':True,'max_seconds':max_seconds,'automatic_home':False,'automatic_release':False,
@@ -167,19 +183,19 @@ def main(argv=None):
                     prediction_id=inflight_index
                 accepted=validate_prediction(candidate,state,tcp,fk(candidate[:6]),
                     station.lower,station.upper,sensor_times,time.perf_counter(),
-                    max_prediction_age=max_prediction_age)
+                    max_prediction_age=max_prediction_age,max_camera_skew=max_camera_skew)
                 predictions+=1;goal=accepted;last_observation=min(sensor_times)
                 if previous_pending_target is not None:
                     log(trace,{'pending_suction_replanned':{'previous_target':previous_pending_target,
                         'updated_target':goal,'prediction_index':prediction_id}})
-                prediction_deadline=last_observation+MAX_WITHOUT_PREDICTION
+                prediction_deadline=last_observation+max_without_prediction
                 pending_suction=goal[-1]!=held_suction
                 if not owned:
                     trajectory=SmoothTrajectory(state[:6]);owned=True
                     servo._require_zero(motion.setServoMode(True),'enable servo');servo._wait_servo(True)
             if goal is not None:
                 if not pending_suction and time.perf_counter()>prediction_deadline:
-                    raise TimeoutError(f'no fresh prediction within {MAX_WITHOUT_PREDICTION*1000:.0f} ms')
+                    raise TimeoutError(f'no fresh prediction within {max_without_prediction*1000:.0f} ms')
                 if pending_suction and time.perf_counter()-last_observation>1.5:
                     raise TimeoutError('suction transition target not reached within 1.5 seconds')
                 if approach and active_chunk is not None and held_suction==0 and not pending_suction:
@@ -187,7 +203,7 @@ def main(argv=None):
                     if new_selection['selected_index']!=selection['selected_index']:
                         goal=validate_prediction(candidate,state,tcp,fk(candidate[:6]),
                             station.lower,station.upper,active_times,time.perf_counter(),
-                            max_prediction_age=max_prediction_age)
+                            max_prediction_age=max_prediction_age,max_camera_skew=max_camera_skew)
                     selection=new_selection
                     pending_suction=goal[-1]!=held_suction
                 # Hold this coherent closure row while awaiting arrival, but
@@ -235,7 +251,7 @@ def main(argv=None):
                     last_tick=time.perf_counter();next_tick=last_tick+DT
                     # A separate deadline allows a post-IO observation; original
                     # sensor timestamps remain unchanged in prediction records.
-                    prediction_deadline=last_tick+MAX_WITHOUT_PREDICTION
+                    prediction_deadline=last_tick+max_without_prediction
                     # IO changed after the cycle's read: the next observation
                     # must contain the new suction state, not the old snapshot.
                     state,tcp,stamp=station.current(require_stationary=False)

@@ -27,6 +27,8 @@ def parse_args(argv=None):
     parser.add_argument("--dataset-root", required=True, type=Path)
     parser.add_argument("--evidence-root", required=True, type=Path)
     parser.add_argument("--num-episodes", type=int, default=60)
+    parser.add_argument("--target-demonstrations", action="store_true",
+                        help="Record selected object identity; preserve raw RGB, annotate approach masks offline")
     parser.add_argument("--split", choices=("train", "validation", "test"), required=True)
     parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET,
                         help="original-global: original camera (default); wide-global: optional new 1080p camera")
@@ -36,6 +38,8 @@ def parse_args(argv=None):
     args.evidence_root = args.evidence_root.expanduser().resolve()
     if args.num_episodes < 1:
         parser.error("num-episodes must be positive")
+    if args.target_demonstrations and args.camera_set != "original-global":
+        parser.error("target pilot uses the existing original-global dual 640x480 cameras")
     if (args.dataset_root == args.evidence_root or args.dataset_root in args.evidence_root.parents
             or args.evidence_root in args.dataset_root.parents):
         parser.error("dataset and evidence roots must be separate, not nested")
@@ -78,6 +82,7 @@ def main(argv=None):
             "evidence_root": str(args.evidence_root), "num_episodes": args.num_episodes,
             "split": args.split, **camera_configuration, "dataset_features": dataset_features,
             "teleoperation_profile": "legacy_abs_j6yaw",
+            "target_demonstrations": args.target_demonstrations,
             "mode": "supervised_capture" if args.record else "plan_only"}
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if not args.record:
@@ -167,6 +172,13 @@ def main(argv=None):
             print(f"\n准备第 {index + 1}/{args.num_episodes} 条；数据划分：{args.split}")
             scene = required_text("场景编号（同一摆放场景保持同一编号，不跨训练/验证/测试）：")
             placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
+            target_metadata = {}
+            if args.target_demonstrations:
+                target_metadata = {
+                    "target_id": required_text("本条示教的目标ID（例如 strip_001，整条过程不换目标）："),
+                    "target_description": required_text("目标的现场识别描述（位置、朝向，单根也填写）："),
+                    "target_annotation_status": "pending_offline_review",
+                }
             listener, _ = init_keyboard_listener(events)
             print("按 r 归位，摆好竹条后按 → 开始；录制中 → 结束，← 重录，Esc 停止。")
             events["exit_early"] = events["return_to_start"] = False
@@ -184,7 +196,7 @@ def main(argv=None):
             # Ensure record_loop exits immediately if stopped during preparation.
             events["exit_early"] = bool(events["stop_recording"])
             teleop_processor.reset()
-            return {"scene_id": scene, "placement_reference": placement, "split": args.split}
+            return {"scene_id": scene, "placement_reference": placement, "split": args.split, **target_metadata}
 
         def outcome_provider(index):
             nonlocal listener

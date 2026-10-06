@@ -54,14 +54,14 @@ def workspace(tcp):
 
 
 def validate_prediction(action,state,tcp,target_tcp,lower,upper,timestamps,now,*,
-                        max_prediction_age=MAX_PREDICTION_AGE):
+                        max_prediction_age=MAX_PREDICTION_AGE,max_camera_skew=MAX_CAMERA_SKEW):
     action=finite_vector(action,7,'prediction')
     state=finite_vector(state,7,'state')
     ts=finite_vector(timestamps,3,'sensor timestamps')
     age=now-min(ts)
     if not 0<=age<=max_prediction_age or max(ts)>now:
         raise ValueError(f'expired prediction: age={age*1000:.1f} ms, limit={max_prediction_age*1000:.0f} ms')
-    if abs(ts[0]-ts[1])>MAX_CAMERA_SKEW:raise ValueError('camera skew')
+    if abs(ts[0]-ts[1])>max_camera_skew:raise ValueError('camera skew')
     if state[-1] not in (0.,100.) or action[-1] not in (0.,100.):raise ValueError('invalid suction')
     lower=finite_vector(lower,6,'joint lower limits')
     upper=finite_vector(upper,6,'joint upper limits')

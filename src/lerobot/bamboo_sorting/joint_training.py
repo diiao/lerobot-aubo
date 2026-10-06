@@ -97,6 +97,8 @@ def read_data_manifest(path):
         if not Path(source).is_absolute() or ".." in Path(source).parts:
             raise ValueError("original source root must be absolute and normalized")
         result["source_dataset_root"] = source
+        if "target_annotations" in item:
+            result["target_annotations"] = str((path.parent / item["target_annotations"]).resolve())
         return result
     train = [resolve(item) for item in value["train"]]
     validation_value = value.get("validation")
@@ -115,10 +117,15 @@ def read_data_manifest(path):
     return {"train": train, "validation": validation}
 
 
-def prepare_training_manifest(path):
+def prepare_training_manifest(path, *, target_conditioned=False):
     sources = read_data_manifest(path)
     validations = sources["validation"]
     validations = validations if isinstance(validations, list) else [validations]
+    annotation_flags = ["target_annotations" in item for item in [*sources["train"], *validations]]
+    if target_conditioned and not all(annotation_flags):
+        raise ValueError("target training requires target_annotations for every source")
+    if not target_conditioned and any(annotation_flags):
+        raise ValueError("target annotations require explicit --target-conditioned")
     validation = validations[0]
     parts = [prepare_training_data(
         item["root"], item["evidence_root"], validation["root"], validation["evidence_root"],
@@ -159,10 +166,19 @@ def prepare_training_manifest(path):
         "scenes": sorted({scene for record in validation_records for scene in record["scenes"]}),
         "capture_complete": all(record["capture_complete"] for record in validation_records),
     }
-    return {**parts[0], "train": {"sources": [part["train"] for part in parts],
+    result = {**parts[0], "train": {"sources": [part["train"] for part in parts],
         "frames": sum(part["train"]["frames"] for part in parts),
         "scenes": sorted(train_scenes)}, "validation": validation_record,
         "train_only_stats": stats}
+    if target_conditioned:
+        from .joint_target_policy import prepare_target_source, target_policy_contract_record
+        for record, source in zip(result["train"]["sources"], sources["train"], strict=True):
+            record.update(prepare_target_source(record, source["target_annotations"]))
+        records = result["validation"].get("sources", [result["validation"]])
+        for record, source in zip(records, validations, strict=True):
+            record.update(prepare_target_source(record, source["target_annotations"]))
+        result["contract"] = target_policy_contract_record()
+    return result
 
 
 def load_prepared_dataset(record, *, video_backend="pyav"):
@@ -175,6 +191,9 @@ def load_prepared_dataset(record, *, video_backend="pyav"):
     else:
         ds = LeRobotDataset("local/aubo-joint", root=record["root"], episodes=record["episodes"],
             delta_timestamps={"action": [i / 25 for i in range(50)]}, video_backend=video_backend)
+        if "target_frames" in record:
+            from .joint_target_policy import JointTargetDataset
+            ds = JointTargetDataset(ds, record["target_frames"])
     if len(ds) != record["frames"]:
         raise ValueError("selected dataset frame count changed")
     return ds

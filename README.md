@@ -1,17 +1,14 @@
 # AUBO i10 竹条抓放
 
-基于 LeRobot 的七维 SmolVLA 项目：双 RGB 相机、六关节绝对位置与吸盘指令。
-日常操作从 [当前工作流](examples/phone_to_auboi10/README.md) 开始。
+基于 LeRobot 的竹条感知与抓放研究。日常操作从带目录的[项目手册](examples/phone_to_auboi10/README.md)开始。
 
 | 工作 | 说明 |
 | --- | --- |
-| 采集 | [手机遥操与数据录制](examples/phone_to_auboi10/JOINT_CAPTURE.md) |
-| 训练 | [数据准备、训练与离线评价](examples/phone_to_auboi10/JOINT_TRAINING.md) |
-| 运行 | [归位与模型抓放](examples/phone_to_auboi10/JOINT_TRIAL.md) |
+| 操作与研究 | [项目手册](examples/phone_to_auboi10/README.md)：当前状态、静态分割、动作采集／训练／运行、后续计划 |
 | 结果回溯 | [模型与实验的证据索引](examples/phone_to_auboi10/EVIDENCE.md) |
-| 开发维护 | [项目约定](AGENT.md)、[文档导航](docs/README.md)、[目录清理记录](docs/AUBO_CLEANUP_2026-10-02.md) |
+| 开发维护 | [项目约定](AGENT.md#文档维护规则)、[历史与框架资料导航](docs/README.md) |
 
-当前进展及能力边界统一维护在工作流页面，不在多个首页重复。
+项目说明集中维护在手册与证据索引，不按日期、批次或交接新增说明文件。
 
 `examples/phone_to_auboi10/` 是项目入口，`src/lerobot/bamboo_sorting/` 是竹条任务模块，
 `src/lerobot/robots/aubo_i10/` 是机械臂驱动。`tests/` 中的软件检查使用不同输入验证代码；

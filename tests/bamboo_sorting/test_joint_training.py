@@ -168,7 +168,8 @@ def test_concat_preserves_source_local_action_chunks(monkeypatch):
 
 
 @pytest.mark.parametrize("multiple_sources", [False, True])
-def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monkeypatch, multiple_sources):
+@pytest.mark.parametrize("target_conditioned", [False, True])
+def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monkeypatch, multiple_sources, target_conditioned):
     """Exercise orchestration without installing dependencies or training SmolVLA."""
     import json
     import sys
@@ -201,6 +202,9 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
             torch.save(self.state_dict(), path / "toy.pt")
 
         def forward(self, batch, reduction="mean"):
+            image_key = "target_global_rgb" if target_conditioned else "global_rgb"
+            assert f"observation.images.{image_key}" in batch
+            assert ("observation.images.global_rgb" in batch) != target_conditioned
             loss = (self.value - batch["action"]).square().mean((1, 2))
             return (loss if reduction == "none" else loss.mean()), {}
 
@@ -234,19 +238,43 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "mock" if name == "transformers" else version(name))
     prepared = {"train_only_stats": _stats(), **{key: {"root": str(tmp_path / key), "episodes": [0], "frames": 3}
                 for key in ("train", "validation")}}
+    if target_conditioned:
+        import cv2
+        mask_path = tmp_path / "mask.png"
+        mask = np.zeros((480, 640), np.uint8)
+        mask[10:20, 10:80] = 255
+        cv2.imwrite(str(mask_path), mask)
+        for record in (prepared["train"], prepared["validation"]):
+            record["target_frames"] = [{"episode_index": 0, "frame_index": i,
+                "frame_id": f"0/global_rgb/{i}", "target_id": "strip_a", "transport": i == 2,
+                "annotation": None if i == 2 else {"schema": "aubo_joint_target_frame",
+                    "frame_id": f"0/global_rgb/{i}", "target_id": "strip_a", "reviewed": True,
+                    "status": "visible", "mask_path": str(mask_path)}} for i in range(3)]
     if multiple_sources:
         prepared["train"] = {"sources": [prepared["train"],
-            {"root": str(tmp_path / "train2"), "episodes": [0], "frames": 3}], "frames": 6}
+            {**prepared["train"], "root": str(tmp_path / "train2")}], "frames": 6}
         prepared["validation"] = {"sources": [prepared["validation"],
-            {"root": str(tmp_path / "validation2"), "episodes": [0], "frames": 3}], "frames": 6}
+            {**prepared["validation"], "root": str(tmp_path / "validation2")}], "frames": 6}
     monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_data", lambda *args, **kwargs: prepared)
     data_args = ["--train-root", str(tmp_path / "train"), "--train-evidence", str(tmp_path / "te"),
                  "--validation-root", str(tmp_path / "validation"), "--validation-evidence", str(tmp_path / "ve")]
+    if target_conditioned:
+        manifest = tmp_path / "sources.json"
+        manifest.write_text(json.dumps({"schema_version": "AuboJointTrainingSourcesV1",
+            "train": [{"root": "train", "evidence_root": "te"}],
+            "validation": {"root": "validation", "evidence_root": "ve"}}))
+        monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_manifest",
+                            lambda *args, **kwargs: prepared)
+        data_args = ["--target-conditioned", "--data-manifest", str(manifest)]
     output = tmp_path / "output"
     entry = _entry()
     assert entry.main(["--stage", "train", "--steps", "2", "--batch-size", "2",
         "--base-path", str(base), "--vlm-path", str(vlm), "--output", str(output), *data_args]) == 0
     assert json.loads((output / "reload_check.json").read_text())["identical_prediction"]
+    from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
+    from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
+    assert json.loads((output / "final/aubo_joint_contract.json").read_text()) == (
+        target_policy_contract_record() if target_conditioned else joint_contract_record())
     assert len((output / "training.jsonl").read_text().splitlines()) == 2
     assert json.loads((output / "validation.json").read_text())["activate_samples"] == (2 if multiple_sources else 1)
     prediction_sources = np.load(output / "heldout_predictions.npz")["source_index"]

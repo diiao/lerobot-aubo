@@ -44,6 +44,9 @@ def test_both_orders_explicit_prediction_age_budget():
     assert validate_prediction(**{**args,'now':1.499},max_prediction_age=.5)==state
     with pytest.raises(ValueError,match='limit=500 ms'):
         validate_prediction(**{**args,'now':1.501},max_prediction_age=.5)
+    assert validate_prediction(**{**args,'now':1.5133},max_prediction_age=.75)==state
+    with pytest.raises(ValueError,match='limit=750 ms'):
+        validate_prediction(**{**args,'now':1.751},max_prediction_age=.75)
 
 
 def chunk_response(close_at=None):
@@ -51,7 +54,19 @@ def chunk_response(close_at=None):
     for i,row in enumerate(chunk):row[5]+=i*.1
     if close_at is not None:chunk[close_at][-1]=100.
     return {'shape':[50,7],'action':chunk[0].copy(),'raw_action':chunk[0].copy(),
-            'action_chunk':[r.copy() for r in chunk],'raw_action_chunk':[r.copy() for r in chunk]}
+        'action_chunk':[r.copy() for r in chunk],'raw_action_chunk':[r.copy() for r in chunk]}
+
+
+def test_camera_pause_tolerance_preserves_skew_and_total_age_bounds():
+    state=[*START_DEG,0]
+    args=dict(action=state,state=state,tcp=[.2,-.5,.3],target_tcp=[.2,-.5,.3],
+              lower=[-360]*6,upper=[360]*6,timestamps=[1.,1.2527,1.26],now=1.41,max_prediction_age=.75)
+    with pytest.raises(ValueError,match='camera skew'):validate_prediction(**args)
+    assert validate_prediction(**args,max_camera_skew=.3)==state
+    with pytest.raises(ValueError,match='camera skew'):
+        validate_prediction(**{**args,'timestamps':[1.,1.301,1.31]},max_camera_skew=.3)
+    with pytest.raises(ValueError,match='expired'):
+        validate_prediction(**{**args,'now':1.751},max_camera_skew=.3)
 
 
 def test_age_aligned_selection_keeps_joint_and_closure_row_together():
@@ -120,9 +135,28 @@ def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
     assert plan['max_camera_age_ms']==(250 if expected_cycles==2 else 100)
     assert plan['max_prediction_age_s']==(.5 if model=='mixed-both-orders' else .4)
     assert plan['watchdog_s']==.6
+    assert plan['inference_timeout_s']==2.
     assert plan['checkpoint_sha256']=={'legacy-single':m.MODEL_SHA,
         'mixed-double':m.MIXED_MODEL_SHA,'mixed-both-orders':m.BOTH_ORDERS_MODEL_SHA}[model]
     assert plan['startup_release_if_unset']=='operator_confirmed'
+
+
+def test_latency_tolerance_changes_only_input_and_prediction_timing(monkeypatch,capsys):
+    m=load_entry(monkeypatch)
+    def fail(*a,**kw):raise AssertionError('hardware touched')
+    monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
+    argv=['--model','mixed-both-orders','--approach-age-aligned','--cycles','1']
+    assert m.main(argv)==0
+    standard=json.loads(capsys.readouterr().out)
+    assert m.main(argv+['--latency-tolerant'])==0
+    tolerant=json.loads(capsys.readouterr().out)
+    assert {k:(standard[k],v) for k,v in tolerant.items() if standard[k]!=v}=={
+        'latency_tolerant':(False,True),'inference_timeout_s':(2.,5.),
+        'max_prediction_age_s':(.5,.75),'watchdog_s':(.6,1.),
+        'max_camera_age_ms':(250,400),'max_camera_skew_s':(.1,.3)}
+    assert m.main(argv+['--latency-tolerant','--inference-timeout-s','3'])==0
+    assert json.loads(capsys.readouterr().out)['inference_timeout_s']==3.
+    with pytest.raises(SystemExit):m.main(['--latency-tolerant'])
 
 
 def test_explicit_cycle_count_preserves_mixed_control_limits(monkeypatch,capsys):
@@ -131,11 +165,14 @@ def test_explicit_cycle_count_preserves_mixed_control_limits(monkeypatch,capsys)
     monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
     for invalid in ('0','-1','1.5'):
         with pytest.raises(SystemExit):m.main(['--cycles',invalid])
-    assert m.main(['--model','mixed-both-orders','--approach-age-aligned','--cycles','1'])==0
+    for invalid in ('0','-1','nan','inf'):
+        with pytest.raises(SystemExit):m.main(['--inference-timeout-s',invalid])
+    assert m.main(['--model','mixed-both-orders','--approach-age-aligned','--cycles','1','--inference-timeout-s','5'])==0
     plan=json.loads(capsys.readouterr().out)
     assert plan['requested_suction_cycles']==1
     assert plan['max_seconds']==360 and plan['servo_command_time_s']==.08
     assert plan['max_camera_age_ms']==250 and plan['max_prediction_age_s']==.5
+    assert plan['inference_timeout_s']==5 and plan['watchdog_s']==.6
 
 
 @pytest.mark.parametrize('answer,release_ok,expected_return',[
@@ -214,6 +251,9 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('mixed-both-orders',1,False,False,7),
     ('mixed-both-orders',1,True,False,7),
     ('legacy-single',2,False,False,False),
+    ('mixed-both-orders',1,False,False,'latency'),
+    ('mixed-both-orders',1,'hung',False,'latency'),
+    ('mixed-both-orders',1,False,False,'camera_latency'),
 ])
 def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,inference_error,slow_fk,model,expected_cycles,approach):
     import numpy as np
@@ -222,6 +262,9 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     replan_test=approach in ('replan','replan_at_receipt')
     replan_at_receipt=approach=='replan_at_receipt'
     discard_test=approach=='discard'
+    camera_latency_test=approach=='camera_latency'
+    latency_test=approach in ('latency','camera_latency')
+    if latency_test:approach=7
     if replan_test or discard_test:approach=7
     if replan_at_receipt:approach=2
     phase_calls={}
@@ -241,10 +284,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             state_reads[0]+=1
             return state.copy(),[.2,-.5,.3],clock[0]
         def observe(self,**kw):
-            assert kw['max_camera_age_ms']==(100 if model=='legacy-single' else 250)
+            assert kw['max_camera_age_ms']==(400 if latency_test else (100 if model=='legacy-single' else 250))
             if 'state_snapshot' in kw:
                 assert kw['state_snapshot'][0][-1]==state[-1]
-            return state.copy(),{},[clock[0]-.050327,clock[0],clock[0]]
+            times=[clock[0]-.3,clock[0]-.02,clock[0]] if camera_latency_test else [clock[0]-.050327,clock[0],clock[0]]
+            return state.copy(),{},times
         def getMotionControl(self):return self
         def isSteady(self):return True
         def isServoModeEnabled(self):return enabled[0]
@@ -258,6 +302,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             return [.2,-.5,.3,0,0,0],0
     class Pipe:
         def __init__(self,*a,**kw):
+            assert kw['request_timeout_s']==(5. if latency_test else 2.)
             if model=='mixed-double':
                 assert kw['expected_sha256']==m.MIXED_MODEL_SHA
                 assert kw['checkpoint']==m.MIXED_CHECKPOINT
@@ -321,7 +366,9 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             suction=0 if inference_error else (100 if index%2==0 else 0)
             return {'action':[*START_DEG,suction]}
     class Future:
-        def __init__(self,fn,args):self.fn=fn;self.args=args;self.ready=clock[0]+.14
+        def __init__(self,fn,args):
+            self.fn=fn;self.args=args
+            self.ready=clock[0]+(.54 if latency_test and not camera_latency_test and args[0]==0 else .14)
         def done(self):
             if inference_error=='hung' and self.args[0]>0:return False
             return clock[0]>=self.ready
@@ -357,6 +404,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     argv=['--execute','--model',model,'--output',str(out)]
     if expected_cycles!=(1 if model=='legacy-single' else 2):argv+=['--cycles',str(expected_cycles)]
     if approach:argv.append('--approach-age-aligned')
+    if latency_test:argv.append('--latency-tolerant')
     assert m.main(argv)==int(bool(inference_error))
     assert [e for e in events if e[0]=='mode']==[('mode',True),('mode',False)]
     assert len([e for e in events if e[0]=='send'])>1 and not enabled[0]
@@ -385,6 +433,13 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             assert any(r['previous_target'][-1]==100 and r['updated_target'][-1]==0 for r in changes)
     assert r['video']['complete'] and events[0][0]=='video_start' and events[-1][0]=='video_close'
     trace=(out/'trace.jsonl').read_text()
+    if latency_test:
+        first=next(json.loads(s) for s in trace.splitlines() if 'prediction' in json.loads(s))
+        if camera_latency_test:
+            assert .25 < first['sensor_times'][1]-first['sensor_times'][0] < .3
+            assert .4 < first['received_at']-min(first['sensor_times']) < .75
+        else:assert .5 < first['received_at']-min(first['sensor_times']) < .75
+        if inference_error=='hung':assert 'limit=750 ms' in r['failure']
     assert 'observation_skipped' not in trace
     assert ('state_refresh_before_servo' in trace)==slow_fk
     if slow_fk:assert delayed[0] and state_reads[0]>len([e for e in events if e[0]=='send'])

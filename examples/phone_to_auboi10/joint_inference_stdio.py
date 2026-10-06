@@ -12,11 +12,13 @@ import zlib
 from pathlib import Path
 
 
-def decode_images(images, codec):
+def decode_images(images, codec, *, image_keys=('global_rgb', 'grasp_rgb')):
     import cv2
     import numpy as np
     result = {}
-    for name in ('global_rgb', 'grasp_rgb'):
+    if set(images) != set(image_keys):
+        raise ValueError('image keys do not match checkpoint contract')
+    for name in image_keys:
         payload = base64.b64decode(images[name], validate=True)
         if codec == 'rgb_zlib':
             dec = zlib.decompressobj()
@@ -43,6 +45,8 @@ def main():
     p.add_argument('--fast-matmul',action='store_true',help='Use high float32 matmul precision; weights stay unchanged')
     p.add_argument('--bf16', action='store_true', help='Offline comparison of CUDA BF16 autocast')
     p.add_argument('--return-action-chunk',action='store_true',help='Include the full 50-step prediction')
+    p.add_argument('--target-conditioned', action='store_true',
+                   help='Require AuboI10JointTargetApproach checkpoint and already prepared target inputs')
     args=p.parse_args()
     # Reject shared GPU occupancy; never kill, wait for, or modify other jobs.
     busy=subprocess.check_output(['nvidia-smi','--query-compute-apps=pid','--format=csv,noheader'],text=True).strip()
@@ -63,9 +67,17 @@ def main():
         if task != JOINT_TASK:
             raise ValueError('checkpoint supports only the recorded training task')
         from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+        if args.target_conditioned:
+            from lerobot.bamboo_sorting.joint_target_policy import (
+                SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
+            )
+            contract_record, adapter_class = target_policy_contract_record, SmolVLAJointTargetOfflineAdapter
+        else:
+            contract_record, adapter_class = joint_contract_record, SmolVLAJointOfflineAdapter
+        image_keys = adapter_class.image_keys
         torch.set_num_threads(4)
         torch.set_float32_matmul_precision('high' if args.fast_matmul else 'highest')
-        if json.loads((args.checkpoint/'aubo_joint_contract.json').read_text())!=joint_contract_record():
+        if json.loads((args.checkpoint/'aubo_joint_contract.json').read_text())!=contract_record():
             raise ValueError('checkpoint contract mismatch')
         cfg=PreTrainedConfig.from_pretrained(args.checkpoint,local_files_only=True)
         cfg.device='cuda'
@@ -74,17 +86,20 @@ def main():
             overrides={'device_processor':{'device':'cuda'}},to_transition=batch_to_transition,to_output=transition_to_batch)
         post=PolicyProcessorPipeline.from_pretrained(args.checkpoint,'policy_postprocessor.json',
             to_transition=policy_action_to_transition,to_output=transition_to_policy_action)
-        adapter=SmolVLAJointOfflineAdapter(model,pre,post,contract=joint_contract_record())
+        adapter=adapter_class(model,pre,post,contract=contract_record())
         if args.bf16 and not torch.cuda.is_bf16_supported():
             raise RuntimeError('BF16 unsupported on this GPU')
         def predict(frame):
             with torch.autocast('cuda', dtype=torch.bfloat16, enabled=args.bf16):
                 return adapter(frame)
         warm={'observation.state':np.array([-65.29,-5.88,113.77,31.07,90.88,-185.32,0],dtype=np.float32),
-              'task':task,**{f'observation.images.{k}':np.zeros((480,640,3),dtype=np.uint8) for k in JOINT_IMAGE_KEYS}}
+              'task':task,**{f'observation.images.{k}':np.zeros((480,640,3),dtype=np.uint8) for k in image_keys}}
+        if args.target_conditioned:
+            warm.update(target_contract=contract_record(), target_input={
+                'target_id': 'synthetic_warmup', 'frame_id': 'synthetic_warmup', 'phase': 'transport'})
         for _ in range(2):predict(warm)
         model.reset()
-    print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':joint_contract_record(),
+    print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':contract_record(),
                       'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk}),flush=True)
     for line in sys.stdin:
         start=time.perf_counter()
@@ -92,7 +107,9 @@ def main():
             if len(line)>6000000:raise ValueError('request too large')
             req=json.loads(line)
             frame={'observation.state':np.asarray(req['state'],dtype=np.float32),'task':task}
-            frame.update(decode_images(req['images'], req.get('codec', 'rgb_zlib')))
+            frame.update(decode_images(req['images'], req.get('codec', 'rgb_zlib'), image_keys=image_keys))
+            if args.target_conditioned:
+                frame.update(target_contract=req.get('target_contract'), target_input=req.get('target_input'))
             if 'seed' in req:
                 if type(req['seed']) is not int or not 0 <= req['seed'] < 2**32:
                     raise ValueError('invalid comparison seed')
