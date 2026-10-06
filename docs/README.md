@@ -2,13 +2,13 @@
 
 ## 当前项目
 
-- [当前工作流](../examples/phone_to_auboi10/README.md)：采集、训练、运行三份操作说明的统一入口。
+- [项目手册](../examples/phone_to_auboi10/README.md)：带目录的统一操作与研究说明。
 - [证据索引](../examples/phone_to_auboi10/EVIDENCE.md)：模型身份、数据来源、现场反馈和历史回溯。
-- [三根以上逐层抓取研究范围](AUBO_I10_TOP_LAYER_VLM_RL_ROUTE_2026-09-26.md)：自然叠放，逐根取走可分离的上层；尚未实现的新方向。
-- [清理与目录检查记录](AUBO_CLEANUP_2026-10-02.md)：删除依据、保留理由、测试含义及回滚方法。
+- [文档维护规则](../AGENT.md#文档维护规则)：优先更新现有章节，其他页面只保留必要链接。
 
 ## 历史证据
 
+- [2026-10-02清理与目录检查记录](AUBO_CLEANUP_2026-10-02.md)。
 - [ACT 对照结论](ACT_COMPARISON_CLOSURE_2026-09-19.md)。
 - [run06 实验技术记录](robot_arm_technical_documentation.md)。
 - [2026-09-27 数据清理记录](AUBO_I10_LOCAL_DATA_CLEANUP_2026-09-27.md)。

@@ -150,7 +150,8 @@ def test_plan_never_connects(monkeypatch):
 @pytest.mark.parametrize('requested,available,bad_chunk',[
     (False,False,False),(True,False,False),(True,True,False),(True,True,True),
 ])
-def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,requested,available,bad_chunk):
+@pytest.mark.parametrize('request_timeout',[2.,5.])
+def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,requested,available,bad_chunk,request_timeout):
     import io
     module=load_entry();launch=[]
     class Process:
@@ -167,12 +168,16 @@ def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,request
         response.update(action_chunk=[row.copy() for row in chunk],raw_action_chunk=chunk)
         if bad_chunk:response['action_chunk'][9][-1]=100.
     responses=iter([ready,response])
-    monkeypatch.setattr(module.InferencePipe,'receive',lambda self,timeout:next(responses))
+    timeouts=[]
+    def receive(self,timeout):
+        timeouts.append(timeout)
+        return next(responses)
+    monkeypatch.setattr(module.InferencePipe,'receive',receive)
     if requested and not available:
         with pytest.raises(ValueError,match='does not provide full actions'):
             module.InferencePipe(tmp_path,return_action_chunk=requested)
         return
-    pipe=module.InferencePipe(tmp_path,return_action_chunk=requested)
+    pipe=module.InferencePipe(tmp_path,return_action_chunk=requested,request_timeout_s=request_timeout)
     assert ('--return-action-chunk' in launch[-1])==requested
     try:
         if bad_chunk:
@@ -181,6 +186,7 @@ def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,request
         else:assert pipe.predict(3,[*START_DEG,0],{})['action']==chunk[0]
     finally:pipe.close()
     assert pipe.process.waited and pipe.log.closed
+    assert timeouts==[120,request_timeout]
 
 
 def test_failed_shadow_never_gets_motion(tmp_path,monkeypatch):

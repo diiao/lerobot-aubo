@@ -59,7 +59,10 @@ def encode_images(images, codec):
 class InferencePipe:
     def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None,
                  remote_root=REMOTE_ROOT, checkpoint=None, expected_sha256=MODEL_SHA,
-                 inference_script=None,return_action_chunk=False):
+                 inference_script=None,return_action_chunk=False,request_timeout_s=2.):
+        if not math.isfinite(request_timeout_s) or request_timeout_s<=0:
+            raise ValueError('inference request timeout must be finite and positive')
+        self.request_timeout_s=request_timeout_s
         self.log=(output/'inference_stderr.log').open('w')
         self.expected_sha256=expected_sha256
         self.return_action_chunk=return_action_chunk
@@ -117,7 +120,7 @@ class InferencePipe:
         encoded_at = time.perf_counter()
         wire = json.dumps(packet)+'\n'
         self.process.stdin.write(wire);self.process.stdin.flush()
-        result=self.receive(2)
+        result=self.receive(self.request_timeout_s)
         if result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256 or result.get('shape')!=[50,7]:
             raise ValueError('invalid prediction identity or shape')
         if self.return_action_chunk:

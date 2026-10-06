@@ -1,0 +1,109 @@
+<section id="target-approach-review">
+<h1>本批接近阶段：目标可见轮廓复核</h1>
+<p><strong>播放、打开页面和抽查都不会自动确认整段。紫色为目标轮廓，复核状态见下方统计；缺失掩码不能用于训练。</strong>
+只画当前可见木条；夹爪遮住的位置留空，两段可见部分仍属同一目标。</p>
+<p><a href="target_annotations/preparation_check.json">标注准备检查</a> ·
+<a href="target_annotations/annotations.json">训练侧录草稿</a> ·
+<a href="target_annotations/inference_request.json">推理范围与执行状态</a> ·
+<a href="capture_check.json">原始录制检查</a> · <a href="#ep1">原有录制关键帧</a></p>
+<div class="tr-controls">
+<label>episode <select id="tr-episode"></select></label>
+<button id="tr-prev">上一帧 ←</button><button id="tr-play">播放</button><button id="tr-next">下一帧 →</button>
+<label>速度 <select id="tr-speed"><option value="1000">1 fps</option><option value="200" selected>5 fps</option><option value="80">12.5 fps</option><option value="40">25 fps</option></select></label>
+<button id="tr-close">闭合前2秒</button><button id="tr-end">闭合观察帧</button>
+<label>跳转帧 <input id="tr-number" type="number" min="0" value="0"></label>
+<input id="tr-slider" aria-label="条内帧号" type="range" min="0" value="0">
+</div>
+<p id="tr-summary"></p>
+<p id="tr-review-note"></p>
+<p><label>已记录问题定位 <select id="tr-issue-jump"><option value="">选择已记录帧</option></select></label>
+<a href="target_annotations/prediction_check.json">预测统计</a> · <a href="target_annotations/visual_check.json">图像抽查记录</a></p>
+<p id="tr-status" role="status"></p>
+<div class="tr-pair">
+<div><b>当前帧原图</b><img id="tr-raw" alt="当前全局原图"></div>
+<div><b>目标轮廓／人工修改草稿</b><div class="tr-stack"><img id="tr-marked" alt="当前全局原图副本"><img id="tr-outline" alt="目标内侧2像素轮廓"><canvas id="tr-edit" width="640" height="480"></canvas></div></div>
+</div>
+<p><label><input type="checkbox" id="tr-overlay" checked>显示模型轮廓</label>
+<label><input type="checkbox" id="tr-zoom">原尺寸放大（可水平滚动）</label>
+<label><input type="checkbox" id="tr-draw">绘制可见区域多边形</label></p>
+<p>修改：在右图逐点点击，完成一段后点“结束区域”；被遮断的另一段另画一个区域。修改只作用于当前帧，不传播至相邻帧。
+青色线表示待栅格化的多边形，保存后仍是草稿，需重新查看生成的紫色2像素轮廓再确认。</p>
+<p><button id="tr-polygon">结束区域</button><button id="tr-undo">撤销顶点／区域</button><button id="tr-clear">清除当前修改</button>
+<button id="tr-flag">记录当前异常</button><button id="tr-flag-next">下一个待修异常</button>
+<button id="tr-missing-next">下一个缺失掩码</button></p>
+<p><label>已完整复核范围 <input id="tr-from" type="number" min="0" value="0"> 至 <input id="tr-to" type="number" min="0" value="0"></label>
+<button id="tr-approve">明确确认这段已有轮廓</button><button id="tr-revoke">撤回这段确认</button></p>
+<p><button id="tr-export">导出复核／修改记录 JSON</button> <span id="tr-progress"></span></p>
+<p>记录暂存在本浏览器；请导出交回后再写入侧录。页面操作不直接修改训练文件。
+无掩码、存在异常或有未栅格化修改的帧不能确认；不要用播放结束代替实际复核。</p>
+<style>
+#target-approach-review{max-width:1400px}#target-approach-review button{padding:7px;margin:3px;cursor:pointer}
+#target-approach-review input[type=number]{width:75px}#tr-slider{display:block;width:100%}
+.tr-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;overflow:auto}.tr-pair.zoom{grid-template-columns:640px 640px}
+.tr-pair img{display:block;width:100%}.tr-stack{position:relative}.tr-stack #tr-outline,.tr-stack canvas{position:absolute;inset:0;width:100%;height:100%}
+#tr-outline{pointer-events:none}.tr-stack canvas{touch-action:none}#tr-status{white-space:pre-wrap;background:#edf2f7;padding:10px}
+</style>
+<script>
+(()=>{
+'use strict';
+const spec=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob('__ANNOTATIONS_BASE64__'),c=>c.charCodeAt(0))));
+const $=id=>document.getElementById('tr-'+id), base='target_annotations/';
+const sourceVersion=spec.episodes.flatMap(e=>e.frames).map(f=>[f.frame_id,f.mask_area||0,f.annotation_revision||0]);
+const storageKey='joint-target-review:'+spec.source_dataset_root+':'+JSON.stringify(sourceVersion);
+let decisions={schema:'aubo_joint_target_review_decisions',source_dataset_root:spec.source_dataset_root,frames:{}};
+try{const stored=localStorage.getItem(storageKey);if(stored)decisions=JSON.parse(stored)}catch(e){}
+let ei=0, fi=0, playing=false, timer=null, vertices=[], loadVersion=0;
+const ep=()=>spec.episodes[ei], frame=()=>ep().frames[fi];
+const edit=()=>decisions.frames[frame().frame_id]||{reviewed:frame().reviewed,issue:frame().review_issue||''};
+const effectiveIssue=f=>decisions.frames[f.frame_id]?.issue??f.review_issue??'';
+const allFrames=spec.episodes.flatMap(e=>e.frames);
+$('summary').textContent=`接近阶段 ${allFrames.length} 帧；已有掩码 ${allFrames.filter(f=>f.outline).length} 帧；缺失 ${allFrames.filter(f=>!f.outline).length} 帧；侧录已复核 ${allFrames.filter(f=>f.reviewed).length} 帧。已有掩码不代表轮廓完整。`;
+if(spec.human_review)$('review-note').textContent=`用户复核反馈：“${spec.human_review.statement}”。本批按流程试采接受，已知误差保留，未修改预测掩码；不代表精确像素真值。`;
+spec.episodes.forEach((e,i)=>e.frames.forEach((f,j)=>{const issue=f.review_issue||(f.accepted_annotation_limitations?.length?'已接受误差：'+f.accepted_annotation_limitations[0].issue:'');if(!issue)return;const o=document.createElement('option');o.value=i+','+j;o.textContent=`episode ${e.episode_index} / frame ${f.frame_index}：${issue}`;$('issue-jump').append(o)}));
+$('issue-jump').onchange=()=>{if(!$('issue-jump').value)return;[ei,fi]=$('issue-jump').value.split(',').map(Number);$('episode').value=ei;$('from').value=fi;$('to').value=fi;go(fi)};
+const save=()=>{try{localStorage.setItem(storageKey,JSON.stringify(decisions))}catch(e){$('progress').textContent='浏览器存储不可用，请及时导出'}progress()};
+const progress=()=>{$('progress').textContent='本浏览器新增记录 '+Object.keys(decisions.frames).length+' 帧，其中确认 '+Object.values(decisions.frames).filter(x=>x.reviewed===true).length+' 帧；尚未导入。上方统计为已写入侧录的状态。'};
+function stop(){playing=false;clearTimeout(timer);$('play').textContent='播放'}
+function record(value){decisions.frames[frame().frame_id]={...edit(),...value,frame_id:frame().frame_id,episode_index:ep().episode_index,frame_index:frame().frame_index,annotation_revision:frame().annotation_revision||0};save()}
+function draw(){const c=$('edit'),ctx=c.getContext('2d');ctx.clearRect(0,0,640,480);ctx.strokeStyle='#00ffff';ctx.fillStyle='rgba(0,255,255,.15)';ctx.lineWidth=1;
+ for(const p of [...(edit().polygons||[]),vertices]){if(!p.length)continue;ctx.beginPath();p.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y));if(p!==vertices){ctx.closePath();ctx.fill()}ctx.stroke();for(const [x,y]of p){ctx.fillRect(x-1,y-1,3,3)}}}
+function load(img,src){return new Promise(resolve=>{img.onload=()=>resolve(true);img.onerror=()=>resolve(false);img.src=src})}
+async function show(){
+ const v=++loadVersion,f=frame();vertices=[];$('slider').max=ep().frames.length-1;$('slider').value=fi;$('number').value=f.frame_index;$('number').max=ep().frames.at(-1).frame_index;
+ document.querySelector('.tr-pair').style.visibility='hidden';$('outline').style.display='none';$('outline').removeAttribute('src');$('status').textContent='正在加载 '+f.frame_id;draw();
+ const ok=await Promise.all([load($('raw'),base+f.image),load($('marked'),base+f.image),f.outline?load($('outline'),base+f.outline):Promise.resolve(true)]);
+ if(v!==loadVersion)return;
+ document.querySelector('.tr-pair').style.visibility='visible';
+ if(f.outline)$('outline').style.display=$('overlay').checked?'block':'none';
+ $('status').textContent=`episode ${ep().episode_index} · scene ${ep().scene_id} · frame ${f.frame_index}/${ep().frames.at(-1).frame_index} · 条内 ${f.episode_timestamp_s.toFixed(2)} s · MP4 ${f.video_time_s.toFixed(2)} s\n${f.outline?(f.reviewed?'已有目标轮廓，侧录已复核':'已有目标轮廓，待逐段复核'):'缺少目标掩码，当前只显示原图'} · ${f.flags.join('；')}\n当前记录：${edit().issue|| (edit().polygons?.length?'有人工作图草稿':edit().reviewed?(f.reviewed?'用户复核已写入侧录':'用户已明确确认，待导入'):'尚未确认')}`;
+ if(ok.includes(false)){$('status').textContent+='\n图像加载失败，播放已停止';stop()}
+ if(playing)timer=setTimeout(()=>{if(fi>=ep().frames.length-1){stop();return}fi++;show()},Number($('speed').value));
+}
+function go(index){stop();fi=Math.max(0,Math.min(ep().frames.length-1,index));show()}
+spec.episodes.forEach((e,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${e.episode_index}（scene ${e.scene_id}，${e.frames.length}帧）`;$('episode').append(o)});
+$('episode').onchange=()=>{stop();ei=Number($('episode').value);fi=0;$('from').value=0;$('to').value=ep().frames.at(-1).frame_index;show()};
+$('prev').onclick=()=>go(fi-1);$('next').onclick=()=>go(fi+1);$('slider').oninput=()=>go(Number($('slider').value));
+$('number').onchange=()=>{const n=Number($('number').value);go(ep().frames.findIndex(f=>f.frame_index===n))};
+$('play').onclick=()=>{if(playing){stop();return}if(fi===ep().frames.length-1)fi=0;playing=true;$('play').textContent='暂停';show()};
+$('close').onclick=()=>go(ep().frames.findIndex(f=>f.frame_index>=ep().close_frame-50));$('end').onclick=()=>go(ep().frames.length-1);
+$('overlay').onchange=()=>{$('outline').style.display=frame().outline&&$('overlay').checked?'block':'none'};
+$('zoom').onchange=()=>document.querySelector('.tr-pair').classList.toggle('zoom',$('zoom').checked);
+$('draw').onchange=stop;
+$('edit').onclick=e=>{if(!$('draw').checked)return;stop();const r=$('edit').getBoundingClientRect();vertices.push([Math.max(0,Math.min(639,Math.round((e.clientX-r.left)*640/r.width))),Math.max(0,Math.min(479,Math.round((e.clientY-r.top)*480/r.height)))]);draw()};
+$('polygon').onclick=()=>{if(vertices.length<3){alert('一个区域至少3个顶点');return}record({polygons:[...(edit().polygons||[]),vertices],reviewed:false});vertices=[];draw()};
+$('undo').onclick=()=>{if(vertices.length)vertices.pop();else record({polygons:(edit().polygons||[]).slice(0,-1),reviewed:false});draw()};
+$('clear').onclick=()=>{vertices=[];record({polygons:[],reviewed:false});draw()};
+$('flag').onclick=()=>{stop();const issue=prompt('记录漏段／遮挡补全／错误目标等问题；清空文字可撤回异常',edit().issue||'');if(issue!==null){record({issue,reviewed:false});show()}};
+function nextWhere(predicate){for(let d=1;d<=ep().frames.length;d++){const n=(fi+d)%ep().frames.length;if(predicate(ep().frames[n])){go(n);return}}alert('本条没有符合条件的帧')}
+$('flag-next').onclick=()=>nextWhere(f=>!!effectiveIssue(f)||f.flags.some(s=>!s.startsWith('缺少')&&!s.startsWith('闭合')&&!s.startsWith('已接受误差')));
+$('missing-next').onclick=()=>nextWhere(f=>!f.outline);
+function range(){const a=Number($('from').value),b=Number($('to').value);if(!Number.isInteger(a)||!Number.isInteger(b)||a<0||b<a||b>ep().frames.at(-1).frame_index){alert('请输入本条内有效的起止帧号');return[]}return ep().frames.filter(f=>f.frame_index>=a&&f.frame_index<=b)}
+$('approve').onclick=()=>{stop();const rows=range();if(!rows.length)return;if(rows.some(f=>!f.outline||effectiveIssue(f)||decisions.frames[f.frame_id]?.polygons?.length)){alert('范围内存在缺失掩码、异常或未栅格化修改；请先修正并重新生成页面');return}if(!confirm(`我已实际检查这 ${rows.length} 帧目标身份与可见轮廓，包括遮挡两侧，并明确确认。播放或少量抽查不等于完整复核。`))return;for(const f of rows)decisions.frames[f.frame_id]={...decisions.frames[f.frame_id],frame_id:f.frame_id,episode_index:ep().episode_index,frame_index:f.frame_index,annotation_revision:f.annotation_revision||0,reviewed:true,confirmation:'explicit_user_range_review',reviewed_at:new Date().toISOString()};save();show()};
+$('revoke').onclick=()=>{for(const f of range())decisions.frames[f.frame_id]={...decisions.frames[f.frame_id],frame_id:f.frame_id,episode_index:ep().episode_index,frame_index:f.frame_index,annotation_revision:f.annotation_revision||0,reviewed:false};save();show()};
+$('export').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(decisions,null,2)],{type:'application/json'}));a.download='joint_target_pilot_review_decisions.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='ArrowLeft'){e.preventDefault();go(fi-1)}if(e.key==='ArrowRight'){e.preventDefault();go(fi+1)}});
+$('to').value=ep().frames.at(-1).frame_index;progress();show();
+})();
+</script>
+<p>下方为采集检查时保存的原始快照；其中标注准备状态请以上方最新统计为准。</p>
+</section>

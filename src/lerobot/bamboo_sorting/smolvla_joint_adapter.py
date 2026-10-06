@@ -7,7 +7,7 @@ from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_I
 from .joint_gripper_quality import require_joint_normalization_stats
 
 
-def make_joint_smolvla_processors(config, dataset_stats):
+def make_joint_smolvla_processors(config, dataset_stats, *, target_conditioned=False):
     """Build matched normalization/inverse normalization from AUBO statistics.
 
     Does not train or load policy weights. Tokenizer loading may need its cache.
@@ -15,7 +15,7 @@ def make_joint_smolvla_processors(config, dataset_stats):
     """
     from lerobot.policies.smolvla.processor_smolvla import make_smolvla_pre_post_processors
 
-    expected = make_joint_smolvla_config(device=config.device)
+    expected = make_joint_smolvla_config(device=config.device, target_conditioned=target_conditioned)
     if (config.input_features != expected.input_features or config.output_features != expected.output_features
             or config.normalization_mapping != expected.normalization_mapping
             or config.action_representation != "absolute" or config.adapt_to_pi_aloha
@@ -25,7 +25,7 @@ def make_joint_smolvla_processors(config, dataset_stats):
     return make_smolvla_pre_post_processors(config, dataset_stats)
 
 
-def make_joint_smolvla_config(*, device="cpu"):
+def make_joint_smolvla_config(*, device="cpu", target_conditioned=False):
     """Explicit AUBO features for a later base-checkpoint fine-tune.
 
     This constructs configuration only; it does not load weights or train.
@@ -34,11 +34,12 @@ def make_joint_smolvla_config(*, device="cpu"):
     from lerobot.configs.types import FeatureType, PolicyFeature
     from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
+    image_keys = ("target_global_rgb", "grasp_rgb") if target_conditioned else JOINT_IMAGE_KEYS
     return SmolVLAConfig(
         device=device,
         input_features={"observation.state": PolicyFeature(type=FeatureType.STATE, shape=(JOINT_DIM,)),
                         **{f"observation.images.{k}": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 480, 640))
-                           for k in JOINT_IMAGE_KEYS}},
+                           for k in image_keys}},
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(JOINT_DIM,))},
         action_representation="absolute", relative_action_stats=None, execution_loss_fraction=None,
         chunk_size=50, n_action_steps=1, num_steps=10,
@@ -48,11 +49,14 @@ def make_joint_smolvla_config(*, device="cpu"):
 
 
 class SmolVLAJointOfflineAdapter:
+    image_keys = JOINT_IMAGE_KEYS
+    contract_record = staticmethod(joint_contract_record)
+
     def __init__(self, policy, preprocessor, postprocessor, *, contract):
-        if contract != joint_contract_record():
-            raise ValueError("explicit AuboI10JointLegacyTeleopV2 contract is required")
+        if contract != self.contract_record():
+            raise ValueError(f"explicit {self.contract_record()['schema_version']} contract is required")
         config = policy.config
-        expected = {"observation.state", *(f"observation.images.{k}" for k in JOINT_IMAGE_KEYS)}
+        expected = {"observation.state", *(f"observation.images.{k}" for k in self.image_keys)}
         if set(config.input_features) != expected or set(config.output_features) != {"action"}:
             raise ValueError("joint policy feature keys mismatch")
         if config.input_features["observation.state"].shape != (JOINT_DIM,) or config.output_features["action"].shape != (JOINT_DIM,):
@@ -61,7 +65,7 @@ class SmolVLAJointOfflineAdapter:
             raise ValueError("joint policy must use absolute actions, not relative TCP")
         if getattr(config, "adapt_to_pi_aloha", False) or getattr(config, "use_delta_joint_actions_aloha", False):
             raise ValueError("AUBO joint policy cannot use Aloha transforms")
-        for key in JOINT_IMAGE_KEYS:
+        for key in self.image_keys:
             if config.input_features[f"observation.images.{key}"].shape != (3, 480, 640):
                 raise ValueError("joint policy requires the frozen RGB image shapes")
         self.policy, self.preprocessor, self.postprocessor = policy, preprocessor, postprocessor
@@ -76,7 +80,7 @@ class SmolVLAJointOfflineAdapter:
         if frame.get("task") != JOINT_TASK:
             raise ValueError("joint task text mismatch")
         inputs = {"observation.state": torch.from_numpy(state.copy()), "task": JOINT_TASK}
-        for name in JOINT_IMAGE_KEYS:
+        for name in self.image_keys:
             key = f"observation.images.{name}"
             image = frame[key]
             if not isinstance(image, np.ndarray) or image.dtype != np.uint8 or image.shape != (480, 640, 3):

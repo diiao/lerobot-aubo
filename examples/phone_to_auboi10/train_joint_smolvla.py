@@ -14,6 +14,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("plan", "preflight", "smoke", "train", "evaluate"), default="plan")
     parser.add_argument("--data-manifest", type=Path, help="Explicit training and validation sources")
+    parser.add_argument("--target-conditioned", action="store_true",
+                        help="Approach-only target outline; every source needs reviewed target_annotations")
     for name in ("train-root", "train-evidence", "validation-root", "validation-evidence",
                  "train-source-root", "validation-source-root", "base-path", "vlm-path", "output", "checkpoint"):
         parser.add_argument(f"--{name}", type=Path)
@@ -25,6 +27,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.steps < 1 or args.batch_size < 1:
         parser.error("steps and batch-size must be positive")
+    if args.target_conditioned and args.stage in ("preflight", "train", "evaluate") and args.data_manifest is None:
+        parser.error("--target-conditioned requires --data-manifest")
     if args.data_manifest and any(getattr(args, name) is not None for name in
             ("train_root", "train_evidence", "validation_root", "validation_evidence",
              "train_source_root", "validation_source_root")):
@@ -69,7 +73,7 @@ def main(argv=None):
     from lerobot.bamboo_sorting.joint_training import prepare_training_data, prepare_training_manifest, write_json
     prepared = None
     if args.stage != "smoke":
-        prepared = prepare_training_manifest(args.data_manifest) if args.data_manifest else prepare_training_data(args.train_root, args.train_evidence,
+        prepared = prepare_training_manifest(args.data_manifest, target_conditioned=args.target_conditioned) if args.data_manifest else prepare_training_data(args.train_root, args.train_evidence,
             args.validation_root, args.validation_evidence,
             train_source_root=args.train_source_root, validation_source_root=args.validation_source_root)
     args.output.mkdir(parents=True, exist_ok=False)
@@ -100,6 +104,16 @@ def run_model(args, prepared):
     from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_IMAGE_KEYS, JOINT_TASK, joint_contract_record
     from lerobot.bamboo_sorting.joint_training import prediction_metrics, write_json
     from lerobot.bamboo_sorting.smolvla_joint_adapter import make_joint_smolvla_config, make_joint_smolvla_processors
+    from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+    if args.target_conditioned:
+        from lerobot.bamboo_sorting.joint_target_policy import (
+            SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
+        )
+        contract_record = target_policy_contract_record
+        adapter_class = SmolVLAJointTargetOfflineAdapter
+        image_keys = adapter_class.image_keys
+    else:
+        contract_record, adapter_class, image_keys = joint_contract_record, SmolVLAJointOfflineAdapter, JOINT_IMAGE_KEYS
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
@@ -114,10 +128,10 @@ def run_model(args, prepared):
         raise RuntimeError("CUDA unavailable")
     write_json(args.output / "environment.json", {key: importlib.metadata.version(key)
         for key in ("torch", "transformers", "lerobot", "safetensors", "accelerate")})
-    images = [f"observation.images.{name}" for name in JOINT_IMAGE_KEYS]
+    images = [f"observation.images.{name}" for name in image_keys]
 
     def load_checkpoint(path):
-        if json.loads((path / "aubo_joint_contract.json").read_text()) != joint_contract_record():
+        if json.loads((path / "aubo_joint_contract.json").read_text()) != contract_record():
             raise ValueError("checkpoint is not full-joint AUBO")
         cfg = PreTrainedConfig.from_pretrained(path, local_files_only=True)
         cfg.device = args.device
@@ -127,8 +141,7 @@ def run_model(args, prepared):
             to_transition=batch_to_transition, to_output=transition_to_batch)
         post = PolicyProcessorPipeline.from_pretrained(path, "policy_postprocessor.json",
             to_transition=policy_action_to_transition, to_output=transition_to_policy_action)
-        from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
-        SmolVLAJointOfflineAdapter(model, pre, post, contract=joint_contract_record())
+        adapter_class(model, pre, post, contract=contract_record())
         return model, pre, post
 
     def dataset(which):
@@ -153,7 +166,7 @@ def run_model(args, prepared):
         cfg = PreTrainedConfig.from_pretrained(args.base_path, local_files_only=True)
         if cfg.type != "smolvla":
             raise ValueError("base model must be SmolVLA")
-        joint_cfg = make_joint_smolvla_config(device=args.device)
+        joint_cfg = make_joint_smolvla_config(device=args.device, target_conditioned=args.target_conditioned)
         for name in ("input_features", "output_features", "normalization_mapping", "device", "chunk_size",
                      "n_action_steps", "num_steps", "action_representation", "relative_action_stats",
                      "execution_loss_fraction", "adapt_to_pi_aloha", "use_delta_joint_actions_aloha", "push_to_hub"):
@@ -171,7 +184,7 @@ def run_model(args, prepared):
             raw["action"][:, 1:25, GRIPPER_INDEX] = 100
         else:
             stats = prepared["train_only_stats"]
-        pre, post = make_joint_smolvla_processors(cfg, stats)
+        pre, post = make_joint_smolvla_processors(cfg, stats, target_conditioned=args.target_conditioned)
         write_json(args.output / "train_only_stats.json", stats)
         params = [p for p in policy.parameters() if p.requires_grad]
         policy.train()
@@ -228,7 +241,7 @@ def run_model(args, prepared):
         policy.save_pretrained(checkpoint)
         pre.save_pretrained(checkpoint)
         post.save_pretrained(checkpoint)
-        write_json(checkpoint / "aubo_joint_contract.json", joint_contract_record())
+        write_json(checkpoint / "aubo_joint_contract.json", contract_record())
         if prepared is not None:
             write_json(checkpoint / "data_preflight.json", prepared)
         torch.manual_seed(args.seed)

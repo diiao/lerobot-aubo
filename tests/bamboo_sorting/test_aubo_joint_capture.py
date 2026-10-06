@@ -353,8 +353,8 @@ def test_fixed_j5_data_and_checkpoint_are_not_reinterpreted_as_seven_dimensions(
         SmolVLAJointOfflineAdapter(Mock(config=make_joint_smolvla_config()), None, None, contract=old_contract)
 
 
-@pytest.mark.parametrize("failure", [None, "capture", "finalize"])
-def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("failure,target_demonstrations", [(None, False), ("capture", False), ("finalize", False), (None, True)])
+def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch, failure, target_demonstrations):
     """Run entry callbacks with fake devices; prompts must own stdin exclusively."""
     import sys
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -399,8 +399,10 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
         listeners.append(listener)
         return listener, events
     monkeypatch.setattr(control_utils, "init_keyboard_listener", start_listener)
-    answers = iter(["", "  ", "train-r-scene", "", "ruler B", "invalid", "1",
-                    "train-r-scene-2", "ruler C", "2"])
+    answers = iter(["", "  ", "train-r-scene", "", "ruler B",
+                    *(["strip_001", "right support"] if target_demonstrations else []), "invalid", "1",
+                    "train-r-scene-2", "ruler C",
+                    *(["strip_002", "center support"] if target_demonstrations else []), "2"])
     def prompt(message):
         assert not any(listener.active for listener in listeners), "hotkeys compete with input()"
         return next(answers)
@@ -418,6 +420,10 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
             metadata = lifecycle.prepare_episode(index)
             assert metadata["scene_id"] == ["train-r-scene", "train-r-scene-2"][index]
             assert metadata["placement_reference"] == ["ruler B", "ruler C"][index]
+            if target_demonstrations:
+                assert metadata["target_id"] == ["strip_001", "strip_002"][index]
+                assert metadata["target_description"] == ["right support", "center support"][index]
+                assert metadata["target_annotation_status"] == "pending_offline_review"
             assert sum(listener.active for listener in listeners) == 1
             if failure == "capture":
                 calls.append("capture_failure")
@@ -436,6 +442,8 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     monkeypatch.setattr(lerobot_record, "finalize_recorded_dataset", finalize)
     args = ["--dataset-root", str(tmp_path / "data"), "--evidence-root", str(tmp_path / "evidence"),
             "--num-episodes", "2", "--split", "train", "--record"]
+    if target_demonstrations:
+        args.append("--target-demonstrations")
     if failure:
         with pytest.raises(RuntimeError, match=f"{failure} failed"):
             entry.main(args)
