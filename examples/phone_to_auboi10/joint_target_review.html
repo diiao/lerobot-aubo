@@ -16,6 +16,7 @@
 </div>
 <p id="tr-summary"></p>
 <p id="tr-review-note"></p>
+<p id="tr-target"></p>
 <p><label>已记录问题定位 <select id="tr-issue-jump"><option value="">选择已记录帧</option></select></label>
 <a href="target_annotations/prediction_check.json">预测统计</a> · <a href="target_annotations/visual_check.json">图像抽查记录</a></p>
 <p id="tr-status" role="status"></p>
@@ -70,6 +71,7 @@ function draw(){const c=$('edit'),ctx=c.getContext('2d');ctx.clearRect(0,0,640,4
 function load(img,src){return new Promise(resolve=>{img.onload=()=>resolve(true);img.onerror=()=>resolve(false);img.src=src})}
 async function show(){
  const v=++loadVersion,f=frame();vertices=[];$('slider').max=ep().frames.length-1;$('slider').value=fi;$('number').value=f.frame_index;$('number').max=ep().frames.at(-1).frame_index;
+ $('target').textContent=`本条目标 ${ep().target_id}：${ep().target_description||'未提供位置描述'}；摆放参考：${ep().placement_reference||'未提供'}。候选实例编号不代表跨帧目标身份。`;
  document.querySelector('.tr-pair').style.visibility='hidden';$('outline').style.display='none';$('outline').removeAttribute('src');$('status').textContent='正在加载 '+f.frame_id;draw();
  const ok=await Promise.all([load($('raw'),base+f.image),load($('marked'),base+f.image),f.outline?load($('outline'),base+f.outline):Promise.resolve(true)]);
  if(v!==loadVersion)return;
@@ -80,7 +82,7 @@ async function show(){
  if(playing)timer=setTimeout(()=>{if(fi>=ep().frames.length-1){stop();return}fi++;show()},Number($('speed').value));
 }
 function go(index){stop();fi=Math.max(0,Math.min(ep().frames.length-1,index));show()}
-spec.episodes.forEach((e,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${e.episode_index}（scene ${e.scene_id}，${e.frames.length}帧）`;$('episode').append(o)});
+spec.episodes.forEach((e,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${e.episode_index}（scene ${e.scene_id}，目标 ${e.target_id}，${e.frames.length}帧）`;$('episode').append(o)});
 $('episode').onchange=()=>{stop();ei=Number($('episode').value);fi=0;$('from').value=0;$('to').value=ep().frames.at(-1).frame_index;show()};
 $('prev').onclick=()=>go(fi-1);$('next').onclick=()=>go(fi+1);$('slider').oninput=()=>go(Number($('slider').value));
 $('number').onchange=()=>{const n=Number($('number').value);go(ep().frames.findIndex(f=>f.frame_index===n))};

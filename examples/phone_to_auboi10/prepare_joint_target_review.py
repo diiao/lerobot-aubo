@@ -89,6 +89,8 @@ def approach_manifest(dataset, evidence):
             raise ValueError("phase recomputation disagrees with capture check")
         episodes.append({"episode_index": ep, "scene_id": fields["scene_id"],
                          "target_id": fields["target_id"], "reviewed": False,
+                         "target_description": fields.get("target_description", ""),
+                         "placement_reference": fields.get("placement_reference", ""),
                          "close_frame": close_frame, "accepted_close_monotonic_s": close_time,
                          "total_frames": meta["length"], "frames": frames})
     spec = {"schema": "aubo_joint_target_annotations", "source_dataset_root": str(dataset),
@@ -127,7 +129,7 @@ def extract_images(dataset, folder, spec):
         print(f'episode {ep["episode_index"]}: {cursor} approach RGB frames', flush=True)
 
 
-def import_predictions(folder, spec, path):
+def import_predictions(folder, spec, path, *, single_strip_scenes=False):
     report = read(path)
     if report.get("plan", {}).get("source_run") != str(folder.parent.resolve()):
         raise ValueError("prediction source run mismatch")
@@ -156,9 +158,9 @@ def import_predictions(folder, spec, path):
         for s in segments:
             if s["class_id"] not in (0, 1) or int((instance == s["mask_id"]).sum()) != s["pixels"]:
                 raise ValueError("segment class/area mismatch")
-        # A sole candidate is only a draft for these recorded single-strip scenes.
-        # Multiple candidates (including split instances) require explicit human selection/correction.
-        mask = instance == ids[0] if len(ids) == 1 else None
+        # One detection in a multi-strip scene may be the wrong object.
+        # Only explicitly identified single-strip scenes can use this draft shortcut.
+        mask = instance == ids[0] if single_strip_scenes and len(ids) == 1 else None
         if mask is not None and not mask.any():
             raise ValueError("empty selected instance")
         pending.append((row, mask, prediction))
@@ -431,6 +433,8 @@ def main():
     parser.add_argument("--evidence-root", type=Path, default=Path("artifacts/joint_target_pilot"))
     parser.add_argument("--stage", choices=("prepare", "render", "import-predictions", "import-review", "verify"), default="prepare")
     parser.add_argument("--predictions", type=Path)
+    parser.add_argument("--single-strip-scenes", action="store_true",
+                        help="Only for known single-strip scenes: use a sole detection as an unreviewed draft; never use for A/B pairs")
     parser.add_argument("--decisions", type=Path)
     args = parser.parse_args()
     dataset, evidence = args.dataset_root.resolve(), args.evidence_root.resolve()
@@ -452,8 +456,8 @@ def main():
             "remote_project_hint": "/home/rentao/program/lerobot-aubo-strip-segmentation-20261005",
             "remote_python_hint": "/home/rentao/program/lerobot-aubo-smolvla-c0-pilot-b3a9c8a/.venv/bin/python",
             "model_hint": "outputs/short_strip_mask2former_baseline/best/",
-            "remote_input_relative": "artifacts/joint_target_pilot/target_annotations",
-            "remote_output_relative": "artifacts/joint_target_pilot/target_annotations/predictions",
+            "remote_input_relative": f"artifacts/{evidence.name}/target_annotations",
+            "remote_output_relative": f"artifacts/{evidence.name}/target_annotations/predictions",
             "local_output": str(folder / "predictions"),
             "entrypoint": "examples/phone_to_auboi10/predict_strip_images.py",
             "threshold": .5, "mask_threshold": .5, "overlap_mask_area_threshold": .8,
@@ -467,7 +471,8 @@ def main():
         if args.stage == "import-predictions":
             if args.predictions is None:
                 parser.error("--predictions required")
-            import_predictions(folder, spec, args.predictions.resolve())
+            import_predictions(folder, spec, args.predictions.resolve(),
+                               single_strip_scenes=args.single_strip_scenes)
         if args.stage == "import-review":
             if args.decisions is None:
                 parser.error("--decisions required")
