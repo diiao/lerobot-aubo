@@ -21,7 +21,7 @@ def prediction(tmp_path,spec,arrays,segments):
 def test_single_id_keeps_both_visible_components_without_gap_fill(tmp_path):
  s=setup(tmp_path);a=np.zeros((480,640),np.uint16);a[20:30,20:60]=7;a[20:30,90:130]=7
  p=prediction(tmp_path,s,[a],[[dict(mask_id=7,class_id=0,pixels=800,score=.9)]])
- m.import_predictions(tmp_path,s,p);result=np.array(Image.open(tmp_path/'masks/s0.png'))
+ m.import_predictions(tmp_path,s,p,single_strip_scenes=True);result=np.array(Image.open(tmp_path/'masks/s0.png'))
  assert np.array_equal(result!=0,a==7)
  assert not s['episodes'][0]['frames'][0]['reviewed']
  with pytest.raises(ValueError,match='overwritten'):m.import_predictions(tmp_path,s,p)
@@ -32,6 +32,16 @@ def test_missing_and_ambiguous_candidates_remain_missing_not_union(tmp_path):
  m.import_predictions(tmp_path,s,p)
  assert [f['status'] for f in s['episodes'][0]['frames']]==['missing','ambiguous']
  assert not list((tmp_path/'masks').glob('*.png'))
+
+def test_sole_detection_is_not_selected_without_single_strip_context(tmp_path):
+ # In an A/B scene, the sole detection could be B while the requested target is A.
+ s=setup(tmp_path);a=np.zeros((480,640),np.uint16);a[10:30,10:30]=7
+ p=prediction(tmp_path,s,[a],[[dict(mask_id=7,class_id=0,pixels=400,score=.9)]])
+ m.import_predictions(tmp_path,s,p)
+ row=s['episodes'][0]['frames'][0]
+ assert row['target_id']=='strip_001' and row['status']=='ambiguous'
+ assert row['draft_selection']=='human_selection_required' and not row['reviewed']
+ assert not (tmp_path/row['mask_path']).exists()
 
 def test_review_correction_preserves_prior_mask_and_requires_second_review(tmp_path):
  s=setup(tmp_path);row=s['episodes'][0]['frames'][0];row['status']='visible'
