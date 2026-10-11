@@ -399,10 +399,9 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
         listeners.append(listener)
         return listener, events
     monkeypatch.setattr(control_utils, "init_keyboard_listener", start_listener)
-    answers = iter(["", "  ", "train-r-scene", "", "ruler B",
-                    *(["strip_001", "right support"] if target_demonstrations else []), "invalid", "1",
-                    "train-r-scene-2", "ruler C",
-                    *(["strip_002", "center support"] if target_demonstrations else []), "2"])
+    answers = iter(["", "  ", "t-001", "", "s-001", "invalid", "1", "t-001", "s-002", "2"]
+                   if target_demonstrations else
+                   ["", "  ", "train-r-scene", "", "ruler B", "invalid", "1", "train-r-scene-2", "ruler C", "2"])
     def prompt(message):
         assert not any(listener.active for listener in listeners), "hotkeys compete with input()"
         return next(answers)
@@ -417,18 +416,23 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     def record(**kwargs):
         lifecycle = kwargs["lifecycle"]
         for index in range(2):
-            metadata = lifecycle.prepare_episode(index)
-            assert metadata["scene_id"] == ["train-r-scene", "train-r-scene-2"][index]
-            assert metadata["placement_reference"] == ["ruler B", "ruler C"][index]
+            lifecycle.episode_frame_observer()
+            metadata = lifecycle.active["metadata"]
             if target_demonstrations:
-                assert metadata["target_id"] == ["strip_001", "strip_002"][index]
-                assert metadata["target_description"] == ["right support", "center support"][index]
+                assert metadata["scene_id"] == "t-001"
+                assert metadata["target_id"] == ["s-001", "s-002"][index]
+                assert metadata["placement_reference"] == metadata["target_description"] == ""
                 assert metadata["target_annotation_status"] == "pending_offline_review"
+            else:
+                assert metadata["scene_id"] == ["train-r-scene", "train-r-scene-2"][index]
+                assert metadata["placement_reference"] == ["ruler B", "ruler C"][index]
             assert sum(listener.active for listener in listeners) == 1
             if failure == "capture":
                 calls.append("capture_failure")
                 raise RuntimeError("capture failed")
             assert lifecycle.outcome_provider(index) == ["single_success", "empty"][index]
+            lifecycle.active = None
+            lifecycle.saved_count += 1
         lifecycle.saved_count = 2
     monkeypatch.setattr(lerobot_record, "record_episode_sessions", record)
 

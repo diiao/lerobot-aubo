@@ -88,6 +88,17 @@ def prepare_target_images(images, visible_mask, annotation, *, frame_id, target_
         raise ValueError("target unavailable: do not reuse a previous mask")
     if annotation.get("reviewed") is not True and not allow_draft:
         raise ValueError("target annotation requires review")
+    prepared = outline_target_images(images, visible_mask)
+    return {
+        "contract": target_contract_record(),
+        "images": prepared,
+        "target": copy.deepcopy(annotation),
+        "preview_only": annotation.get("reviewed") is not True,
+    }
+
+
+def outline_target_images(images, visible_mask):
+    """Pixel renderer only; callers must establish same-frame target provenance."""
     for name in ("global_rgb", "grasp_rgb"):
         image = images.get(name)
         if not isinstance(image, np.ndarray) or image.dtype != np.uint8 or image.shape != (480, 640, 3):
@@ -100,9 +111,4 @@ def prepare_target_images(images, visible_mask, annotation, *, frame_id, target_
     boundary = visible_mask & (interior == 0)
     marked = images["global_rgb"].copy()
     marked[boundary] = (255, 0, 255)
-    return {
-        "contract": target_contract_record(),
-        "images": {TARGET_IMAGE_KEY: marked, "grasp_rgb": images["grasp_rgb"].copy()},
-        "target": copy.deepcopy(annotation),
-        "preview_only": annotation.get("reviewed") is not True,
-    }
+    return {TARGET_IMAGE_KEY: marked, "grasp_rgb": images["grasp_rgb"].copy()}

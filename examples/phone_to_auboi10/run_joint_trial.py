@@ -59,13 +59,24 @@ def encode_images(images, codec):
 class InferencePipe:
     def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None,
                  remote_root=REMOTE_ROOT, checkpoint=None, expected_sha256=MODEL_SHA,
-                 inference_script=None,return_action_chunk=False,request_timeout_s=2.):
+                 inference_script=None,return_action_chunk=False,request_timeout_s=2.,
+                 target_conditioned=False, pythonpath=None, live_target_seed=None, segmentation_checkpoint=None):
+        if (live_target_seed is None) != (segmentation_checkpoint is None):
+            raise ValueError('live target seed and segmentation checkpoint must be provided together')
+        if live_target_seed is not None and not target_conditioned:
+            raise ValueError('live segmentation requires target-conditioned model')
         if not math.isfinite(request_timeout_s) or request_timeout_s<=0:
             raise ValueError('inference request timeout must be finite and positive')
         self.request_timeout_s=request_timeout_s
         self.log=(output/'inference_stderr.log').open('w')
         self.expected_sha256=expected_sha256
         self.return_action_chunk=return_action_chunk
+        self.target_conditioned=target_conditioned
+        self.live_target_seed=live_target_seed
+        self.contract=joint_contract_record()
+        if target_conditioned:
+            from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
+            self.contract=target_policy_contract_record()
         deployment = 'joint_live_bf16_20260922' if bf16 else 'joint_live_matmul_20260922'
         script = 'joint_inference_stdio.py'
         if cuda_graph:
@@ -74,7 +85,7 @@ class InferencePipe:
             deployment, script = 'joint_live_manual_task_20260922', 'joint_inference_stdio.py'
         script_path=inference_script or f'{remote_root}/artifacts/{deployment}/{script}'
         checkpoint_path=checkpoint or f'{remote_root}/outputs/joint_legacy_v2_run01/final'
-        args=['env',f'PYTHONPATH={remote_root}/src','HF_HUB_OFFLINE=1','TRANSFORMERS_OFFLINE=1',
+        args=['env',f'PYTHONPATH={pythonpath or remote_root+"/src"}','HF_HUB_OFFLINE=1','TRANSFORMERS_OFFLINE=1',
             'HF_HUB_DISABLE_TELEMETRY=1','WANDB_MODE=disabled',REMOTE_PYTHON,'-u',
             str(script_path), '--checkpoint',str(checkpoint_path),
             '--expected-sha256',self.expected_sha256]
@@ -84,13 +95,17 @@ class InferencePipe:
             args.append('--bf16')
         if return_action_chunk:
             args.append('--return-action-chunk')
+        if target_conditioned:
+            args.append('--target-conditioned')
+        if live_target_seed is not None:
+            args.extend(['--target-segmentation-checkpoint',str(segmentation_checkpoint)])
         if task is not None:
             args.extend(['--task',task])
         self.process=subprocess.Popen(['ssh','-T','gpu',shlex.join(args)],stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,stderr=self.log,text=True,bufsize=1)
         try:
             ready=self.receive(120)
-            if ready.get('ready') is not True or ready.get('checkpoint_sha256')!=self.expected_sha256 or ready.get('contract')!=joint_contract_record():
+            if ready.get('ready') is not True or ready.get('checkpoint_sha256')!=self.expected_sha256 or ready.get('contract')!=self.contract:
                 raise ValueError('inference identity mismatch')
             if bool(ready.get('bf16',False)) != bf16:
                 raise ValueError('inference precision mismatch')
@@ -98,6 +113,10 @@ class InferencePipe:
                 raise ValueError('inference task mismatch')
             if return_action_chunk and ready.get('action_chunk_available') is not True:
                 raise ValueError('inference worker does not provide full actions')
+            if bool(ready.get('target_live',False)) != (live_target_seed is not None):
+                raise ValueError('live target protocol mismatch')
+            if live_target_seed is not None and ready.get('segmentation_checkpoint') != str(segmentation_checkpoint):
+                raise ValueError('segmentation checkpoint mismatch')
         except BaseException:
             self.close()
             raise
@@ -112,9 +131,21 @@ class InferencePipe:
         if 'error' in result:raise RuntimeError(result['error'])
         return result
 
-    def predict(self, index, state, images, *, codec='jpeg95', seed=None):
+    def predict(self, index, state, images, *, codec='jpeg95', seed=None, target_input=None):
         start = time.perf_counter()
+        if self.target_conditioned:
+            keys=('global_rgb','grasp_rgb') if self.live_target_seed is not None else self.contract['image_keys']
+            if (set(images)!=set(keys) or not isinstance(target_input,dict)
+                    or target_input.get('phase') not in ('approach','transport')
+                    or not target_input.get('target_id') or not target_input.get('frame_id')):
+                raise ValueError('prepared target images and explicit target metadata required')
+        elif target_input is not None:
+            raise ValueError('target metadata requires a target-conditioned checkpoint')
         packet={'id':index,'state':state,'codec':codec,'images':encode_images(images, codec)}
+        if self.target_conditioned:
+            packet.update(target_contract=self.contract,target_input=target_input)
+        if self.live_target_seed is not None:
+            packet['target_seed']=self.live_target_seed
         if seed is not None:
             packet['seed'] = seed  # Offline paired comparison only; live requests omit it.
         encoded_at = time.perf_counter()
@@ -123,6 +154,24 @@ class InferencePipe:
         result=self.receive(self.request_timeout_s)
         if result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256 or result.get('shape')!=[50,7]:
             raise ValueError('invalid prediction identity or shape')
+        if self.live_target_seed is not None:
+            evidence=result.get('target_evidence',{})
+            if (result.get('target_input')!=target_input or evidence.get('frame_id')!=target_input['frame_id']
+                    or evidence.get('target_id')!=target_input['target_id'] or evidence.get('phase')!=target_input['phase']
+                    or evidence.get('seed_snapshot_id')!=self.live_target_seed['snapshot_id']
+                    or evidence.get('human_reviewed') is not False):
+                raise ValueError('live target evidence mismatch')
+            paired=self.live_target_seed.get('target_selection_mode')=='paired_foreground'
+            if paired and evidence.get('target_selection_mode')!='paired_foreground':
+                raise ValueError('paired target separation was requested but not used')
+            if target_input['phase']=='approach':
+                from lerobot.bamboo_sorting.joint_target_runtime import decode_mask
+                decode_mask(evidence.get('mask_png'))
+                if (evidence.get('source')!='same_frame_segmentation'
+                        or evidence.get('association',{}).get('status')!=('separated' if paired else 'matched')):
+                    raise ValueError('fresh target association required')
+            elif evidence.get('source')!='raw_rgb_after_accepted_close' or evidence.get('mask_png') is not None:
+                raise ValueError('invalid transport evidence')
         if self.return_action_chunk:
             # Validate the full wire response once, before any consumer uses it.
             result['action_chunk']=validated_action_chunk(result)
@@ -174,8 +223,12 @@ class ReadOnlyStation:
         self.upper=[math.degrees(v) for v in finite_vector(self.config.getJointMaxPositions(),6,'upper')]
 
     def current(self, *, require_stationary=True):
-        if not self.state.isPowerOn() or not self.state.isWithinSafetyLimits() or self.state.isCollisionOccurred():
-            raise RuntimeError('robot is not in a safe powered state')
+        if not self.state.isPowerOn():
+            raise RuntimeError('robot is not in a safe powered state: isPowerOn=False (robot power is off)')
+        if not self.state.isWithinSafetyLimits():
+            raise RuntimeError('robot is not in a safe powered state: isWithinSafetyLimits=False')
+        if self.state.isCollisionOccurred():
+            raise RuntimeError('robot is not in a safe powered state: isCollisionOccurred=True')
         safety=self.state.getSafetyModeType()
         if getattr(safety,'name',str(safety).split('.')[-1])!='Normal':raise RuntimeError(f'safety mode {safety}')
         ts=time.perf_counter()  # Timestamp the joint read, not earlier safety RPCs.

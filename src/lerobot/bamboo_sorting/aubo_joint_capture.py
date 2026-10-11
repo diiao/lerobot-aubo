@@ -134,9 +134,12 @@ class JointCaptureSession:
         if self.active is not None or self.saved_count >= self.episode_count:
             raise ValueError("joint session is not ready for an episode")
         metadata = self.prepare_episode(self.saved_count)
+        # Target demonstrations identify the scene/object by ID; the operator
+        # confirms physical placement without entering a text description.
+        identity_field = "target_id" if isinstance(metadata, dict) and "target_id" in metadata else "placement_reference"
         if not isinstance(metadata, dict) or any(not isinstance(metadata.get(k), str) or not metadata[k].strip()
-                                               for k in ("scene_id", "placement_reference")):
-            raise ValueError("scene_id and physical placement_reference are required")
+                                               for k in ("scene_id", identity_field)):
+            raise ValueError(f"scene_id and {identity_field} are required")
         self.active = {"episode_index": self.saved_count, "metadata": copy.deepcopy(metadata),
                        "status": "recording", "observer": JointFrameObserver(self.saved_count)}
         self.attempts.append(self.active)

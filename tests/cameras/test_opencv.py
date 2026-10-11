@@ -20,6 +20,8 @@
 # ```
 
 from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
@@ -156,6 +158,37 @@ def test_disconnect_before_connect():
 
     with pytest.raises(DeviceNotConnectedError):
         _ = camera.disconnect()
+
+
+@pytest.mark.parametrize("read_fails_after_stop", [False, True])
+def test_read_loop_exits_when_cleanup_clears_event(monkeypatch, read_fails_after_stop):
+    """A blocked read may finish after the bounded shutdown join has timed out."""
+    camera = OpenCVCamera(OpenCVCameraConfig(index_or_path=0))
+    camera.stop_event = Event()
+    camera.thread = SimpleNamespace(is_alive=lambda: True, join=lambda timeout: None)
+    reads = 0
+
+    def read():
+        nonlocal reads
+        reads += 1
+        if reads < 8:
+            raise RuntimeError("simulated camera read failure")
+        camera._stop_read_thread()
+        if read_fails_after_stop:
+            raise RuntimeError("read failed during disconnect")
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(camera, "_read_from_hardware", read)
+    monkeypatch.setattr(camera, "_postprocess_image", lambda frame: frame)
+    monkeypatch.setattr(camera, "_reopen_capture", lambda: pytest.fail("reopened after shutdown"))
+    monkeypatch.setattr(f"{OpenCVCamera.__module__}.time.sleep", lambda _: None)
+
+    camera._read_loop()
+
+    assert reads == 8
+    assert camera.latest_frame is None
+    assert camera.latest_timestamp is None
+    assert not camera.new_frame_event.is_set()
 
 
 @pytest.mark.parametrize("index_or_path", TEST_IMAGE_PATHS, ids=TEST_IMAGE_SIZES)

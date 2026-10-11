@@ -20,13 +20,16 @@ class TargetAssociation:
         "score_weights": {"overlap": 0.6, "center": 0.25, "axis": 0.15},
     }
 
-    def __init__(self, target_id, *, alignment="translation"):
+    def __init__(self, target_id, *, alignment="translation", enforce_geometry_limits=True,
+                 enforce_match_thresholds=True):
         if not isinstance(target_id, str) or not target_id:
             raise ValueError("stable target_id required")
         self.target_id = target_id
         if alignment not in ("translation", "rigid"):
             raise ValueError("unknown shape alignment")
         self.alignment = alignment
+        self.enforce_geometry_limits = enforce_geometry_limits
+        self.enforce_match_thresholds = enforce_match_thresholds
         self.mask = self.center = self.axis = None
         self.velocity = np.zeros(2)
         self.last_frame = None
@@ -112,10 +115,13 @@ class TargetAssociation:
             score = (weights["overlap"] * overlap
                      + weights["center"] * max(0, 1 - distance / parameters["max_center_distance_px"])
                      + weights["axis"] * max(0, 1 - angle / parameters["max_axis_angle_deg"]))
-            eligible = (distance <= parameters["max_center_distance_px"] and angle <= parameters["max_axis_angle_deg"]
-                        and parameters["min_area_ratio"] <= area_ratio <= parameters["max_area_ratio"]
-                        and parameters["min_seed_area_ratio"] <= seed_area_ratio <= parameters["max_seed_area_ratio"]
-                        and overlap >= parameters["min_overlap"] and score >= parameters["min_score"])
+            eligible = (not self.enforce_match_thresholds or
+                        (overlap >= parameters["min_overlap"] and score >= parameters["min_score"]))
+            if self.enforce_geometry_limits:
+                eligible = (eligible and distance <= parameters["max_center_distance_px"]
+                            and angle <= parameters["max_axis_angle_deg"]
+                            and parameters["min_area_ratio"] <= area_ratio <= parameters["max_area_ratio"]
+                            and parameters["min_seed_area_ratio"] <= seed_area_ratio <= parameters["max_seed_area_ratio"])
             detail = {"mask_id": segment["mask_id"], "class_id": segment["class_id"], "score": score,
                       "center_distance_px": distance, "axis_angle_deg": angle, "area_ratio": area_ratio,
                       "seed_area_ratio": seed_area_ratio, "overlap": overlap, "eligible": eligible}
@@ -125,7 +131,8 @@ class TargetAssociation:
         ranked.sort(key=lambda item: item[0], reverse=True)
         if not ranked:
             return self._lost(frame_index, "no_compatible_candidate", details)
-        if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < parameters["ambiguity_margin"]:
+        if (self.enforce_match_thresholds and len(ranked) > 1
+                and ranked[0][0] - ranked[1][0] < parameters["ambiguity_margin"]):
             return self._lost(frame_index, "ambiguous_candidates", details)
         _, segment, mask, center, axis = ranked[0]
         self.velocity = 0.5 * self.velocity + 0.5 * (center - self.center)

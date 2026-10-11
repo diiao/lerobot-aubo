@@ -16,6 +16,7 @@
 </div>
 <p id="tr-summary"></p>
 <p id="tr-review-note"></p>
+<p id="tr-draft-note"></p>
 <p id="tr-target"></p>
 <p><label>已记录问题定位 <select id="tr-issue-jump"><option value="">选择已记录帧</option></select></label>
 <a href="target_annotations/prediction_check.json">预测统计</a> · <a href="target_annotations/visual_check.json">图像抽查记录</a></p>
@@ -42,7 +43,7 @@
 #target-approach-review input[type=number]{width:75px}#tr-slider{display:block;width:100%}
 .tr-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;overflow:auto}.tr-pair.zoom{grid-template-columns:640px 640px}
 .tr-pair img{display:block;width:100%}.tr-stack{position:relative}.tr-stack #tr-outline,.tr-stack canvas{position:absolute;inset:0;width:100%;height:100%}
-#tr-outline{pointer-events:none}.tr-stack canvas{touch-action:none}#tr-status{white-space:pre-wrap;background:#edf2f7;padding:10px}
+#tr-outline{pointer-events:none}.tr-stack canvas{touch-action:none}#tr-status{white-space:pre-wrap;background:#edf2f7;color:#17212b;padding:10px}
 </style>
 <script>
 (()=>{
@@ -59,7 +60,8 @@ const edit=()=>decisions.frames[frame().frame_id]||{reviewed:frame().reviewed,is
 const effectiveIssue=f=>decisions.frames[f.frame_id]?.issue??f.review_issue??'';
 const allFrames=spec.episodes.flatMap(e=>e.frames);
 $('summary').textContent=`接近阶段 ${allFrames.length} 帧；已有掩码 ${allFrames.filter(f=>f.outline).length} 帧；缺失 ${allFrames.filter(f=>!f.outline).length} 帧；侧录已复核 ${allFrames.filter(f=>f.reviewed).length} 帧。已有掩码不代表轮廓完整。`;
-if(spec.human_review)$('review-note').textContent=`用户复核反馈：“${spec.human_review.statement}”。本批按流程试采接受，已知误差保留，未修改预测掩码；不代表精确像素真值。`;
+if(spec.human_review)$('review-note').textContent=`用户复核反馈：“${spec.human_review.statement}”。本批现有轮廓及已列误差按用户结论接受，模型筛选／助手补绘来源和问题历史保留；不代表精确像素真值。`;
+if(spec.draft_selection_note)$('draft-note').textContent=spec.draft_selection_note;
 spec.episodes.forEach((e,i)=>e.frames.forEach((f,j)=>{const issue=f.review_issue||(f.accepted_annotation_limitations?.length?'已接受误差：'+f.accepted_annotation_limitations[0].issue:'');if(!issue)return;const o=document.createElement('option');o.value=i+','+j;o.textContent=`episode ${e.episode_index} / frame ${f.frame_index}：${issue}`;$('issue-jump').append(o)}));
 $('issue-jump').onchange=()=>{if(!$('issue-jump').value)return;[ei,fi]=$('issue-jump').value.split(',').map(Number);$('episode').value=ei;$('from').value=fi;$('to').value=fi;go(fi)};
 const save=()=>{try{localStorage.setItem(storageKey,JSON.stringify(decisions))}catch(e){$('progress').textContent='浏览器存储不可用，请及时导出'}progress()};
@@ -102,7 +104,7 @@ $('missing-next').onclick=()=>nextWhere(f=>!f.outline);
 function range(){const a=Number($('from').value),b=Number($('to').value);if(!Number.isInteger(a)||!Number.isInteger(b)||a<0||b<a||b>ep().frames.at(-1).frame_index){alert('请输入本条内有效的起止帧号');return[]}return ep().frames.filter(f=>f.frame_index>=a&&f.frame_index<=b)}
 $('approve').onclick=()=>{stop();const rows=range();if(!rows.length)return;if(rows.some(f=>!f.outline||effectiveIssue(f)||decisions.frames[f.frame_id]?.polygons?.length)){alert('范围内存在缺失掩码、异常或未栅格化修改；请先修正并重新生成页面');return}if(!confirm(`我已实际检查这 ${rows.length} 帧目标身份与可见轮廓，包括遮挡两侧，并明确确认。播放或少量抽查不等于完整复核。`))return;for(const f of rows)decisions.frames[f.frame_id]={...decisions.frames[f.frame_id],frame_id:f.frame_id,episode_index:ep().episode_index,frame_index:f.frame_index,annotation_revision:f.annotation_revision||0,reviewed:true,confirmation:'explicit_user_range_review',reviewed_at:new Date().toISOString()};save();show()};
 $('revoke').onclick=()=>{for(const f of range())decisions.frames[f.frame_id]={...decisions.frames[f.frame_id],frame_id:f.frame_id,episode_index:ep().episode_index,frame_index:f.frame_index,annotation_revision:f.annotation_revision||0,reviewed:false};save();show()};
-$('export').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(decisions,null,2)],{type:'application/json'}));a.download='joint_target_pilot_review_decisions.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$('export').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(decisions,null,2)],{type:'application/json'}));a.download=spec.source_dataset_root.split('/').filter(Boolean).pop()+'_review_decisions.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
 document.addEventListener('keydown',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='ArrowLeft'){e.preventDefault();go(fi-1)}if(e.key==='ArrowRight'){e.preventDefault();go(fi+1)}});
 $('to').value=ep().frames.at(-1).frame_index;progress();show();
 })();

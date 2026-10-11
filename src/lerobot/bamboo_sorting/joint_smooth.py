@@ -37,14 +37,27 @@ def select_approach_action(chunk,timestamps,now):
     Input chunk must pass validated_action_chunk. The caller still validates
     age, FK/workspace and limits, and freezes the selected closure row.
     """
+    return _select_age_action(chunk,timestamps,now,100.,'closure_boundary')
+
+
+def select_transport_action(chunk,timestamps,now):
+    """Age-align a closed-gripper row, capped at the first predicted release.
+
+    Keep all six joints and IO from that row. The caller validates the target
+    and waits for arrival before release; selection alone never commands IO.
+    """
+    return _select_age_action(chunk,timestamps,now,0.,'release_boundary')
+
+
+def _select_age_action(chunk,timestamps,now,transition_value,boundary_key):
     ts=finite_vector(timestamps,3,'sensor timestamps')
     now=finite_vector([now],1,'clock')[0]
     if min(ts)<0 or max(ts)>now:raise ValueError('invalid selection clock')
     age=now-min(ts);nominal_index=math.floor(age/DT)
     if nominal_index>=len(chunk):raise ValueError('action chunk exhausted')
-    index=next((i for i in range(nominal_index+1) if chunk[i][-1]==100.),nominal_index)
+    index=next((i for i in range(nominal_index+1) if chunk[i][-1]==transition_value),nominal_index)
     return list(chunk[index]),{'nominal_index':nominal_index,'selected_index':index,
-        'observation_age_s':age,'closure_boundary':chunk[index][-1]==100.}
+        'observation_age_s':age,boundary_key:chunk[index][-1]==transition_value}
 
 
 def workspace(tcp):

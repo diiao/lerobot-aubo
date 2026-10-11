@@ -47,7 +47,11 @@ def main():
     p.add_argument('--return-action-chunk',action='store_true',help='Include the full 50-step prediction')
     p.add_argument('--target-conditioned', action='store_true',
                    help='Require AuboI10JointTargetApproach checkpoint and already prepared target inputs')
+    p.add_argument('--target-segmentation-checkpoint', type=Path,
+                   help='Live target mode: segment fresh raw RGB and associate an explicitly reviewed seed')
     args=p.parse_args()
+    if args.target_segmentation_checkpoint and not args.target_conditioned:
+        p.error('live target segmentation requires --target-conditioned')
     # Reject shared GPU occupancy; never kill, wait for, or modify other jobs.
     busy=subprocess.check_output(['nvidia-smi','--query-compute-apps=pid','--format=csv,noheader'],text=True).strip()
     if busy: raise RuntimeError(f'GPU occupied: {busy}')
@@ -99,17 +103,34 @@ def main():
                 'target_id': 'synthetic_warmup', 'frame_id': 'synthetic_warmup', 'phase': 'transport'})
         for _ in range(2):predict(warm)
         model.reset()
+        live_inputs = None
+        segmenter = None
+        if args.target_segmentation_checkpoint:
+            from lerobot.bamboo_sorting.joint_target_runtime import FrozenStripSegmenter, FreshTargetInputs
+            segmenter = FrozenStripSegmenter(str(args.target_segmentation_checkpoint))
     print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':contract_record(),
-                      'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk}),flush=True)
+                      'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk,
+                      'target_live':segmenter is not None,
+                      'segmentation_checkpoint':str(args.target_segmentation_checkpoint) if segmenter else None}),flush=True)
     for line in sys.stdin:
         start=time.perf_counter()
         try:
             if len(line)>6000000:raise ValueError('request too large')
             req=json.loads(line)
             frame={'observation.state':np.asarray(req['state'],dtype=np.float32),'task':task}
-            frame.update(decode_images(req['images'], req.get('codec', 'rgb_zlib'), image_keys=image_keys))
+            frame.update(decode_images(req['images'], req.get('codec', 'rgb_zlib'),
+                                       image_keys=JOINT_IMAGE_KEYS if segmenter else image_keys))
             if args.target_conditioned:
                 frame.update(target_contract=req.get('target_contract'), target_input=req.get('target_input'))
+            target_evidence = None
+            if segmenter:
+                if req.get('target_contract') != contract_record():
+                    raise ValueError('live target contract mismatch')
+                if live_inputs is None:
+                    live_inputs = FreshTargetInputs(req.get('target_seed', {}), segmenter)
+                elif req.get('target_seed') != live_inputs.seed:
+                    raise ValueError('target seed changed within live session')
+                frame, target_evidence = live_inputs.prepare(frame, req.get('target_input'))
             if 'seed' in req:
                 if type(req['seed']) is not int or not 0 <= req['seed'] < 2**32:
                     raise ValueError('invalid comparison seed')
@@ -121,6 +142,8 @@ def main():
                 'decode_s':decoded_at-start,'model_path_s':time.perf_counter()-decoded_at}
             if args.return_action_chunk:
                 response.update(action_chunk=decoded.tolist(),raw_action_chunk=adapter.raw_actions.tolist())
+            if target_evidence is not None:
+                response.update(target_input=dict(req['target_input']),target_evidence=target_evidence)
             print(json.dumps(response,allow_nan=False),flush=True)
         except Exception as exc:
             print(json.dumps({'error':f'{type(exc).__name__}: {exc}'}),flush=True)

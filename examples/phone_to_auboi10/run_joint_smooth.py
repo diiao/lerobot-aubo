@@ -19,7 +19,7 @@ from lerobot.bamboo_sorting.joint_trial import START_DEG,SingleStepSession,wait_
 from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
 from lerobot.bamboo_sorting.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
     MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace,
-    select_approach_action)
+    select_approach_action,select_transport_action)
 
 MIXED_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-mixed-20260927'
 MIXED_MODEL_SHA='79eb23606f6aa4e77484dd4bbf16a8cd273bb6a17ccfc9668ef44a4e2ed22ac7'
@@ -35,34 +35,61 @@ BOTH_ORDERS_APPROACH_SCRIPT=f'{BOTH_ORDERS_REMOTE_ROOT}/artifacts/joint_age_alig
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
-    p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders'),default='legacy-single')
+    p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders','target-pair'),default='legacy-single')
+    p.add_argument('--target-snapshot',type=Path,help='Reviewed seed snapshot; only its target selection is reused')
+    p.add_argument('--target-selections',type=Path,help='Human-reviewed A/B selection JSON bound to the snapshot')
+    p.add_argument('--target-id',help='Explicit target identity, e.g. A or B')
+    p.add_argument('--paired-target-separation',action='store_true',
+                   help='Explicit target-pair trial: separate current foreground using both reviewed target references')
+    p.add_argument('--transport-age-aligned',action='store_true',
+                   help='Explicit target-pair trial: age-align transport actions without skipping the first release')
     p.add_argument('--cycles',type=int,help='Stop after this many close/open command cycles; defaults to the model setting')
     p.add_argument('--inference-timeout-s',type=float,
                    help='Wait for a model response; does not relax observation age or servo watchdog limits')
     p.add_argument('--latency-tolerant',action='store_true',
-                   help='mixed-both-orders trial: 400 ms camera age, 300 ms camera skew, 750 ms prediction age, 1 s watchdog, 5 s response wait')
+                   help='target-pair: 1.5 s prediction age/watchdog; mixed-both-orders: 750 ms / 1 s and 400 ms camera age / 300 ms skew; both: 5 s response wait')
     p.add_argument('--approach-age-aligned',action='store_true',
                    help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
+    target_mode=args.model=='target-pair'
+    if args.paired_target_separation and not target_mode:
+        p.error('--paired-target-separation requires --model target-pair')
+    if args.transport_age_aligned and not target_mode:
+        p.error('--transport-age-aligned requires --model target-pair')
+    target_session=None;target_seed=None
+    if target_mode:
+        if not all((args.target_snapshot,args.target_selections,args.target_id)):
+            p.error('target-pair requires --target-snapshot, --target-selections and --target-id')
+        if args.cycles not in (None,1):p.error('target-pair runs exactly one selected-object cycle')
+        from joint_target_live_setup import prepare_live_setup
+        from lerobot.bamboo_sorting.joint_target_policy import TargetInputSession, is_transport
+        from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_FIELDS
+        setup_options={'paired_separation':True} if args.paired_target_separation else {}
+        target_seed,target_options=prepare_live_setup(args.target_snapshot,args.target_selections,args.target_id,**setup_options)
+        target_session=TargetInputSession(args.target_id)
+    elif any((args.target_snapshot,args.target_selections,args.target_id)):
+        p.error('target selection requires --model target-pair')
     if args.cycles is not None and args.cycles<1:p.error('--cycles must be a positive integer')
     inference_timeout_s=args.inference_timeout_s if args.inference_timeout_s is not None else (5. if args.latency_tolerant else 2.)
     if not math.isfinite(inference_timeout_s) or inference_timeout_s<=0:
         p.error('--inference-timeout-s must be finite and positive')
-    if args.latency_tolerant and args.model!='mixed-both-orders':
-        p.error('--latency-tolerant requires --model mixed-both-orders')
-    approach=args.approach_age_aligned
-    if approach and args.model!='mixed-both-orders':p.error('--approach-age-aligned requires --model mixed-both-orders')
-    mixed=args.model in ('mixed-double','mixed-both-orders')
-    expected_cycles=args.cycles if args.cycles is not None else (2 if mixed else 1)
-    max_seconds=360 if mixed else 120
+    if args.latency_tolerant and args.model not in ('mixed-both-orders','target-pair'):
+        p.error('--latency-tolerant requires --model mixed-both-orders or target-pair')
+    approach=args.approach_age_aligned or target_mode
+    if approach and args.model not in ('mixed-both-orders','target-pair'):p.error('--approach-age-aligned requires --model mixed-both-orders or target-pair')
+    mixed=args.model in ('mixed-double','mixed-both-orders','target-pair')
+    expected_cycles=args.cycles if args.cycles is not None else (2 if mixed and not target_mode else 1)
+    max_seconds=360 if mixed and not target_mode else 120
     servo_command_time=.08 if mixed else DT
     max_camera_age_ms=250 if mixed else 100
-    max_prediction_age=.5 if args.model=='mixed-both-orders' else MAX_PREDICTION_AGE
+    max_prediction_age=.5 if args.model in ('mixed-both-orders','target-pair') else MAX_PREDICTION_AGE
     max_without_prediction=MAX_WITHOUT_PREDICTION
     max_camera_skew=MAX_CAMERA_SKEW
     if args.latency_tolerant:
-        max_prediction_age=.75;max_without_prediction=1.
-        max_camera_age_ms=400;max_camera_skew=.3
+        max_prediction_age=1.5 if target_mode else .75
+        max_without_prediction=1.5 if target_mode else 1.
+        if not target_mode:
+            max_camera_age_ms=400;max_camera_skew=.3
     model_sha=MIXED_MODEL_SHA if mixed else MODEL_SHA
     pipe_options=({'remote_root':MIXED_REMOTE_ROOT,'checkpoint':MIXED_CHECKPOINT,
                    'expected_sha256':MIXED_MODEL_SHA,'inference_script':MIXED_INFERENCE_SCRIPT}
@@ -72,9 +99,14 @@ def main(argv=None):
         pipe_options={'remote_root':BOTH_ORDERS_REMOTE_ROOT,'checkpoint':BOTH_ORDERS_CHECKPOINT,
                       'expected_sha256':model_sha,'inference_script':BOTH_ORDERS_INFERENCE_SCRIPT}
         if approach:pipe_options.update(inference_script=BOTH_ORDERS_APPROACH_SCRIPT,return_action_chunk=True)
+    if target_mode:
+        pipe_options=target_options
+        model_sha=target_options['expected_sha256']
     pipe_options['request_timeout_s']=inference_timeout_s
     plan={'mode':'asynchronous_inference_continuous_servo','model':args.model,
-          'action_selection':'observation_age_while_open_first_step_while_closed' if approach else 'first_step',
+          'action_selection':('observation_age_open_and_transport' if args.transport_age_aligned else
+                              'observation_age_while_open_first_step_while_closed' if approach else 'first_step'),
+          'transport_age_aligned':args.transport_age_aligned,
           'pending_suction_policy':'continue_inference_while_open' if approach else 'accept_fresh_inflight_before_io',
           'checkpoint_sha256':model_sha,'requested_suction_cycles':expected_cycles,
           'camera_set_sha256':hashlib.sha256(CAMERA_SET.read_bytes()).hexdigest(),'control_hz':1/DT,
@@ -91,6 +123,13 @@ def main(argv=None):
           'suction_writes':True,'max_seconds':max_seconds,'automatic_home':False,'automatic_release':False,
           'startup_release_if_unset':'operator_confirmed',
           'servo_disable_confirmation_timeout_s':1.0,'video_recording':{'enabled':True,'fps':25,'directory':'videos'}}
+    if target_mode:
+        plan.update(target_id=args.target_id,seed_snapshot_id=target_seed['snapshot_id'],
+            target_selection_mode='paired_foreground' if args.paired_target_separation else 'highest_score',
+            target_mask_source=('fresh foreground separated by both reviewed targets; stop if selected target has no pixels'
+                                if args.paired_target_separation else 'fresh segmentation plus reviewed-seed association; stop on failure'),
+            target_phase_source='first accepted close command; never prediction',
+            segmentation_checkpoint=target_options['segmentation_checkpoint'])
     if not args.execute:print(json.dumps(plan,indent=2));return 0
     if not sys.stdin.isatty():p.error('interactive terminal required')
     try:task=read_task()
@@ -107,6 +146,12 @@ def main(argv=None):
     commands=(output/'commands.jsonl').open('w',buffering=1)
     def log(f,value):f.write(json.dumps(value,allow_nan=False)+'\n')
     try:
+        if target_mode:
+            print(f'本轮目标：{args.target_id}；一次夹紧→释放后结束。请保持圈选时的竹条摆放和全局相机位置。',flush=True)
+            if args.paired_target_separation:
+                print('本轮启用双目标前景分离试验；仅使用当前分割像素，无所选目标像素时停止。',flush=True)
+            if args.transport_age_aligned:
+                print('本轮搬运按观察年龄取步；保留首次释放边界，到达目标后才松爪。',flush=True)
         print('加载模型、连接相机；尚未发送运动。',flush=True)
         pipe=InferencePipe(output,task=task,**pipe_options);station.connect()
         motion=station.iface.getMotionControl()
@@ -140,8 +185,9 @@ def main(argv=None):
         recorder=TrialVideoRecorder(station.cameras,output);recorder.start()
         print(f'双相机录像已启动：{output.resolve()}/videos/',flush=True)
         pool=ThreadPoolExecutor(max_workers=1)
-        def infer(index,state,images):
-            result=pipe.predict(index,state,images)
+        def infer(index,state,images,metadata=None):
+            result=(pipe.predict(index,state,images,codec='rgb_zlib',target_input=metadata)
+                    if target_mode else pipe.predict(index,state,images))
             if index%5==0:
                 import cv2
                 for name,img in images.items():
@@ -149,7 +195,7 @@ def main(argv=None):
                         raise RuntimeError('snapshot save failed')
             return result
         future=None;goal=None;pending_suction=False;last_observation=None;trajectory=None
-        active_chunk=None;active_times=None;selection=None;prediction_id=None
+        active_chunk=None;active_times=None;selection=None;prediction_id=None;active_transport=False
         discard_pending_result=False;request_index=0;inflight_index=None
         last_servo_sent_at=None
         deadline=time.perf_counter()+max_seconds;next_tick=time.perf_counter();last_tick=next_tick
@@ -177,9 +223,13 @@ def main(argv=None):
                 if approach:
                     # InferencePipe already checked and normalized the full chunk.
                     active_chunk=result['action_chunk'];active_times=list(sensor_times)
+                    active_transport=(args.transport_age_aligned and
+                                      result.get('target_input',{}).get('phase')=='transport')
                     selection=None
                     if held_suction==0:
                         candidate,selection=select_approach_action(active_chunk,active_times,time.perf_counter())
+                    elif active_transport:
+                        candidate,selection=select_transport_action(active_chunk,active_times,time.perf_counter())
                     prediction_id=inflight_index
                 accepted=validate_prediction(candidate,state,tcp,fk(candidate[:6]),
                     station.lower,station.upper,sensor_times,time.perf_counter(),
@@ -198,15 +248,16 @@ def main(argv=None):
                     raise TimeoutError(f'no fresh prediction within {max_without_prediction*1000:.0f} ms')
                 if pending_suction and time.perf_counter()-last_observation>1.5:
                     raise TimeoutError('suction transition target not reached within 1.5 seconds')
-                if approach and active_chunk is not None and held_suction==0 and not pending_suction:
-                    candidate,new_selection=select_approach_action(active_chunk,active_times,time.perf_counter())
+                if approach and active_chunk is not None and (held_suction==0 or active_transport) and not pending_suction:
+                    select_action=select_approach_action if held_suction==0 else select_transport_action
+                    candidate,new_selection=select_action(active_chunk,active_times,time.perf_counter())
                     if new_selection['selected_index']!=selection['selected_index']:
                         goal=validate_prediction(candidate,state,tcp,fk(candidate[:6]),
                             station.lower,station.upper,active_times,time.perf_counter(),
                             max_prediction_age=max_prediction_age,max_camera_skew=max_camera_skew)
                     selection=new_selection
                     pending_suction=goal[-1]!=held_suction
-                # Hold this coherent closure row while awaiting arrival, but
+                # Hold this coherent IO-transition row while awaiting arrival, but
                 # let an in-flight fresh observation replan BEFORE IO changes.
                 q,target_tcp=trajectory.advance(goal[:6],fk)
                 require_joint_target(q,state[:6],station.lower,station.upper,MAX_TRACKING_ERROR_DEG)
@@ -236,11 +287,17 @@ def main(argv=None):
                     suction.is_suction_on=held_suction==100
                     try:suction._control_suction_based_on_gripper(goal[-1])
                     finally:log(trace,{'suction':suction.last_gripper_command_trace})
+                    if target_mode:
+                        accepted_at=time.perf_counter()
+                        target_session.accept_command(dict(zip(JOINT_FIELDS,goal,strict=True)),
+                            accepted_monotonic_s=accepted_at)
+                        log(trace,{'target_phase_command':{'action':goal,'accepted_monotonic_s':accepted_at,
+                            'first_accepted_close_s':target_session.accepted_close_time}})
                     previous_suction=held_suction
                     held_suction=goal[-1];pending_suction=False
                     if approach:
                         discard_pending_result=future is not None
-                        active_chunk=None;active_times=None;selection=None
+                        active_chunk=None;active_times=None;selection=None;active_transport=False
                     if previous_suction==100 and held_suction==0:
                         completed_cycles+=1
                         if completed_cycles==expected_cycles:
@@ -264,7 +321,12 @@ def main(argv=None):
                 if time.perf_counter()-min(sensor_times)>max_camera_age_ms/1000:
                     raise ValueError('stale input at capture')
                 inflight_index=request_index;request_index+=1
-                future=pool.submit(infer,inflight_index,observed_state,images)
+                if target_mode:
+                    metadata=dict(target_id=args.target_id,frame_id=f'{target_seed["snapshot_id"]}/live/{inflight_index}',
+                        phase='transport' if is_transport(sensor_times[0],target_session.accepted_close_time) else 'approach')
+                    future=pool.submit(infer,inflight_index,observed_state,images,metadata)
+                else:
+                    future=pool.submit(infer,inflight_index,observed_state,images)
         if not owned:reason='no_motion'
     except KeyboardInterrupt:reason='operator_interrupt'
     except BaseException as exc:
@@ -294,7 +356,9 @@ def main(argv=None):
             except BaseException as exc:failure=f'{failure or ""}; cleanup: {exc}'
         trace.close();commands.close()
         write(output/'complete.json',{'reason':reason,'sent_frames':sent,'predictions':predictions,
+            'model':args.model,'target_id':args.target_id,
             'approach_age_aligned':approach,
+            'transport_age_aligned':args.transport_age_aligned,
             'requested_suction_cycles':expected_cycles,'completed_suction_cycles':completed_cycles,
             'failure':failure,'suction_cycle_commanded':cycle,'physical_grasp_success':None,'video':video_result})
         print(f'结束：{reason}，记录：{output.resolve()}',flush=True)

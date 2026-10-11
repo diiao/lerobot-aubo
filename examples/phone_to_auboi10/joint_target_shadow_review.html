@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>静止目标对照：可见区域选择</title>
+<style>body{font:16px sans-serif;max-width:1000px;margin:24px auto;background:#f5f6f8;color:#17212b}canvas{border:1px solid #888;max-width:100%;cursor:crosshair}button,select{font:inherit;margin:5px;padding:7px}p{line-height:1.6}</style>
+<h1>静止观察：选择两个目标的可见区域</h1>
+<p>本页只标记这张已保存的图像，不控制机械臂。依次沿竹条可见边缘点击，按“结束当前多边形”闭合。遮挡两侧可分别画多个多边形；不要补画被遮挡部分。A、B必须是不同竹条。</p>
+<select id="target"><option value="0">目标 A（紫色）</option><option value="1">目标 B（青色）</option></select>
+<button id="finish">结束当前多边形</button><button id="undo">撤销当前点</button><button id="clear">清空所选目标</button><br>
+<canvas width="640" height="480" id="view"></canvas>
+<p><label><input type="checkbox" id="confirm">我已检查 A、B 分别标记不同竹条的可见区域，没有补画遮挡或混入夹爪。</label></p>
+<button id="save">导出选择文件</button><p id="status"></p>
+<script>
+const snapshot='__SNAPSHOT_ID__',canvas=document.querySelector('#view'),ctx=canvas.getContext('2d'),image=new Image();
+let selected=0,current=[],polygons=[[],[]];const colors=['#ff00ff','#00bcd4'];
+function draw(){ctx.drawImage(image,0,0);for(let i=0;i<2;i++){ctx.strokeStyle=colors[i];ctx.lineWidth=2;for(const p of polygons[i]){ctx.beginPath();p.forEach(([x,y],j)=>j?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.closePath();ctx.stroke()}}ctx.strokeStyle=colors[selected];ctx.beginPath();current.forEach(([x,y],j)=>j?ctx.lineTo(x,y):ctx.moveTo(x,y));ctx.stroke();for(const [x,y]of current){ctx.fillStyle=colors[selected];ctx.fillRect(x-2,y-2,4,4)}document.querySelector('#status').textContent=`A：${polygons[0].length} 个区域；B：${polygons[1].length} 个区域。`}
+image.onload=draw;image.src='global_rgb.png';
+canvas.onclick=e=>{let r=canvas.getBoundingClientRect();current.push([Math.max(0,Math.min(639,Math.round((e.clientX-r.left)*640/r.width))),Math.max(0,Math.min(479,Math.round((e.clientY-r.top)*480/r.height)))]);document.querySelector('#confirm').checked=false;draw()};
+document.querySelector('#finish').onclick=()=>{if(current.length<3)return alert('至少需要三个点');polygons[selected].push(current);current=[];document.querySelector('#confirm').checked=false;draw()};
+document.querySelector('#undo').onclick=()=>{current.pop();draw()};
+document.querySelector('#clear').onclick=()=>{polygons[selected]=[];current=[];document.querySelector('#confirm').checked=false;draw()};
+document.querySelector('#target').onchange=e=>{if(current.length){e.target.value=selected;return alert('请先结束当前多边形或撤销所有点')}selected=Number(e.target.value);draw()};
+document.querySelector('#save').onclick=()=>{if(current.length||!polygons.every(p=>p.length)||!document.querySelector('#confirm').checked)return alert('请完成两个目标并勾选实际复核确认');let data={schema:'joint_target_shadow_selection',snapshot_id:snapshot,human_reviewed:true,targets:polygons.map((p,i)=>({target_id:['A','B'][i],polygons:p}))};let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='target_shadow_'+snapshot+'_selection.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+</script>

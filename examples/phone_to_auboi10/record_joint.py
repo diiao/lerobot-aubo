@@ -170,15 +170,17 @@ def main(argv=None):
                 listener.stop()
                 listener = None
             print(f"\n准备第 {index + 1}/{args.num_episodes} 条；数据划分：{args.split}")
-            scene = required_text("场景编号（同一摆放场景保持同一编号，不跨训练/验证/测试）：")
-            placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
+            scene = required_text("场景编号（例如 t-001，同一摆放保持同一编号，不跨训练/验证/测试）：")
+            placement = ""
             target_metadata = {}
             if args.target_demonstrations:
                 target_metadata = {
-                    "target_id": required_text("本条示教的目标ID（例如 strip_001，整条过程不换目标）："),
-                    "target_description": required_text("目标的现场识别描述（位置、朝向，单根也填写）："),
+                    "target_id": required_text("本条示教的目标ID（例如 s-001，整条过程不换目标）："),
+                    "target_description": "",
                     "target_annotation_status": "pending_offline_review",
                 }
+            else:
+                placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
             listener, _ = init_keyboard_listener(events)
             print("按 r 归位，摆好竹条后按 → 开始；录制中 → 结束，← 重录，Esc 停止。")
             events["exit_early"] = events["return_to_start"] = False

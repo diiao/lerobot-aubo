@@ -439,25 +439,34 @@ class OpenCVCamera(Camera):
 
         Stops on DeviceNotConnectedError, logs other errors and continues.
         """
-        if self.stop_event is None:
+        # Cleanup may clear self.stop_event after a bounded join while a hardware
+        # read is still blocked. Keep this worker's own stop signal alive.
+        stop_event = self.stop_event
+        if stop_event is None:
             raise RuntimeError(f"{self}: stop_event is not initialized before starting read loop.")
 
         failure_count = 0
-        while not self.stop_event.is_set():
+        while not stop_event.is_set():
             try:
                 raw_frame = self._read_from_hardware()
+                if stop_event.is_set():
+                    break
                 processed_frame = self._postprocess_image(raw_frame)
                 capture_time = time.perf_counter()
 
                 with self.frame_lock:
+                    if stop_event.is_set():
+                        break
                     self.latest_frame = processed_frame
                     self.latest_timestamp = capture_time
-                self.new_frame_event.set()
+                    self.new_frame_event.set()
                 failure_count = 0
 
             except DeviceNotConnectedError:
                 break
             except Exception as e:
+                if stop_event.is_set():
+                    break
                 failure_count += 1
                 logger.warning(f"Error reading frame in background thread for {self}: {e}")
                 if failure_count == 8:

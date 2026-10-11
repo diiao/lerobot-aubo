@@ -556,6 +556,26 @@ def test_manual_live_episode_model_suction_and_exit(tmp_path,monkeypatch):
     assert all(json.loads(line)['task']==module.JOINT_TASK for line in (out/'trace.jsonl').read_text().splitlines())
 
 
+@pytest.mark.parametrize(('values','expected','read_count'),[
+    ((False,True,False),'isPowerOn=False',1),
+    ((True,False,False),'isWithinSafetyLimits=False',2),
+    ((True,True,True),'isCollisionOccurred=True',3),
+    ((False,False,True),'isPowerOn=False',1),
+])
+def test_current_rejects_unsafe_state_with_specific_reason(values,expected,read_count):
+    from types import SimpleNamespace
+    m=load_entry();calls=[]
+    def read(index):
+        calls.append(index)
+        return values[index]
+    s=m.ReadOnlyStation()
+    # No joint, IO or motion interfaces: rejection must precede further reads.
+    s.state=SimpleNamespace(isPowerOn=lambda:read(0),
+        isWithinSafetyLimits=lambda:read(1),isCollisionOccurred=lambda:read(2))
+    with pytest.raises(RuntimeError,match=expected):s.current()
+    assert calls==list(range(read_count))
+
+
 def test_current_timestamp_starts_at_joint_read_and_no_unused_speed_rpc(monkeypatch):
     from types import SimpleNamespace
     m=load_entry();clock=[10.];calls=[]

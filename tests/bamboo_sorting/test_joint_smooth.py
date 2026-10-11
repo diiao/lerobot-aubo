@@ -1,5 +1,6 @@
 import json
 import math
+import numpy as np
 from pathlib import Path
 import pytest
 from lerobot.bamboo_sorting.joint_smooth import *
@@ -47,6 +48,10 @@ def test_both_orders_explicit_prediction_age_budget():
     assert validate_prediction(**{**args,'now':1.5133},max_prediction_age=.75)==state
     with pytest.raises(ValueError,match='limit=750 ms'):
         validate_prediction(**{**args,'now':1.751},max_prediction_age=.75)
+    assert validate_prediction(**{**args,'now':1.7527},max_prediction_age=1.5)==state
+    assert validate_prediction(**{**args,'now':2.499},max_prediction_age=1.5)==state
+    with pytest.raises(ValueError,match='limit=1500 ms'):
+        validate_prediction(**{**args,'now':2.501},max_prediction_age=1.5)
 
 
 def chunk_response(close_at=None):
@@ -99,6 +104,29 @@ def test_inconsistent_full_chunks_are_rejected(corruption):
     with pytest.raises(ValueError):validated_action_chunk(response)
 
 
+def test_transport_age_selection_preserves_release_row_and_existing_checks():
+    chunk=[[*START_DEG,100.] for _ in range(50)]
+    for i,row in enumerate(chunk):row[0]+=.01*i;row[5]+=.02*i
+    selected,info=select_transport_action(chunk,[10.,10.01,10.02],10.42)
+    assert selected==chunk[10] and info['selected_index']==10 and not info['release_boundary']
+    chunk[3][-1]=0.
+    # A later re-close or invalid goal must not skip the first release.
+    chunk[4][0]=361.
+    selected,info=select_transport_action(chunk,[10.]*3,10.42)
+    assert selected==chunk[3] and info['selected_index']==3 and info['release_boundary']
+    assert selected[0]==START_DEG[0]+.03 and selected[5]==START_DEG[5]+.06
+    args=dict(state=[*START_DEG,100],tcp=[.2,-.5,.3],target_tcp=[.2,-.5,.3],
+              lower=[-360]*6,upper=[360]*6,timestamps=[10.]*3,now=10.42,max_prediction_age=.5)
+    assert validate_prediction(selected,**args)==selected
+    with pytest.raises(ValueError,match='expired'):
+        validate_prediction(selected,**{**args,'now':10.6})
+    chunk[3][0]=361.
+    with pytest.raises(ValueError,match='controller joint limits'):
+        validate_prediction(select_transport_action(chunk,[10.]*3,10.42)[0],**args)
+    with pytest.raises(ValueError,match='exhausted'):select_transport_action(chunk,[10.]*3,12.1)
+    with pytest.raises(ValueError,match='clock'):select_transport_action(chunk,[11.]*3,10.)
+
+
 def load_entry(monkeypatch):
     import importlib.util
     root=Path(__file__).resolve().parents[2]/'examples/phone_to_auboi10'
@@ -120,6 +148,68 @@ def test_age_aligned_approach_plan_is_explicit_and_hardware_free(monkeypatch,cap
     assert plan['pending_suction_policy']=='continue_inference_while_open'
     assert plan['max_prediction_age_s']==.5 and plan['watchdog_s']==.6
     assert plan['joint_speed_deg_s']==5 and plan['tcp_speed_m_s']==.05
+
+
+def test_target_plan_requires_seed_and_one_cycle_without_hardware(monkeypatch,capsys):
+    m=load_entry(monkeypatch)
+    import joint_target_live_setup
+    def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
+    monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a:(
+        dict(snapshot_id='seed'),dict(expected_sha256='target-model',segmentation_checkpoint='segmentation')))
+    with pytest.raises(SystemExit):m.main(['--model','target-pair'])
+    args=['--model','target-pair','--target-snapshot','snapshot','--target-selections','labels','--target-id','A']
+    with pytest.raises(SystemExit):m.main([*args,'--cycles','2'])
+    assert m.main(args)==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['target_id']=='A' and plan['requested_suction_cycles']==1
+    assert plan['action_selection']=='observation_age_while_open_first_step_while_closed'
+    assert plan['max_seconds']==120 and plan['max_prediction_age_s']==.5
+    assert plan['watchdog_s']==.6 and plan['joint_speed_deg_s']==5 and plan['tcp_speed_m_s']==.05
+    assert m.main([*args,'--latency-tolerant'])==0
+    relaxed=json.loads(capsys.readouterr().out)
+    assert relaxed['max_prediction_age_s']==1.5 and relaxed['watchdog_s']==1.5
+    assert relaxed['inference_timeout_s']==5.
+    changed={key for key in plan if plan[key]!=relaxed[key]}
+    assert changed=={'latency_tolerant','max_prediction_age_s','watchdog_s','inference_timeout_s'}
+
+
+def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatch,capsys,tmp_path):
+    m=load_entry(monkeypatch)
+    import joint_target_live_setup
+    from lerobot.bamboo_sorting.joint_target_runtime import decode_mask
+    def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
+    (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',snapshot_id='s',execution_eligible=False)))
+    labels=tmp_path/'labels.json'
+    labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection',snapshot_id='s',human_reviewed=True,
+        targets=[dict(target_id='A',polygons=[[[490,200],[502,200],[502,400],[490,400]]]),
+                 dict(target_id='B',polygons=[[[400,200],[412,200],[412,400],[400,400]]])])))
+    with pytest.raises(SystemExit):m.main(['--paired-target-separation'])
+    with pytest.raises(SystemExit):m.main(['--transport-age-aligned'])
+    args=['--model','target-pair','--target-snapshot',str(tmp_path),'--target-selections',str(labels),
+          '--target-id','B','--latency-tolerant','--paired-target-separation']
+    assert m.main(args)==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['target_selection_mode']=='paired_foreground' and plan['target_id']=='B'
+    assert plan['max_prediction_age_s']==1.5 and plan['watchdog_s']==1.5
+    assert plan['requested_suction_cycles']==1 and plan['max_seconds']==120
+    assert plan['transport_age_aligned'] is False
+    assert m.main([*args,'--transport-age-aligned'])==0
+    transport_plan=json.loads(capsys.readouterr().out)
+    assert transport_plan['transport_age_aligned'] is True
+    assert transport_plan['action_selection']=='observation_age_open_and_transport'
+    assert {k:v for k,v in transport_plan.items() if k not in ('action_selection','transport_age_aligned')}=={
+        k:v for k,v in plan.items() if k not in ('action_selection','transport_age_aligned')}
+    seed,options=joint_target_live_setup.prepare_live_setup(tmp_path,labels,'B',paired_separation=True)
+    targets={t['target_id']:decode_mask(t['mask_png']) for t in seed['paired_targets']}
+    np.testing.assert_array_equal(decode_mask(seed['mask_png']),targets['B'])
+    np.testing.assert_array_equal(decode_mask(seed['excluded_mask_png']),targets['A'])
+    assert '/paired_foreground/' in options['inference_script']
+    assert options['pythonpath'].split(':')[0].endswith('/paired_foreground/src')
+    default_seed,default_options=joint_target_live_setup.prepare_live_setup(tmp_path,labels,'B')
+    assert 'paired_targets' not in default_seed
+    assert '/paired_foreground/' not in default_options['inference_script']
 
 
 @pytest.mark.parametrize('model,expected_cycles',[('legacy-single',1),('mixed-double',2),('mixed-both-orders',2)])
@@ -254,20 +344,40 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('mixed-both-orders',1,False,False,'latency'),
     ('mixed-both-orders',1,'hung',False,'latency'),
     ('mixed-both-orders',1,False,False,'camera_latency'),
+    ('target-pair',1,False,False,7),
+    ('target-pair',1,True,False,7),
+    ('target-pair',1,'hung',False,7),
+    ('target-pair',1,False,False,'latency'),
+    ('target-pair',1,'hung',False,'latency'),
+    ('target-pair',1,False,False,'serial_latency'),
+    ('target-pair',1,False,False,'serial_slow'),
+    ('target-pair',1,False,False,'transport'),
+    ('target-pair',1,'transport_hung',False,'transport'),
 ])
 def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,inference_error,slow_fk,model,expected_cycles,approach):
     import numpy as np
     from lerobot.robots.aubo_i10 import aubo_i10
     m=load_entry(monkeypatch);clock=[10.];events=[];state=[*START_DEG,0];enabled=[False]
+    target_metadata=[]
+    if model=='target-pair':
+        import joint_target_live_setup
+        monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a:(
+            dict(snapshot_id='seed',target_id='A'),dict(expected_sha256='target-model',target_conditioned=True,
+                return_action_chunk=True,segmentation_checkpoint='segmentation')))
     replan_test=approach in ('replan','replan_at_receipt')
+    transport_test=approach=='transport'
+    transport_error=inference_error=='transport_hung'
+    if transport_test:approach=7
     replan_at_receipt=approach=='replan_at_receipt'
     discard_test=approach=='discard'
     camera_latency_test=approach=='camera_latency'
-    latency_test=approach in ('latency','camera_latency')
+    serial_slow_test=approach=='serial_slow'
+    serial_latency_test=approach in ('serial_latency','serial_slow')
+    latency_test=approach in ('latency','camera_latency','serial_latency','serial_slow')
     if latency_test:approach=7
     if replan_test or discard_test:approach=7
     if replan_at_receipt:approach=2
-    phase_calls={}
+    phase_calls={};transport_responses=[0]
     delayed=[False];state_reads=[0];requests=[]
     def sleep(s):clock[0]+=s
     monkeypatch.setattr(m.time,'perf_counter',lambda:clock[0]);monkeypatch.setattr(m.time,'sleep',sleep)
@@ -284,7 +394,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             state_reads[0]+=1
             return state.copy(),[.2,-.5,.3],clock[0]
         def observe(self,**kw):
-            assert kw['max_camera_age_ms']==(400 if latency_test else (100 if model=='legacy-single' else 250))
+            assert kw['max_camera_age_ms']==(400 if latency_test and model!='target-pair' else (100 if model=='legacy-single' else 250))
             if 'state_snapshot' in kw:
                 assert kw['state_snapshot'][0][-1]==state[-1]
             times=[clock[0]-.3,clock[0]-.02,clock[0]] if camera_latency_test else [clock[0]-.050327,clock[0],clock[0]]
@@ -313,20 +423,35 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                 assert kw['remote_root']==m.BOTH_ORDERS_REMOTE_ROOT
                 assert kw['inference_script']==(m.BOTH_ORDERS_APPROACH_SCRIPT if approach else m.BOTH_ORDERS_INFERENCE_SCRIPT)
                 assert kw.get('return_action_chunk',False)==bool(approach)
+            elif model=='target-pair':
+                assert kw['target_conditioned'] and kw['expected_sha256']=='target-model'
+                assert kw['return_action_chunk']
             else:
                 assert 'expected_sha256' not in kw
         def close(self):pass
-        def predict(self,index,*a):
-            if inference_error and index:raise RuntimeError('inference failed')
+        def predict(self,index,*a,**kw):
+            if model=='target-pair':
+                assert kw['codec']=='rgb_zlib'
+                target_metadata.append(dict(kw['target_input']))
+                assert kw['target_input']['target_id']=='A'
+            if inference_error and index and not transport_error:raise RuntimeError('inference failed')
             if approach:
                 chunk=[[*START_DEG,0.] for _ in range(50)]
-                if not inference_error or inference_error=='pending_failure':
+                if not inference_error or inference_error=='pending_failure' or transport_error:
                     phase=sum(kind=='suction' for kind,value in events)
                     phase_calls[phase]=phase_calls.get(phase,0)+1
                     if a[0][-1]==100:
+                        if model=='target-pair' and kw['target_input']['phase']=='transport':transport_responses[0]+=1
                         # Closed-gripper phase still uses the original first
                         # step: move before release, then repeat the next pick.
                         for row in chunk:row[0]+=.4;row[5]+=.4
+                        if transport_test:
+                            for i,row in enumerate(chunk):
+                                row[0]=START_DEG[0]+(.02*i if i<12 else .4)
+                                row[-1]=0. if i==12 else 100.
+                                if i>12:row[0]=361.  # Must never skip the release row.
+                            if transport_error:
+                                for row in chunk:row[0]=START_DEG[0]+.2;row[-1]=100.
                     elif state[-1]==100:
                         # An in-flight open-state prediction must be discarded
                         # after IO, before its obsolete joint/IO target is used.
@@ -360,17 +485,24 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                             else:
                                 chunk=[[*START_DEG,100.] for _ in range(50)]
                                 for row in chunk:row[3]+=.2;row[5]+=.4
+                if serial_slow_test and index==0:
+                    # Keep approaching while the second 550-ms request runs;
+                    # the old 750-ms age limit stopped this exact waiting path.
+                    chunk=[[*START_DEG,0.] for _ in range(50)]
                 return {'action':chunk[0], 'raw_action':chunk[0], 'shape':[50,7],
-                    'action_chunk':chunk,'raw_action_chunk':chunk}
+                    'action_chunk':chunk,'raw_action_chunk':chunk,
+                    **({'target_input':dict(kw['target_input'])} if model=='target-pair' else {})}
             # The fake policy keeps proposing cycles; only the runner stops it.
             suction=0 if inference_error else (100 if index%2==0 else 0)
             return {'action':[*START_DEG,suction]}
     class Future:
         def __init__(self,fn,args):
             self.fn=fn;self.args=args
-            self.ready=clock[0]+(.54 if latency_test and not camera_latency_test and args[0]==0 else .14)
+            self.ready=clock[0]+(.55 if serial_slow_test else .34 if serial_latency_test else .54 if latency_test and not camera_latency_test and args[0]==0 else .14)
+            if transport_test and args[1][-1]==100:self.ready=clock[0]+.34
         def done(self):
             if inference_error=='hung' and self.args[0]>0:return False
+            if transport_error and self.args[1][-1]==100 and transport_responses[0]>=1:return False
             return clock[0]>=self.ready
         def result(self):return self.fn(*self.args)
     class Pool:
@@ -402,9 +534,12 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     monkeypatch.setattr(m,'TrialVideoRecorder',Recorder)
     out=tmp_path/'run'
     argv=['--execute','--model',model,'--output',str(out)]
+    if model=='target-pair':
+        argv+=['--target-snapshot','snapshot','--target-selections','labels','--target-id','A']
     if expected_cycles!=(1 if model=='legacy-single' else 2):argv+=['--cycles',str(expected_cycles)]
     if approach:argv.append('--approach-age-aligned')
     if latency_test:argv.append('--latency-tolerant')
+    if transport_test:argv.append('--transport-age-aligned')
     assert m.main(argv)==int(bool(inference_error))
     assert [e for e in events if e[0]=='mode']==[('mode',True),('mode',False)]
     assert len([e for e in events if e[0]=='send'])>1 and not enabled[0]
@@ -412,7 +547,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     assert r['suction_cycle_commanded']==(not inference_error)
     assert r['requested_suction_cycles']==expected_cycles
     assert r['completed_suction_cycles']==(expected_cycles if not inference_error else 0)
-    assert [x for kind,x in events if kind=='suction']==([100,0]*expected_cycles if not inference_error else [])
+    assert [x for kind,x in events if kind=='suction']==([100,0]*expected_cycles if not inference_error else [100] if transport_error else [])
     if approach and not inference_error:
         assert r['reason']==('model_suction_cycle_completed' if expected_cycles==1 else 'model_suction_cycles_completed')
         assert r['approach_age_aligned'] and r['predictions']>=2*expected_cycles
@@ -423,7 +558,19 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                   if 'prediction' in r}
         assert all(c['target']==accepted[c['prediction_index']]['action_chunk'][c['action_selection']['selected_index']]
                    for c in frozen)
-        assert any(c['state'][-1]==100 and c['action_selection'] is None for c in records)
+        if transport_test:
+            closed=[c for c in records if c['state'][-1]==100 and c['action_selection'] is not None]
+            assert closed and any(c['action_selection']['selected_index']>0 for c in closed)
+            assert all(c['target']==accepted[c['prediction_index']]['action_chunk'][c['action_selection']['selected_index']]
+                       and accepted[c['prediction_index']]['target_input']['phase']=='transport' for c in closed)
+            releases=[c for c in closed if c['suction_target_frozen']]
+            assert releases and all(c['action_selection']['selected_index']==12 and c['target'][-1]==0 for c in releases)
+            # Between predictions the selected step advances; it is not fixed at receipt.
+            assert any(len({c['action_selection']['selected_index'] for c in closed if c['prediction_index']==i})>1
+                       for i in {c['prediction_index'] for c in closed})
+            assert r['transport_age_aligned'] is True
+        else:
+            assert any(c['state'][-1]==100 and c['action_selection'] is None for c in records)
         assert json.loads((out/'final_state.json').read_text())['state'][6]==0
         if discard_test:
             assert 'observation_precedes_suction_change' in (out/'trace.jsonl').read_text()
@@ -438,10 +585,39 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         if camera_latency_test:
             assert .25 < first['sensor_times'][1]-first['sensor_times'][0] < .3
             assert .4 < first['received_at']-min(first['sensor_times']) < .75
+        elif serial_slow_test:
+            assert .55 < first['received_at']-min(first['sensor_times']) < .75
+            assert any(c.get('action_selection') and .75<c['action_selection']['observation_age_s']<1.5
+                       for c in records)
+        elif serial_latency_test:assert .3 < first['received_at']-min(first['sensor_times']) < .5
         else:assert .5 < first['received_at']-min(first['sensor_times']) < .75
-        if inference_error=='hung':assert 'limit=750 ms' in r['failure']
+        if inference_error=='hung':
+            expected='no fresh prediction within 1500 ms' if model=='target-pair' else 'limit=750 ms'
+            assert expected in r['failure']
     assert 'observation_skipped' not in trace
     assert ('state_refresh_before_servo' in trace)==slow_fk
+    if model=='target-pair':
+        rows=[json.loads(line) for line in trace.splitlines()]
+        accepted=[row['target_phase_command'] for row in rows if 'target_phase_command' in row]
+        if not inference_error:
+            assert len(accepted)==2
+            assert accepted[0]['first_accepted_close_s']==accepted[1]['first_accepted_close_s']
+            # A short synthetic cycle may finish from a pre-close camera frame
+            # paired with a post-close state. Phase follows the image timestamp,
+            # not the gripper state or an assumption that transport must occur.
+            first_close=accepted[0]['first_accepted_close_s']
+            for row in rows:
+                if 'prediction' in row:
+                    meta=next(meta for meta in target_metadata if meta['frame_id']==f'seed/live/{row["index"]}')
+                    assert meta['phase']==('transport' if row['sensor_times'][0]>first_close else 'approach')
+        elif transport_error:
+            assert len(accepted)==1
+            assert 'expired prediction' in r['failure']
+            assert json.loads((out/'final_state.json').read_text())['state'][6]==100
+            commands=[json.loads(line) for line in (out/'commands.jsonl').read_text().splitlines()]
+            assert any(c['state'][-1]==100 and c['action_selection'] and c['action_selection']['selected_index']>0 for c in commands)
+        else:
+            assert not accepted and all(meta['phase']=='approach' for meta in target_metadata)
     if slow_fk:assert delayed[0] and state_reads[0]>len([e for e in events if e[0]=='send'])
 
 
