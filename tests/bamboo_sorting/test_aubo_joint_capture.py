@@ -224,6 +224,63 @@ def _session(tmp_path):
         outcome_provider=lambda i: "single_success")
 
 
+def test_stack_capture_preserves_sequence_counts_and_separate_human_outcomes(tmp_path):
+    from lerobot.bamboo_sorting.joint_stack_metadata import stack_summary
+    session = _session(tmp_path)
+    session.prepare_episode = lambda i: dict(scene_id='p-001', target_id=f's-{i//2+1:03}', split='train',
+                                             pick_step=i+1, available_target_count=[2, 2, 1, 1, 1, 1][i])
+    outcomes = dict(target_matched=True, held=True, single_strip=True, delivered=True, neighbor_disturbed=False)
+    session.outcome_provider = lambda i: dict(human_outcome='single_success' if i % 2 else 'empty',
+                                            target_outcome=outcomes if i % 2 else dict(outcomes, held=False))
+    for index in range(6):
+        _, dataset = _record_one(tmp_path, session.episode_frame_observer())
+        dataset.num_episodes = index
+        session.save_episode(dataset=dataset, episode_index=index)
+    session.on_dataset_finalize_success(dataset=dataset, recorded_episode_count=6)
+    records = json.loads((tmp_path/'evidence/session.json').read_text())['attempts']
+    assert [r['metadata']['pick_step'] for r in records] == [1, 2, 3, 4, 5, 6]
+    assert all(r['metadata']['scene_id'] == 'p-001' for r in records)
+    assert [r['target_outcome']['held'] for r in records] == [False, True, False, True, False, True]
+    summary = stack_summary([dict(episode_index=r['episode_index'], **r['metadata'], target_outcome=r['target_outcome']) for r in records])
+    assert summary['target_choice_eligible_episodes'] == [0, 1]
+    assert summary['grasp_only_episodes'] == [2, 3, 4, 5]
+
+
+@pytest.mark.parametrize('changes', [{'pick_step': True}, {'pick_step': 7}, {'available_target_count': 0}, {'available_target_count': 4}])
+def test_stack_metadata_rejected_before_recording(tmp_path, changes):
+    session = _session(tmp_path)
+    session.prepare_episode = lambda i: dict(scene_id='p-001', target_id='s-001', split='train',
+                                             **({'pick_step': 1, 'available_target_count': 2} | changes))
+    with pytest.raises(ValueError, match='integer'):
+        session.episode_frame_observer()
+    assert not session.attempts
+
+
+def test_stack_rerecord_does_not_consume_step_but_saved_duplicate_is_rejected(tmp_path):
+    session = _session(tmp_path)
+    session.prepare_episode = lambda i: dict(scene_id='p-001', target_id='s-001', split='train', pick_step=1, available_target_count=2)
+    session.episode_frame_observer()
+    dataset = Dataset(tmp_path/'data')
+    session.on_episode_rerecord(dataset=dataset, episode_index=0)
+    _, dataset = _record_one(tmp_path, session.episode_frame_observer())
+    with pytest.raises(ValueError, match='separate human'):
+        session.save_episode(dataset=dataset, episode_index=0)
+    assert dataset.save_calls == 0
+    session.outcome_provider = lambda i: dict(human_outcome='uncertain', target_outcome=dict.fromkeys(
+        ('target_matched', 'held', 'single_strip', 'delivered', 'neighbor_disturbed')))
+    session.save_episode(dataset=dataset, episode_index=0)
+    with pytest.raises(ValueError, match='increase'):
+        session.episode_frame_observer()
+
+
+def test_stack_plan_has_no_hardware_and_creates_no_directory(tmp_path, capsys):
+    entry = _entry()
+    assert entry.main(['--stack-demonstrations', '--split', 'train', '--num-episodes', '9',
+                       '--dataset-root', str(tmp_path/'data'), '--evidence-root', str(tmp_path/'evidence')]) == 0
+    assert '"stack_demonstrations": true' in capsys.readouterr().out
+    assert not (tmp_path/'data').exists() and not (tmp_path/'evidence').exists()
+
+
 @pytest.mark.parametrize("image_shapes", [None, {"global_rgb": (1080, 1920, 3), "grasp_rgb": (480, 640, 3)}])
 def test_save_finalize_and_readonly_audit(tmp_path, image_shapes):
     session = _session(tmp_path)

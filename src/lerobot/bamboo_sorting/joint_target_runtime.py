@@ -14,8 +14,8 @@ from .joint_target_association import TargetAssociation
 from .joint_target_policy import target_policy_contract_record
 
 
-def encode_mask(mask):
-    if mask.dtype != np.bool_ or mask.shape != (480, 640) or not mask.any():
+def encode_mask(mask, *, allow_empty=False):
+    if mask.dtype != np.bool_ or mask.shape != (480, 640) or (not allow_empty and not mask.any()):
         raise ValueError('nonempty bool mask required')
     ok, encoded = cv2.imencode('.png', mask.astype(np.uint8))
     if not ok:
@@ -23,11 +23,11 @@ def encode_mask(mask):
     return base64.b64encode(encoded).decode('ascii')
 
 
-def decode_mask(encoded):
+def decode_mask(encoded, *, allow_empty=False):
     if not isinstance(encoded, str) or len(encoded) > 100000:
         raise ValueError('invalid seed mask payload')
     mask = cv2.imdecode(np.frombuffer(base64.b64decode(encoded, validate=True), np.uint8), cv2.IMREAD_UNCHANGED)
-    if mask is None or mask.shape != (480, 640) or not np.isin(mask, [0, 1]).all() or not mask.any():
+    if mask is None or mask.shape != (480, 640) or not np.isin(mask, [0, 1]).all() or (not allow_empty and not mask.any()):
         raise ValueError('nonempty binary 480x640 mask required')
     return mask.astype(bool)
 
@@ -71,11 +71,11 @@ class FreshTargetInputs:
         self.target_id = seed['target_id']
         self.segmenter = segmenter
         mask = decode_mask(seed['mask_png'])
-        self.excluded_mask = decode_mask(seed['excluded_mask_png'])
+        self.excluded_mask = decode_mask(seed['excluded_mask_png'], allow_empty=seed.get('target_selection_mode') == 'multi_foreground')
         if np.any(mask & self.excluded_mask):
             raise ValueError('selected and excluded seed regions overlap')
         self.selection_mode = seed.get('target_selection_mode', 'highest_score')
-        if self.selection_mode not in ('highest_score', 'paired_foreground'):
+        if self.selection_mode not in ('highest_score', 'paired_foreground', 'multi_foreground'):
             raise ValueError('unknown target selection mode')
         self.separator = None
         if self.selection_mode == 'paired_foreground':
@@ -89,6 +89,18 @@ class FreshTargetInputs:
                     or not np.array_equal(np.logical_or.reduce([m for t,m in masks.items() if t!=self.target_id]), self.excluded_mask)):
                 raise ValueError('paired masks must match selected and excluded reviewed seeds')
             self.separator = PairedStripSeparation({t:masks[t] for t in sorted(masks)})
+        if self.selection_mode == 'multi_foreground':
+            from .joint_target_separation import MultiStripSeparation
+            targets = seed.get('visible_targets', [])
+            masks = {t['target_id']: decode_mask(t['mask_png']) for t in targets}
+            other = np.zeros((480, 640), bool)
+            for target, value in masks.items():
+                if target != self.target_id:
+                    other |= value
+            if (len(masks) != len(targets) or self.target_id not in masks
+                    or not np.array_equal(masks[self.target_id], mask) or not np.array_equal(other, self.excluded_mask)):
+                raise ValueError('visible seeds must match selected and excluded reviewed masks')
+            self.separator = MultiStripSeparation(masks)
         # Live selection ranks every current candidate without rejection gates.
         # Scores rank candidates; they do not certify identity or mask quality.
         # Offline association retains its original rejection rules by default.
@@ -127,7 +139,7 @@ class FreshTargetInputs:
                 masks, separation = self.separator.step(self.index-1, instances, segments)
                 mask = masks[self.target_id]
                 if not mask.any():
-                    raise ValueError('target association failed: paired target has no current foreground: ' + self.target_id)
+                    raise ValueError('target association failed: selected target has no current foreground: ' + self.target_id)
                 prepared = outline_target_images(images, mask)
                 ok, encoded = cv2.imencode('.png', instances)
                 if not ok:
@@ -135,13 +147,15 @@ class FreshTargetInputs:
                 evidence.update(source='same_frame_segmentation', mask_png=encode_mask(mask),
                     association=dict(frame=self.index, target_id=self.target_id, status='separated', reviewed=False),
                     association_geometry_limits_enforced=False, association_match_thresholds_enforced=False,
-                    association_selection_mode='paired_current_foreground_centerlines',
+                    association_selection_mode=separation['method'],
                     separation=separation,
                     paired_masks_png={t:encode_mask(m) if m.any() else None for t,m in masks.items()},
                     segmentation_instances_png=base64.b64encode(encoded).decode('ascii'),
                     segmentation_segments=segments,
                     raw_foreground_other_seed_overlap_px=int(np.count_nonzero((instances>0) & self.excluded_mask)),
                     other_reviewed_target_overlap_px=int(np.count_nonzero(mask & self.excluded_mask)))
+                if self.selection_mode == 'multi_foreground':
+                    evidence['visible_masks_png'] = evidence.pop('paired_masks_png')
                 evidence['preparation_s'] = time.perf_counter()-started
                 return {'observation.state':frame['observation.state'], 'task':frame['task'],
                         'target_contract':target_policy_contract_record(), 'target_input':dict(metadata),

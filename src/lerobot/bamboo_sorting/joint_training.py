@@ -50,12 +50,18 @@ def prepare_training_data(train_root, train_evidence, validation_root, validatio
         episodes = [r for r in report["episodes"] if r["episode_index"] in selected]
         if not episodes or any(r.get("split") != split for r in episodes):
             raise ValueError(f"{split} requires successful episodes explicitly tagged with that split")
-        scenes = sorted({r["scene_id"].strip() for r in episodes})
+        # A failed earlier step can perturb the later successful sample in the
+        # same pile. Group all stack records, including excluded outcomes.
+        grouped = [r for r in report["episodes"] if "pick_step" in r]
+        if any(r.get("split") != split for r in grouped):
+            raise ValueError(f"{split} stack scenes must stay in one split")
+        scenes = sorted({r["scene_id"].strip() for r in [*episodes, *grouped]})
         if not all(scenes):
             raise ValueError("nonempty scene identifiers are required")
         records.append({"root": str(root), "evidence_root": str(Path(evidence).resolve()),
                         "source_dataset_root": report["source_dataset_root"],
                         "episodes": selected, "scenes": scenes,
+                        "stack_summary": report.get("stack_summary", {}),
                         "frames": sum(r["frames"] for r in episodes),
                         "capture_complete": report["capture_complete"]})
     if set(records[0]["scenes"]) & set(records[1]["scenes"]):

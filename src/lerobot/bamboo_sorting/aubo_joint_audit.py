@@ -7,6 +7,9 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from .joint_gripper_quality import gripper_episode_quality, require_joint_normalization_stats
+from .joint_stack_metadata import (
+    stack_metadata, validate_stack_sequence, validate_target_outcome, successful_target_outcome, stack_summary,
+)
 
 from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, joint_image_shapes, require_joint_dataset
 
@@ -58,6 +61,7 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
     saved = [a for a in session["attempts"] if a["status"] == "saved_pending_finalize"]
     if [a["episode_index"] for a in saved] != list(range(count)):
         raise ValueError("joint sidecar saved episode sequence mismatch")
+    validate_stack_sequence(saved)
     result = []
     quality_issues = []
     stats_path = root / "meta/stats.json"
@@ -69,6 +73,8 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
         except ValueError as exc:
             quality_issues.append(str(exc))
     for index, record in enumerate(saved):
+        if stack_metadata(record["metadata"]):
+            validate_target_outcome(record.get("target_outcome"))
         sidecar = json.loads((evidence / f"episode-{index:04d}.json").read_text())
         if sidecar != record or sidecar["dataset_root"] != identity:
             raise ValueError("joint episode sidecar differs from finalized session")
@@ -104,19 +110,24 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
                     or not cycle["send_action_returned"]):
                 raise ValueError("suction command evidence mismatch")
         gripper = gripper_episode_quality(states[mask], actions[mask])
+        if stack_metadata(record["metadata"]) and (len(gripper["activate_frames"]) != 1 or len(gripper["release_frames"]) != 1):
+            gripper["quality_issues"].append("stack_target_requires_exactly_one_pick_release_cycle")
         if record["human_outcome"] == "single_success":
             quality_issues.extend(f"episode-{index}: {issue}" for issue in gripper["quality_issues"])
         result.append({"episode_index": index, "frames": int(mask.sum()),
                        **record["metadata"], "human_outcome": record["human_outcome"],
+                       **({"target_outcome": record["target_outcome"]} if "target_outcome" in record else {}),
                        "gripper_quality": gripper})
     candidates = [r["episode_index"] for r in result if r["human_outcome"] == "single_success"
-                  and not r["gripper_quality"]["quality_issues"]]
+                  and not r["gripper_quality"]["quality_issues"]
+                  and (not stack_metadata(r) or successful_target_outcome(r.get("target_outcome")))]
     if not candidates:
         quality_issues.append("no_complete_success_demonstrations")
     return {"schema_version": contract["schema_version"], "audit_passed": True,
             "image_shapes": {name: list(shape) for name, shape in joint_image_shapes(image_shapes).items()},
             "storage_root": str(root), "source_dataset_root": identity,
             "episodes": result, "frames": len(ep), "capture_complete": session["capture_complete"],
+            "stack_summary": stack_summary(result),
             "video_decode_checked": False, "physical_success_verified": False,
             "supervised_candidate_episodes": candidates,
             "gripper_quality_passed": not quality_issues,

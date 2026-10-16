@@ -161,14 +161,15 @@ class InferencePipe:
                     or evidence.get('seed_snapshot_id')!=self.live_target_seed['snapshot_id']
                     or evidence.get('human_reviewed') is not False):
                 raise ValueError('live target evidence mismatch')
-            paired=self.live_target_seed.get('target_selection_mode')=='paired_foreground'
-            if paired and evidence.get('target_selection_mode')!='paired_foreground':
-                raise ValueError('paired target separation was requested but not used')
+            selection_mode=self.live_target_seed.get('target_selection_mode')
+            separated=selection_mode in ('paired_foreground', 'multi_foreground')
+            if separated and evidence.get('target_selection_mode')!=selection_mode:
+                raise ValueError('requested target separation was not used')
             if target_input['phase']=='approach':
                 from lerobot.bamboo_sorting.joint_target_runtime import decode_mask
                 decode_mask(evidence.get('mask_png'))
                 if (evidence.get('source')!='same_frame_segmentation'
-                        or evidence.get('association',{}).get('status')!=('separated' if paired else 'matched')):
+                        or evidence.get('association',{}).get('status')!=('separated' if separated else 'matched')):
                     raise ValueError('fresh target association required')
             elif evidence.get('source')!='raw_rgb_after_accepted_close' or evidence.get('mask_png') is not None:
                 raise ValueError('invalid transport evidence')

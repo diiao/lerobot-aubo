@@ -17,6 +17,7 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     joint_command, joint_contract_record, joint_dataset_features,
 )
 from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, write_joint_json
+from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_PICK_STEP
 from lerobot.bamboo_sorting.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
 )
@@ -29,6 +30,8 @@ def parse_args(argv=None):
     parser.add_argument("--num-episodes", type=int, default=60)
     parser.add_argument("--target-demonstrations", action="store_true",
                         help="Record selected object identity; preserve raw RGB, annotate approach masks offline")
+    parser.add_argument("--stack-demonstrations", action="store_true",
+                        help="Target demonstrations from a three-strip pile; record pick step and available target count")
     parser.add_argument("--split", choices=("train", "validation", "test"), required=True)
     parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET,
                         help="original-global: original camera (default); wide-global: optional new 1080p camera")
@@ -36,6 +39,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     args.dataset_root = args.dataset_root.expanduser().resolve()
     args.evidence_root = args.evidence_root.expanduser().resolve()
+    if args.stack_demonstrations:
+        args.target_demonstrations = True
     if args.num_episodes < 1:
         parser.error("num-episodes must be positive")
     if args.target_demonstrations and args.camera_set != "original-global":
@@ -72,6 +77,21 @@ def required_text(prompt):
         print("这一项不能为空，请输入内容后再按回车。")
 
 
+def bounded_integer(prompt, low=1, high=3):
+    while True:
+        value = input(prompt).strip()
+        if value.isdigit() and low <= int(value) <= high:
+            return int(value)
+        print(f"请输入 {low}～{high} 的整数。")
+
+
+def human_boolean(prompt):
+    while True:
+        value = input(prompt + "（1 是，2 否，3 不确定）：").strip()
+        if value in ("1", "2", "3"):
+            return {"1": True, "2": False, "3": None}[value]
+
+
 def main(argv=None):
     args = parse_args(argv)
     camera_configuration = load_joint_camera_configuration(args.camera_set)
@@ -83,6 +103,7 @@ def main(argv=None):
             "split": args.split, **camera_configuration, "dataset_features": dataset_features,
             "teleoperation_profile": "legacy_abs_j6yaw",
             "target_demonstrations": args.target_demonstrations,
+            "stack_demonstrations": args.stack_demonstrations,
             "mode": "supervised_capture" if args.record else "plan_only"}
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if not args.record:
@@ -170,7 +191,8 @@ def main(argv=None):
                 listener.stop()
                 listener = None
             print(f"\n准备第 {index + 1}/{args.num_episodes} 条；数据划分：{args.split}")
-            scene = required_text("场景编号（例如 t-001，同一摆放保持同一编号，不跨训练/验证/测试）：")
+            scene = required_text("堆编号（例如 p-001，本堆抓走后继续沿用，不恢复摆放）：" if args.stack_demonstrations
+                                  else "场景编号（例如 t-001，同一摆放保持同一编号，不跨训练/验证/测试）：")
             placement = ""
             target_metadata = {}
             if args.target_demonstrations:
@@ -179,6 +201,12 @@ def main(argv=None):
                     "target_description": "",
                     "target_annotation_status": "pending_offline_review",
                 }
+                if args.stack_demonstrations:
+                    target_metadata.update(
+                        pick_step=bounded_integer(
+                            f"本堆第几次录制抓取（1～{MAX_STACK_PICK_STEP}，失败也占一次；重录未保存条不递增）：",
+                            high=MAX_STACK_PICK_STEP),
+                        available_target_count=bounded_integer("当前可选且可下指的上层条数（1～3）："))
             else:
                 placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
             listener, _ = init_keyboard_listener(events)
@@ -212,6 +240,13 @@ def main(argv=None):
             while True:
                 choice = input(f"第 {index + 1} 条结果：1 单根成功，2 抓空，3 多抓，4 滑落，5 受阻，6 不确定：").strip()
                 if choice in choices:
+                    if args.stack_demonstrations:
+                        return {"human_outcome": choices[choice], "target_outcome": {
+                            "target_matched": human_boolean("是否抓对指定目标"),
+                            "held": human_boolean("是否实际夹住"),
+                            "single_strip": human_boolean("是否恰好带起一根"),
+                            "delivered": human_boolean("是否送达左侧放置区并松开"),
+                            "neighbor_disturbed": human_boolean("是否碰动邻条")}}
                     return choices[choice]
 
         session = JointCaptureSession(dataset_root=args.dataset_root, evidence_root=args.evidence_root,

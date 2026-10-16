@@ -41,6 +41,8 @@ def main(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. A or B')
     p.add_argument('--paired-target-separation',action='store_true',
                    help='Explicit target-pair trial: separate current foreground using both reviewed target references')
+    p.add_argument('--multi-target-separation',action='store_true',
+                   help='Use current instances and all reviewed visible seeds for one stack pick')
     p.add_argument('--transport-age-aligned',action='store_true',
                    help='Explicit target-pair trial: age-align transport actions without skipping the first release')
     p.add_argument('--cycles',type=int,help='Stop after this many close/open command cycles; defaults to the model setting')
@@ -52,6 +54,8 @@ def main(argv=None):
                    help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
     target_mode=args.model=='target-pair'
+    if args.multi_target_separation and (not target_mode or args.paired_target_separation):
+        p.error('--multi-target-separation requires target-pair and excludes --paired-target-separation')
     if args.paired_target_separation and not target_mode:
         p.error('--paired-target-separation requires --model target-pair')
     if args.transport_age_aligned and not target_mode:
@@ -65,6 +69,8 @@ def main(argv=None):
         from lerobot.bamboo_sorting.joint_target_policy import TargetInputSession, is_transport
         from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_FIELDS
         setup_options={'paired_separation':True} if args.paired_target_separation else {}
+        if args.multi_target_separation:
+            setup_options={'multi_separation':True}
         target_seed,target_options=prepare_live_setup(args.target_snapshot,args.target_selections,args.target_id,**setup_options)
         target_session=TargetInputSession(args.target_id)
     elif any((args.target_snapshot,args.target_selections,args.target_id)):
@@ -125,8 +131,10 @@ def main(argv=None):
           'servo_disable_confirmation_timeout_s':1.0,'video_recording':{'enabled':True,'fps':25,'directory':'videos'}}
     if target_mode:
         plan.update(target_id=args.target_id,seed_snapshot_id=target_seed['snapshot_id'],
-            target_selection_mode='paired_foreground' if args.paired_target_separation else 'highest_score',
-            target_mask_source=('fresh foreground separated by both reviewed targets; stop if selected target has no pixels'
+            target_selection_mode=target_seed.get('target_selection_mode', 'highest_score'),
+            target_mask_source=('current instances with visible seeds; merged instances flagged; stop if target has no pixels'
+                                if args.multi_target_separation else
+                                'fresh foreground separated by both reviewed targets; stop if selected target has no pixels'
                                 if args.paired_target_separation else 'fresh segmentation plus reviewed-seed association; stop on failure'),
             target_phase_source='first accepted close command; never prediction',
             segmentation_checkpoint=target_options['segmentation_checkpoint'])
@@ -150,6 +158,8 @@ def main(argv=None):
             print(f'本轮目标：{args.target_id}；一次夹紧→释放后结束。请保持圈选时的竹条摆放和全局相机位置。',flush=True)
             if args.paired_target_separation:
                 print('本轮启用双目标前景分离试验；仅使用当前分割像素，无所选目标像素时停止。',flush=True)
+            if args.multi_target_separation:
+                print('本轮启用多实例可见种子分离；交叉拆分仍可能有归属误差，目标无当前像素时停止。',flush=True)
             if args.transport_age_aligned:
                 print('本轮搬运按观察年龄取步；保留首次释放边界，到达目标后才松爪。',flush=True)
         print('加载模型、连接相机；尚未发送运动。',flush=True)

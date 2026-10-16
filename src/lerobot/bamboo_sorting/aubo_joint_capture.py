@@ -17,6 +17,9 @@ from .c0_batch_capture import (
     C0FormalFrameObserverV1, C0SensorTimestampJournalV1, _write_json_atomic_exclusive,
 )
 from .c0_gripper_capture_journal import C0GripperPendingCaptureJournalV1
+from .joint_stack_metadata import (
+    HUMAN_OUTCOMES, stack_metadata, validate_stack_sequence, validate_target_outcome,
+)
 
 
 def write_joint_json(path, record):
@@ -140,6 +143,8 @@ class JointCaptureSession:
         if not isinstance(metadata, dict) or any(not isinstance(metadata.get(k), str) or not metadata[k].strip()
                                                for k in ("scene_id", identity_field)):
             raise ValueError(f"scene_id and {identity_field} are required")
+        validate_stack_sequence([a for a in self.attempts if a["status"] == "saved_pending_finalize"]
+                                + [{"metadata": metadata}])
         self.active = {"episode_index": self.saved_count, "metadata": copy.deepcopy(metadata),
                        "status": "recording", "observer": JointFrameObserver(self.saved_count)}
         self.attempts.append(self.active)
@@ -166,7 +171,13 @@ class JointCaptureSession:
         attempt = self._require_active(dataset, episode_index)
         attempt["observer"].validate_buffer(dataset)
         outcome = self.outcome_provider(episode_index)
-        if outcome not in ("single_success", "empty", "multi_pick", "slip", "blocked", "uncertain"):
+        if stack_metadata(attempt["metadata"]):
+            if not isinstance(outcome, dict):
+                raise ValueError("stack capture requires separate human target outcomes")
+            attempt["target_outcome"] = validate_target_outcome(outcome.get("target_outcome"))
+            outcome = outcome.get("human_outcome")
+            validate_stack_sequence([a for a in self.attempts if a["status"] == "saved_pending_finalize"] + [attempt])
+        if outcome not in HUMAN_OUTCOMES:
             raise ValueError("invalid human outcome")
         attempt["human_outcome"] = outcome
         path = self.evidence_root / f"episode-{episode_index:04d}.json"

@@ -84,6 +84,20 @@ def test_train_statistics_exclude_failed_and_validation_episodes(tmp_path, monke
         prepare_training_data(train, tmp_path / "te", val, tmp_path / "ve")
 
 
+def test_failed_step_still_groups_entire_pile_for_split_leakage(tmp_path, monkeypatch):
+    def audit(root, evidence, **kwargs):
+        split = Path(root).name
+        episodes = [dict(episode_index=0, scene_id='p-001' if split == 'validation' else 'p-002',
+                         split=split, frames=2, pick_step=1)]
+        if split == 'train':
+            episodes.append(dict(episode_index=1, scene_id='p-001', split=split, frames=2, pick_step=2))
+        return dict(source_dataset_root=str(root), gripper_quality_passed=True,
+                    supervised_candidate_episodes=[0], capture_complete=True, episodes=episodes)
+    monkeypatch.setattr('lerobot.bamboo_sorting.joint_training.audit_joint_dataset', audit)
+    with pytest.raises(ValueError, match='scene leakage'):
+        prepare_training_data(tmp_path/'train', tmp_path/'te', tmp_path/'validation', tmp_path/'ve')
+
+
 def test_metrics_expose_copy_state_failure_despite_high_accuracy():
     states = np.zeros((150, 7))
     target = states.copy()

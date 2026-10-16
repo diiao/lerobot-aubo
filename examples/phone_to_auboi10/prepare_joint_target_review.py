@@ -7,6 +7,7 @@ they do not silently change the training sidecar.
 
 import argparse
 import base64
+import html
 import json
 from pathlib import Path
 import tempfile
@@ -20,6 +21,8 @@ from PIL import Image
 from lerobot.bamboo_sorting.aubo_joint_contract import GRIPPER_INDEX
 from lerobot.bamboo_sorting.joint_target import prepare_target_images
 from lerobot.bamboo_sorting.joint_target_policy import is_transport
+from lerobot.bamboo_sorting.joint_stack_metadata import stack_metadata
+from lerobot.bamboo_sorting.joint_target_separation import MultiStripSeparation, visible_seed_masks
 
 
 def read(path):
@@ -36,6 +39,91 @@ def write_text(path, value):
         handle.write(value)
         temporary = Path(handle.name)
     temporary.replace(path)
+
+
+def prepare_capture_check(dataset, evidence):
+    """Bootstrap the existing review entry from a NEW finalized capture.
+
+    Fully decode both videos and match every saved PTS to Parquet metadata.
+    This is a storage/command audit and keyframe index, not physical review.
+    """
+    from lerobot.bamboo_sorting.aubo_joint_audit import audit_joint_dataset
+    paths = [evidence / name for name in ("capture_check.json", "raw_audit.json", "review.html", "capture_frames")]
+    if any(path.exists() for path in paths):
+        raise FileExistsError("preserve existing capture checks and review; use their current entry")
+    audit = audit_joint_dataset(dataset, evidence)
+    session = read(evidence / "session.json")
+    saved = [r for r in session["attempts"] if r["status"] == "saved_pending_finalize"]
+    metadata = {r["episode_index"]: r for p in sorted((dataset / "meta/episodes").rglob("*.parquet"))
+                for r in pq.read_table(p).to_pylist()}
+    data = pq.read_table(sorted((dataset / "data").glob("chunk-*/*.parquet")),
+                         columns=["episode_index", "frame_index", "timestamp"]).to_pylist()
+    episodes, wanted = [], {}
+    for capture, raw in zip(saved, audit["episodes"], strict=True):
+        ep = capture["episode_index"]
+        close_time, close_frame, approach = None, None, 0
+        clocks = capture["sensor_and_suction_evidence"]["timestamp_journal"]["frames"]
+        for row, clock in zip(capture["joint_frames"], clocks, strict=True):
+            source_time = clock["timestamps"]["global_rgb"]["host_receive_monotonic_s"]
+            approach += not is_transport(source_time, close_time)
+            if row["action"][GRIPPER_INDEX] == 100 and close_time is None:
+                close_time = row["joint_command_trace"]["accepted_monotonic_s"]
+                close_frame = row["frame_index"]
+        samples = sorted({0, raw["frames"]-1, close_frame if close_frame is not None else raw["frames"]//2})
+        episodes.append({**raw, "close_frame": close_frame, "approach_frames": approach,
+                         "transport_frames": raw["frames"]-approach, "sampled_frame_indices": samples})
+        meta = metadata[ep]
+        for name in ("global_rgb", "grasp_rgb"):
+            key = "videos/observation.images." + name
+            video = f'{key}/chunk-{meta[key + "/chunk_index"]:03d}/file-{meta[key + "/file_index"]:03d}.mp4'
+            for row in data:
+                if row["episode_index"] != ep:
+                    continue
+                time = meta[key + "/from_timestamp"] + row["timestamp"]
+                wanted.setdefault(video, []).append((time, ep, row["frame_index"], name, row["frame_index"] in samples))
+    frame_folder = evidence / "capture_frames"
+    frame_folder.mkdir()
+    videos = []
+    for video, expected in wanted.items():
+        expected.sort()
+        count = 0
+        with av.open(str(dataset / video)) as container:
+            for frame in container.decode(video=0):
+                if count >= len(expected):
+                    raise ValueError("video contains frames outside finalized metadata")
+                timestamp, ep, index, name, selected = expected[count]
+                if abs(float(frame.pts * frame.time_base) - timestamp) > 1e-4:
+                    raise ValueError("video PTS differs from saved frame timestamp")
+                if (frame.height, frame.width, 3) != tuple(audit["image_shapes"][name]):
+                    raise ValueError("decoded video resolution differs from contract")
+                if selected:
+                    Image.fromarray(frame.to_ndarray(format="rgb24")).save(frame_folder / f'{ep:04d}_{index:06d}_{name}.png')
+                count += 1
+        if count != len(expected):
+            raise ValueError("incomplete video decode")
+        videos.append({"path": video, "decoded_frames": count, "all_frame_timestamps_match_parquet": True})
+    report = {"schema": "aubo_joint_target_capture_check", "dataset_root": str(dataset),
+              "capture_complete": audit["capture_complete"], "dataset_finalized": True,
+              "raw_contract_and_accepted_command_audit_passed": audit["audit_passed"],
+              "gripper_quality_passed": audit["gripper_quality_passed"],
+              "gripper_quality_issues": audit["gripper_quality_issues"],
+              "episodes": episodes, "videos": videos, "frames": audit["frames"],
+              "stack_summary": audit["stack_summary"], "physical_success_verified": False}
+    cards = []
+    for ep in episodes:
+        cards.append(f'<section id="ep{ep["episode_index"]+1}"><h2>episode {ep["episode_index"]} / '
+                     f'{html.escape(ep["scene_id"])} / {html.escape(ep.get("target_id", ""))}</h2>'
+                     f'<p>{html.escape(json.dumps({k: ep.get(k) for k in ("pick_step", "available_target_count", "human_outcome", "target_outcome")}, ensure_ascii=False))}</p>')
+        for index in ep["sampled_frame_indices"]:
+            for name in ("global_rgb", "grasp_rgb"):
+                cards.append(f'<img width="320" alt="{name} frame {index}" src="capture_frames/{ep["episode_index"]:04d}_{index:06d}_{name}.png">')
+        cards.append('</section>')
+    write(evidence / "raw_audit.json", audit)
+    write(evidence / "capture_check.json", report)
+    write_text(evidence / "review.html", '<!doctype html><meta charset="utf-8"><title>目标示教复核</title>'
+               '<h1>采集存储检查与关键帧</h1><p>控制命令与视频完整不等于抓取成功；物理结果待现场和录像确认。</p>'
+               + ''.join(cards))
+    return report
 
 
 def approach_manifest(dataset, evidence):
@@ -88,6 +176,8 @@ def approach_manifest(dataset, evidence):
         if len(frames) != check[ep]["approach_frames"] or close_frame != check[ep]["close_frame"]:
             raise ValueError("phase recomputation disagrees with capture check")
         episodes.append({"episode_index": ep, "scene_id": fields["scene_id"],
+                         **stack_metadata(fields),
+                         **({"target_outcome": capture["target_outcome"]} if "target_outcome" in capture else {}),
                          "target_id": fields["target_id"], "reviewed": False,
                          "target_description": fields.get("target_description", ""),
                          "placement_reference": fields.get("placement_reference", ""),
@@ -153,7 +243,7 @@ def import_predictions(folder, spec, path, *, single_strip_scenes=False):
             raise ValueError("invalid instance PNG")
         segments = prediction["segments"]
         ids = [s["mask_id"] for s in segments]
-        if len(ids) != len(set(ids)) or any(i <= 0 for i in ids) or not set(np.unique(instance)) <= {0, *ids}:
+        if len(ids) != len(set(ids)) or any(type(i) is not int or not 0 < i <= 65535 for i in ids) or not set(np.unique(instance)) <= {0, *ids}:
             raise ValueError("invalid instance-to-segment mapping")
         for s in segments:
             if s["class_id"] not in (0, 1) or int((instance == s["mask_id"]).sum()) != s["pixels"]:
@@ -165,6 +255,25 @@ def import_predictions(folder, spec, path, *, single_strip_scenes=False):
             raise ValueError("empty selected instance")
         pending.append((row, mask, prediction))
     for row, mask, prediction in pending:
+        instance = np.array(Image.open(path.parent / prediction["instance_map"]))
+        (folder / "instances").mkdir(exist_ok=True)
+        row["instance_map"] = f"instances/{row['sample_id']}.png"
+        Image.fromarray(instance.astype(np.uint16)).save(folder / row["instance_map"])
+        # RGB ID encoding lets a file:// review page select exact pixels with
+        # a hidden canvas, including holes and disconnected visible regions.
+        ids_rgb = np.zeros((480, 640, 3), np.uint8)
+        ids_rgb[..., 0] = instance % 256
+        ids_rgb[..., 1] = instance // 256
+        row["instance_ids_image"] = f"instances/{row['sample_id']}_ids.png"
+        Image.fromarray(ids_rgb).save(folder / row["instance_ids_image"])
+        if any(row is ep["frames"][0] for ep in spec["episodes"]):
+            row["instance_ids_base64"] = base64.b64encode((folder / row["instance_ids_image"]).read_bytes()).decode()
+        preview = np.zeros((480, 640, 4), np.uint8)
+        colors = [(255, 90, 90), (0, 190, 255), (255, 200, 0), (130, 90, 255), (0, 220, 120)]
+        for i, segment in enumerate(prediction["segments"]):
+            preview[instance == segment["mask_id"]] = [*colors[i % len(colors)], 130]
+        row["candidates_image"] = f"instances/{row['sample_id']}_candidates.png"
+        Image.fromarray(preview).save(folder / row["candidates_image"])
         row["prediction_segments"] = prediction["segments"]
         row["prediction_source"] = str(path.resolve())
         row["draft_selection"] = "sole_candidate_not_identity_proof" if mask is not None else "human_selection_required"
@@ -174,6 +283,69 @@ def import_predictions(folder, spec, path, *, single_strip_scenes=False):
             Image.fromarray(mask.astype(np.uint8) * 255).save(folder / row["mask_path"])
             row["status"] = "visible"
             row["selected_instance_id"] = prediction["segments"][0]["mask_id"]
+    write(folder / "annotations.json", spec)
+
+
+def import_seeds(folder, spec, path):
+    decisions = read(path)
+    if (decisions.get("schema") != "aubo_joint_target_review_decisions"
+            or decisions.get("source_dataset_root") != spec["source_dataset_root"]):
+        raise ValueError("review source mismatch")
+    by_episode = {str(ep["episode_index"]): ep for ep in spec["episodes"]}
+    pending = []
+    for key, selection in decisions.get("seeds", {}).items():
+        if key not in by_episode:
+            raise ValueError("unknown seed episode")
+        ep = by_episode[key]
+        first = ep["frames"][0]
+        if (selection.get("frame_id") != first["frame_id"] or selection.get("human_reviewed") is not True
+                or not selection.get("reviewed_at")):
+            raise ValueError("explicit seed review bound to first approach frame required")
+        if ep.get("visible_seeds") or any(f["reviewed"] or (folder / f["mask_path"]).exists() for f in ep["frames"]):
+            raise ValueError("preserve existing seeds and target masks; edit individual masks through review")
+        instances = np.array(Image.open(folder / first["instance_map"])) if "instance_map" in first else None
+        masks = visible_seed_masks(selection.get("targets", []), instances)
+        if ep["target_id"] not in masks:
+            raise ValueError("selected target absent from visible seeds")
+        if len(masks) < ep.get("available_target_count", 1):
+            raise ValueError("visible seeds cannot be fewer than available upper targets")
+        pending.append((ep, selection))
+    if not pending:
+        raise ValueError("no seed selections in export")
+    for ep, selection in pending:
+        ep["visible_seeds"] = selection
+    write(folder / "annotations.json", spec)
+
+
+def separate_predictions(folder, spec):
+    """Generate unreviewed masks using the same separator as live preparation."""
+    jobs = []
+    for ep in spec["episodes"]:
+        selection = ep.get("visible_seeds")
+        if not selection:
+            raise ValueError("every episode needs explicit visible seeds before separation")
+        first = ep["frames"][0]
+        for row in ep["frames"]:
+            if "instance_map" not in row:
+                raise ValueError("import all same-frame predictions first")
+            if row["reviewed"] or (folder / row["mask_path"]).exists():
+                raise ValueError("separation must not overwrite existing masks or review")
+        instance = np.array(Image.open(folder / first["instance_map"]))
+        jobs.append((ep, visible_seed_masks(selection["targets"], instance)))
+    for ep, seeds in jobs:
+        separator = MultiStripSeparation(seeds)
+        for index, row in enumerate(ep["frames"]):
+            instances = np.array(Image.open(folder / row["instance_map"]))
+            masks, evidence = separator.step(index, instances, row["prediction_segments"])
+            mask = masks[ep["target_id"]]
+            row.update(separation=evidence, reviewed=False, status="visible" if mask.any() else "missing",
+                       draft_selection="multi_instance_visible_seed_support")
+            if mask.any():
+                Image.fromarray(mask.astype(np.uint8) * 255).save(folder / row["mask_path"])
+            if evidence["merged_instances"]:
+                row["review_issue"] = "交叉／合并实例按可见种子拆分：请核对像素归属，修正或明确登记可接受误差"
+        ep["reviewed"] = False
+    spec["target_training_ready"] = False
     write(folder / "annotations.json", spec)
 
 
@@ -195,6 +367,10 @@ def import_decisions(folder, spec, path):
             raise ValueError("review frame identity/revision mismatch; reopen current page")
         mask = None
         polygons = decision.get("polygons", [])
+        limitation = decision.get("accepted_limitation")
+        if limitation and (not isinstance(limitation, str) or not limitation.strip() or polygons
+                           or decision.get("reviewed") is True or not decision.get("reviewed_at")):
+            raise ValueError("accept a limitation explicitly on an unchanged draft, then review its contour")
         if polygons:
             mask = np.zeros((480, 640), np.uint8)
             for polygon in polygons:
@@ -224,6 +400,10 @@ def import_decisions(folder, spec, path):
             Image.fromarray(mask).save(target)
             row["status"] = "visible"
         row.setdefault("review_history", []).append(decision)
+        if decision.get("accepted_limitation"):
+            row.setdefault("accepted_annotation_limitations", []).append({
+                "issue": decision["accepted_limitation"], "reviewed_at": decision["reviewed_at"],
+                "source": "explicit_user_limitation_acceptance", "mask_modified": False})
         row["reviewed"] = decision.get("reviewed") is True
         row["annotation_revision"] = row.get("annotation_revision", 0) + 1
         row["review_issue"] = decision.get("issue", "")
@@ -245,7 +425,7 @@ def render(evidence, folder, spec):
                 row["flags"].append(row["review_issue"])
             for limitation in row.get("accepted_annotation_limitations", []):
                 row["flags"].append("已接受误差（未修正）：" + limitation["issue"])
-            if ep["close_frame"] - row["frame_index"] <= 50:
+            if ep["close_frame"] is not None and ep["close_frame"] - row["frame_index"] <= 50:
                 row["flags"].append("闭合前2秒：检查遮挡")
             path = folder / row["mask_path"]
             if not path.exists():
@@ -323,10 +503,19 @@ def verify_dataset(dataset, evidence, folder, spec):
     capture_check = read(evidence / "capture_check.json")
     if not capture_check["raw_contract_and_accepted_command_audit_passed"]:
         raise ValueError("existing raw capture audit must have passed")
+    selected_episodes = spec["episodes"]
+    stack_audit = None
+    if any("pick_step" in ep for ep in selected_episodes):
+        from lerobot.bamboo_sorting.aubo_joint_audit import audit_joint_dataset
+        stack_audit = audit_joint_dataset(dataset, evidence)
+        selected_episodes = [ep for ep in selected_episodes
+                             if ep["episode_index"] in stack_audit["supervised_candidate_episodes"]]
+        if not selected_episodes:
+            raise ValueError("no successful target demonstrations available for interface acceptance")
     record = {"root": str(dataset), "source_dataset_root": str(dataset),
               "evidence_root": str(evidence),
-              "episodes": [e["episode_index"] for e in spec["episodes"]],
-              "frames": sum(e["total_frames"] for e in spec["episodes"])}
+              "episodes": [e["episode_index"] for e in selected_episodes],
+              "frames": sum(e["total_frames"] for e in selected_episodes)}
     prepared = prepare_target_source(record, folder / "annotations.json")
     view = load_prepared_dataset(prepared)
 
@@ -407,10 +596,15 @@ def verify_dataset(dataset, evidence, folder, spec):
         if index % 100 == 0:
             print(f"checked {index + 1}/{len(view)}: episode {ep}, frame {fi}", flush=True)
     for e in capture_check["episodes"]:
+        if e["episode_index"] not in counts:
+            continue
         if counts[e["episode_index"]]["approach"] != e["approach_frames"]:
             raise ValueError("phase count differs from capture evidence")
     result = {"schema": "aubo_joint_target_dataset_acceptance", "passed": True,
               "episodes": list(counts.values()), "frames": len(view),
+              "excluded_episode_indices": [ep["episode_index"] for ep in spec["episodes"]
+                                           if ep["episode_index"] not in counts],
+              "stack_summary": stack_audit["stack_summary"] if stack_audit else None,
               "source_dataset_root": str(dataset), "annotation_path": str(folder / "annotations.json"),
               "prepare_target_source_passed": True, "real_lerobot_dataset_backend": "pyav",
               "all_approach_images_match_annotation_source": True,
@@ -431,7 +625,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path, default=Path("datasets/joint_target_pilot"))
     parser.add_argument("--evidence-root", type=Path, default=Path("artifacts/joint_target_pilot"))
-    parser.add_argument("--stage", choices=("prepare", "render", "import-predictions", "import-review", "verify"), default="prepare")
+    parser.add_argument("--stage", choices=("capture-check", "prepare", "render", "import-predictions", "import-seeds", "separate", "import-review", "verify"), default="prepare")
     parser.add_argument("--predictions", type=Path)
     parser.add_argument("--single-strip-scenes", action="store_true",
                         help="Only for known single-strip scenes: use a sole detection as an unreviewed draft; never use for A/B pairs")
@@ -439,6 +633,9 @@ def main():
     args = parser.parse_args()
     dataset, evidence = args.dataset_root.resolve(), args.evidence_root.resolve()
     folder = evidence / "target_annotations"
+    if args.stage == "capture-check":
+        print(json.dumps(prepare_capture_check(dataset, evidence), ensure_ascii=False, indent=2))
+        return
     if args.stage == "prepare":
         if folder.exists():
             raise FileExistsError(f"preserve existing annotation work: {folder}")
@@ -477,6 +674,12 @@ def main():
             if args.decisions is None:
                 parser.error("--decisions required")
             import_decisions(folder, spec, args.decisions.resolve())
+        if args.stage == "import-seeds":
+            if args.decisions is None:
+                parser.error("--decisions required")
+            import_seeds(folder, spec, args.decisions.resolve())
+        if args.stage == "separate":
+            separate_predictions(folder, spec)
         if args.stage == "verify":
             verify_dataset(dataset, evidence, folder, spec)
             return

@@ -58,8 +58,11 @@ def test_mask_review_requires_snapshot_identity_and_nonoverlap(monkeypatch):
     ('highest_score','matched',False),
     ('paired_foreground','matched',False),
 ])
-def test_paired_pipe_rejects_old_service_fallback(monkeypatch,tmp_path,actual_mode,status,accepted):
+@pytest.mark.parametrize('requested_mode', ['paired_foreground', 'multi_foreground'])
+def test_paired_pipe_rejects_old_service_fallback(monkeypatch,tmp_path,actual_mode,status,accepted,requested_mode):
     load_shadow(monkeypatch)
+    if actual_mode == 'paired_foreground':
+        actual_mode = requested_mode
     import run_joint_trial as trial
     from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
     from lerobot.bamboo_sorting.joint_target_runtime import encode_mask
@@ -79,7 +82,7 @@ def test_paired_pipe_rejects_old_service_fallback(monkeypatch,tmp_path,actual_mo
             target_selection_mode=actual_mode))
     messages=iter([ready,response]);monkeypatch.setattr(trial.InferencePipe,'receive',lambda self,timeout:next(messages))
     pipe=trial.InferencePipe(tmp_path,target_conditioned=True,expected_sha256='hash',return_action_chunk=True,
-        live_target_seed=dict(snapshot_id='s',target_selection_mode='paired_foreground'),segmentation_checkpoint='seg')
+        live_target_seed=dict(snapshot_id='s',target_selection_mode=requested_mode),segmentation_checkpoint='seg')
     try:
         images={k:np.zeros((480,640,3),np.uint8) for k in ('global_rgb','grasp_rgb')}
         if accepted:

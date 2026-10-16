@@ -89,6 +89,27 @@ def test_complete_episode_training_runtime_parity_and_action_padding(tmp_path):
     assert TargetInputSession('next_strip').accepted_close_time is None
 
 
+def test_stack_target_metadata_bound_to_capture_and_wrong_target_excluded(tmp_path):
+    record, path, _ = bound_capture(tmp_path)
+    session_path = tmp_path/'evidence/session.json'
+    session = json.loads(session_path.read_text())
+    capture = session['attempts'][0]
+    capture['metadata'].update(pick_step=2, available_target_count=2)
+    capture['target_outcome'] = dict(target_matched=True, held=True, single_strip=True, delivered=True,
+                                     neighbor_disturbed=False)
+    session_path.write_text(json.dumps(session))
+    spec = json.loads(path.read_text())
+    with pytest.raises(ValueError, match='stack metadata'):
+        prepare_target_source(record, path)
+    spec['episodes'][0].update(pick_step=2, available_target_count=2)
+    path.write_text(json.dumps(spec))
+    assert len(prepare_target_source(record, path)['target_frames']) == 5
+    capture['target_outcome']['target_matched'] = None
+    session_path.write_text(json.dumps(session))
+    with pytest.raises(ValueError, match='successful target'):
+        prepare_target_source(record, path)
+
+
 @pytest.mark.parametrize('damage', ['missing', 'wrong_frame', 'wrong_target', 'draft', 'source'])
 def test_target_preflight_rejects_unbound_or_unreviewed_masks(tmp_path, damage):
     record, path, _ = bound_capture(tmp_path)

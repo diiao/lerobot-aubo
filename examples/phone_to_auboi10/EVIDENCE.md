@@ -1,6 +1,6 @@
 # 证据与历史索引
 
-更新：2026-10-11。操作方法与后续计划统一见[项目手册](README.md)；本文只维护结果摘要、原始证据路径和历史索引。
+更新：2026-10-16。操作方法与后续计划统一见[项目手册](README.md)；本文只维护结果摘要、原始证据路径和历史索引。
 部署记录是当时快照，不代表远端当前状态。
 
 2026-10-02文档与旧功能的删除范围、保留理由及验证见[清理记录](../../docs/AUBO_CLEANUP_2026-10-02.md)。
@@ -9,6 +9,7 @@
 
 ## 目录
 
+- [三根堆叠软件准备](#三根堆叠软件准备)
 - [动作模型与部署](#当前双摆放模型)
 - [现场抓放记录](#最新三轮现场记录)
 - [目标条件模型A/B现场复核](#目标条件模型最新ab现场结果与b失败复核)（含[重新摆放与斜条J6欠转](#重新摆放后的指定ab抓取)）
@@ -18,6 +19,22 @@
 - [相机与环境记录](#相机与环境记录)
 - [文档整理与历史原文](#文档整理与历史原文)
 - [更早历史与证据](#历史原文与证据)
+
+## 三根堆叠软件准备
+
+2026-10-16按更新后的主线完成本地软件准备；操作顺序、字段和能力边界统一见[项目手册](README.md#三根堆叠目标示教方案)。本轮没有三根堆叠实采、冻结模型推理、真实训练、远端部署或机械臂动作，也未改写原始实验、录像、模型或已接受标注。
+
+- **采集与数据**：新增堆内序号、可选上层条数和五项独立人工结果。假设备验证同堆六次尝试保存（交替失败与成功）、重录不占保存序号、失败／未知保留；实际LeRobot/PyAV合成视频往返覆盖采后检查、接近帧提取及训练／运行输入一致。抓错目标即使原菜单为`single_success`也不进入成功目标示教候选；按整堆检查训练／验证泄漏，包含被排除的失败步骤。
+- **分离与运行接口**：新多实例可见种子方法与旧双根方法并存；合成测试覆盖交叉、遮挡缺口、实例编号变换、小位移、合并实例、单根消失和未知前景。离线标注与实时准备输出逐像素一致；单次运行计划覆盖1／2／3根剩余条，通信层拒绝请求新模式却返回旧模式的结果。这些不证明真实堆叠像素身份或物理抓放。
+- **腕部工具**：清单取帧和时间对齐已实现。首次24条草稿经用户复核发现右夹指误识别（`sample-0010`的−6.7°／−107像素无效），成功B被夹指颜色错误排除；旧数字不作诊断结论。现增加固定张开夹指遮罩、候选主轴跨度大于ROI高度一半、适用于较宽竹条的形状门槛，橙红色显示排除区。同帧重测重点叠加图中拟合轴落在竹条上；六张原问题帧及各来源首末抽样图已由助手查看，不替代用户验收或逐帧定量真值。
+- **腕部覆盖与草稿**：从78条已接受首帧目标掩码重新计算起始倾角，抽取全部6条−30°～−15°示教、6条中等倾角及全部2条±5°内直条；每条闭合前候选窗口等间隔取样。共84个专家画面＋失败B 4帧＋成功B 3帧，合计91帧／167条时间窗记录，均为程序判有效、未人工接受。旧同帧成功率筛选为0／3、失败4／4，新两组为3／3和4／4；小样本且前置时间筛选仍存在，不能宣称不存在选择偏差。按不同画面统计有效率，超过20个百分点差距提示风险。[固定复核入口](../../artifacts/joint_target_live_preparation/ab_outcome_review/review.html#wrist-angle)链接新叠加图与[修订检查记录](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/measurement_revision_check.json)，包含旧新比较、分层来源、可视检查范围。旧报告保留、旧页面标为失效，回归入口拒绝旧颜色单筛选报告；未做真实回归。
+- **腕部完整序列与误差准备**：后续按“先分布、再误差、暂不回归”扩展：图像取样不再依赖未来动作窗口，6条斜条示教取完整闭合前记录，19轮具备录像和侧录的实机按配置逐轮保留，包含中止及启动报错轮。0.5秒间隔共643帧，专家155帧中44帧、实机488帧中138帧通过程序条件；无效帧保留，独立单位是6条示教／19轮实机，其中15轮有程序可测角度。未确认首次可见和真实下探边界。程序草稿范围专家−22.08°～15.97°、实机−12.91°～23.23°，这些极值包含早期视角／潜在邻条身份问题，不用于共同状态或覆盖不足结论。助手查看了6条示教与最新5轮各自最大绝对角度的叠加图及分布图；没有逐帧身份或真值验收。
+- **人工参考与边界**：[分布复核入口](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/distribution_review/review.html)链接20帧两点标注页（15个来源、4帧程序无效），先看原图，不显示程序拟合结果。人工标注尚未导入，真实误差中位数／最大值均未知。新独立工具支持完整样本导入、无向轴误差计算、不可测记录保留和误差尺度对照，不执行回归。验证见[本次JUnit](../../artifacts/joint_stack_preparation/wrist_distribution_tests.xml)：16项通过，含无预测／无闭合／无未来动作仍取帧、独立来源计数、无效帧保留、合成2°人工差值及完整导出要求。PNG／PDF使用系统现有Matplotlib独立绘制，未改项目依赖。浏览器清单仍为空，两个标注页面的实际点选验收未完成；未提交、试采、推理或训练。
+- **跳变敏感性检查**：[逐帧与统计对照](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/distribution_review/jump_sensitivity.html)及同目录`jump_sensitivity.json`、`jump_sensitivity.py`保存复现依据。按手册的排查门槛得到17对／27个端点（专家8、实机19），助手查看全部27张叠加图；紫线大多沿可见木条，若干B序列前后在不同可见木条区域间切换，不能仅凭腕部图确认目标身份或认定测错。暂时排除后专家36帧、范围−1.69°～15.97°、帧中位数5.62°；实机119帧、范围−6.88°～23.10°、帧中位数12.30°。原始44／138帧和所有无效帧、来源清单不改；6条示教／15轮实机仍有保留角度，数值重叠仍存在，不代表共同状态证据。JSON另列15°／20°门槛对照、逐来源统计和每5°区间独立来源名单。人工两点结果尚未导入；未作回归或零点重设。本次仅增加离线分析产物和文档，未改采集、标注或控制代码；运行脚本的帧数断言、报告重算与本地链接检查通过，不重跑无关软件测试。
+- **验证**：首次软件准备203项相关测试通过，另2项真实数据集后端／假设备往返测试通过，合计205项；Python语法和`git diff --check`通过。前203项记录见[JUnit结果](../../artifacts/joint_stack_preparation/software_tests.xml)，范围及两个单独往返测试见[验证摘要](../../artifacts/joint_stack_preparation/verification.json)。后两项曾因默认Hugging Face数据缓存锁目录在沙箱内只读而失败，获权限后重跑通过；没有改共享环境配置。清单生成器与6次尝试补充后，重跑5个相关测试文件，84项通过（本次不重跑2项后端往返）；页面渲染及自定义时间窗边界补充后再跑腕部8项通过，不与84项重复相加。[补充JUnit](../../artifacts/joint_stack_preparation/wrist_followup_tests.xml)及原验证摘要中的`wrist_followup`记录该次范围。夹指误识别修正后，腕部11项测试通过，覆盖夹指与竹条同色、较宽竹条、短碎片、倾角层完整性、重复时间窗去重、分组有效率警告和旧报告拒绝；[本次JUnit](../../artifacts/joint_stack_preparation/wrist_gripper_mask_tests.xml)。本次未改采集或分离运行代码，不重跑其测试。
+- **页面边界**：当前会话的浏览器控制清单为空，未完成真实浏览器的点选、导出和导入交互验收。Python导出／导入与像素一致性测试通过，不替代浏览器验收。合成预览：[三根种子选择](../../artifacts/joint_stack_preparation/synthetic_review/review.html)、[腕部角度](../../artifacts/joint_stack_preparation/synthetic_wrist_review/review.html)；预览不含真实实验复核结论。
+
+修改前文件副本保存在`/tmp/aubo-stack-software-before-6uskjdkr/`，包含Claude本轮已经修改的文档，可用于按文件回退本轮软件改动；`/tmp`不是长期备份。本次清单生成器补充前副本在`/tmp/aubo-wrist-followup-before-to4cqaah/`，包含相应未提交文件和原复核入口。夹指遮罩修正前副本位于`/tmp/aubo-wrist-mask-before-h179tmpv/`。完整分布流程修改前副本在`/tmp/aubo-wrist-distribution-before-noybhoiw/`。新增文件及本轮差异以工作区为准，不用`git reset`覆盖Claude的未提交成果。改动尚未提交或推送；`artifacts/`仍由Git忽略。
 
 ## 当前双摆放模型
 
@@ -41,7 +58,7 @@
 - [最新三轮结果](../../artifacts/aubo_joint_both_orders_20260928/three_scene_review_20260928/RESULTS.md)：场景标签、指令周期和录像取帧。
 - [闭合前反馈修正](../../artifacts/aubo_joint_both_orders_20260928/preio_replan_review_20260928/RESULTS.md)：旧版本回归失败与修正证据。
 - `age_aligned_approach_candidate_20260928/`：动作取步方案与部署记录。
-- `onsite_second_grasp_review_20260928/`、`second_contact_candidate_20260928/`：旧第二根失败诊断；后者的高度补偿补丁当时被拒绝，未作为当前运行实现。后续新讨论的[一般堆叠下探高度修正](README.md#一般堆叠的下探高度修正方案)尚未实现，不代表恢复该旧补丁或已有验证结果。
+- `onsite_second_grasp_review_20260928/`、`second_contact_candidate_20260928/`：旧第二根失败诊断；后者的高度补偿补丁当时被拒绝，未作为当前运行实现。后来规划的一般堆叠下探高度修正已于2026-10-15取消，从未实现，见[分阶段路线](README.md#分阶段路线)。
 - `full_chunk_replay_run01/`：保存观测的离线推理，已有结果无需因文档清理重跑。
 
 ## 最新三轮现场记录
@@ -573,7 +590,7 @@ t-023～t-033的最后三处训练录制目录已完成采后检查，原录制�
 
 欠转同时存在于B失败轮和成功轮，不是成败的唯一分界；更合理的解释是它压缩了横向对中的容差，成功轮竹条更居中。图像角度是斜视投影、不是标定的实物角度，J6也不等于世界偏航；专家趋势是经验关系，不是正确抓取真值，不能据此设置固定J6偏置（残差随倾角变化）。结果为[j6_residual_review.json](../../artifacts/joint_target_live_preparation/ab_outcome_review/reposition_review/j6_residual_review.json)，同目录`j6_residual_review.py`可复现（只读、拒绝覆盖）；本次未加载模型、未连接硬件、未改原始记录，文档修改前副本为同目录`*.before_j6_residual`。
 
-当前优先项是固定模型和控制参数，以中心固定的角度序列和角度固定的横向位移序列分离两者影响，逐次记录J6残差、腕部画面中竹条相对夹指的偏移／夹角、闭合前推移及物理结果；方案见[项目手册](README.md#目标条件模型单次真机试验)。不由单次成败直接恢复关联门限、固定旋转腕部、强制延迟闭合或启动重训。固定入口仍为[review.html](../../artifacts/joint_target_live_preparation/ab_outcome_review/review.html#reposition-b-shift)，最初A／B记录与全部失败B掩码见[review.json](../../artifacts/joint_target_live_preparation/ab_outcome_review/reposition_review/review.json)，新增对照、来源帧时间和可复现脚本集中于[B_left_shift_review.json](../../artifacts/joint_target_live_preparation/ab_outcome_review/reposition_review/B_left_shift_review.json)及同目录`compare_B_shift.py`。该对照仅分析已有日志与录像、更新文档，未改算法或启动硬件／GPU推理／训练。
+（历史计划，2026-10-15取消：A／B实验结束，遗留J6问题改用[腕部角度离线诊断](README.md#斜条j6欠转的腕部角度诊断)）当时的优先项是固定模型和控制参数，以中心固定的角度序列和角度固定的横向位移序列分离两者影响，逐次记录J6残差、腕部画面中竹条相对夹指的偏移／夹角、闭合前推移及物理结果；方案见[项目手册](README.md#目标条件模型单次真机试验)。不由单次成败直接恢复关联门限、固定旋转腕部、强制延迟闭合或启动重训。固定入口仍为[review.html](../../artifacts/joint_target_live_preparation/ab_outcome_review/review.html#reposition-b-shift)，最初A／B记录与全部失败B掩码见[review.json](../../artifacts/joint_target_live_preparation/ab_outcome_review/reposition_review/review.json)，新增对照、来源帧时间和可复现脚本集中于[B_left_shift_review.json](../../artifacts/joint_target_live_preparation/ab_outcome_review/reposition_review/B_left_shift_review.json)及同目录`compare_B_shift.py`。该对照仅分析已有日志与录像、更新文档，未改算法或启动硬件／GPU推理／训练。
 
 ### 旧录像目标输入诊断
 

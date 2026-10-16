@@ -212,6 +212,33 @@ def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatc
     assert '/paired_foreground/' not in default_options['inference_script']
 
 
+@pytest.mark.parametrize('count', [1, 2, 3])
+def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch, capsys, tmp_path, count):
+    m = load_entry(monkeypatch)
+    import joint_target_live_setup
+    from lerobot.bamboo_sorting.joint_target_runtime import FreshTargetInputs
+    def forbidden(*a, **kw): raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m, 'ReadOnlyStation', forbidden)
+    monkeypatch.setattr(m, 'InferencePipe', forbidden)
+    (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',
+                                                         snapshot_id='stack', execution_eligible=False)))
+    targets = [dict(target_id=f's-{i+1:03}', polygons=[[[100+i*100,100], [112+i*100,100],
+                                                     [112+i*100,400], [100+i*100,400]]]) for i in range(count)]
+    labels = tmp_path/'labels.json'
+    labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection', snapshot_id='stack',
+                                     human_reviewed=True, targets=targets)))
+    seed, options = joint_target_live_setup.prepare_live_setup(tmp_path, labels, 's-001', multi_separation=True)
+    assert '/multi_foreground/' in options['inference_script']
+    FreshTargetInputs(seed, forbidden)  # No segmenter call at construction, including last remaining strip.
+    args = ['--model', 'target-pair', '--target-snapshot', str(tmp_path), '--target-selections', str(labels),
+            '--target-id', 's-001', '--multi-target-separation']
+    assert m.main(args) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan['target_selection_mode'] == 'multi_foreground' and plan['requested_suction_cycles'] == 1
+    with pytest.raises(SystemExit):
+        m.main([*args, '--paired-target-separation'])
+
+
 @pytest.mark.parametrize('model,expected_cycles',[('legacy-single',1),('mixed-double',2),('mixed-both-orders',2)])
 def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
     m=load_entry(monkeypatch)

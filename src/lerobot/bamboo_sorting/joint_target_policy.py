@@ -14,6 +14,7 @@ import numpy as np
 from .aubo_joint_contract import GRIPPER_INDEX, joint_command
 from .joint_target import TARGET_IMAGE_KEY, prepare_target_images, target_contract_record
 from .smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+from .joint_stack_metadata import stack_metadata, successful_target_outcome
 
 
 def target_policy_contract_record():
@@ -120,6 +121,10 @@ def prepare_target_source(record, annotation_path):
     prepared = []
     for ep in record['episodes']:
         capture, labels = saved[ep], annotations.get(ep, {})
+        stack = stack_metadata(capture['metadata'])
+        if stack and (any(labels.get(k) != v for k, v in stack.items())
+                      or not successful_target_outcome(capture.get('target_outcome'))):
+            raise ValueError(f'episode {ep}: stack metadata or successful target outcome mismatch')
         target = capture['metadata'].get('target_id')
         if (not target or labels.get('target_id') != target
                 or labels.get('scene_id') != capture['metadata']['scene_id']

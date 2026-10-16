@@ -77,3 +77,56 @@ def test_saved_issue_cannot_be_bypassed_by_omitting_issue_from_review(tmp_path):
  with pytest.raises(ValueError,match='explicit review'):
   m.import_decisions(tmp_path,s,path)
  assert not row['reviewed']
+
+
+def test_multi_seed_import_separation_review_and_runtime_share_pixels(tmp_path):
+ from tests.bamboo_sorting.test_joint_target_separation import crossing_seeds, instance_map
+ from lerobot.bamboo_sorting.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
+ masks=crossing_seeds();instances,segments=instance_map(masks)
+ for segment in segments:segment['pixels']=int((instances==segment['mask_id']).sum())
+ s=setup(tmp_path,2);ep=s['episodes'][0];ep.update(target_id='s-002',pick_step=1,available_target_count=2)
+ for row in ep['frames']:row['target_id']='s-002'
+ p=prediction(tmp_path,s,[instances,instances],[segments,segments]);m.import_predictions(tmp_path,s,p)
+ assert ep['frames'][0]['instance_ids_base64']
+ selection=dict(frame_id=ep['frames'][0]['frame_id'],human_reviewed=True,reviewed_at='synthetic',
+                targets=[dict(target_id=t,instance_ids=[i*7]) for i,t in enumerate(masks,1)])
+ export=tmp_path/'seed-decisions.json'
+ m.write(export,dict(schema='aubo_joint_target_review_decisions',source_dataset_root='/example',seeds={'0':selection}))
+ m.import_seeds(tmp_path,s,export);m.separate_predictions(tmp_path,s)
+ assert not ep['reviewed'] and all(not f['reviewed'] for f in ep['frames'])
+ seed=dict(schema='joint_target_live_seed',snapshot_id='synthetic',human_reviewed=True,target_id='s-002',
+           target_selection_mode='multi_foreground',mask_png=encode_mask(masks['s-002']),
+           excluded_mask_png=encode_mask(masks['s-001']|masks['s-003']),
+           visible_targets=[dict(target_id=t,mask_png=encode_mask(mask)) for t,mask in masks.items()])
+ runtime=FreshTargetInputs(seed,lambda rgb:(instances,segments))
+ images={'observation.images.'+name:np.zeros((480,640,3),np.uint8) for name in ('global_rgb','grasp_rgb')}
+ for i,row in enumerate(ep['frames']):
+  _,evidence=runtime.prepare(dict(**images,task='test',**{'observation.state':np.zeros(7)}),
+                             dict(frame_id=str(i),target_id='s-002',phase='approach'))
+  np.testing.assert_array_equal(np.array(Image.open(tmp_path/row['mask_path']))>0,decode_mask(evidence['mask_png']))
+ with pytest.raises(ValueError,match='overwrite'):m.separate_predictions(tmp_path,s)
+
+
+def test_seed_selection_bound_to_first_frame_and_includes_selected_target(tmp_path):
+ s=setup(tmp_path);p=tmp_path/'decisions.json'
+ selection=dict(frame_id='wrong',human_reviewed=True,reviewed_at='synthetic',
+                targets=[dict(target_id='strip_001',polygons=[[[10,10],[20,10],[20,30]]])])
+ d=dict(schema='aubo_joint_target_review_decisions',source_dataset_root='/example',seeds={'0':selection})
+ m.write(p,d)
+ with pytest.raises(ValueError,match='first approach'):m.import_seeds(tmp_path,s,p)
+ selection['frame_id']='0/global_rgb/0';selection['targets'][0]['target_id']='other';m.write(p,d)
+ with pytest.raises(ValueError,match='selected target'):m.import_seeds(tmp_path,s,p)
+
+
+def test_accepted_crossing_limitation_keeps_mask_and_still_requires_review(tmp_path):
+ s=setup(tmp_path);row=s['episodes'][0]['frames'][0]
+ row.update(status='visible',review_issue='crossing boundary uncertain')
+ mask=np.zeros((480,640),np.uint8);mask[10:30,10:30]=255
+ Image.fromarray(mask).save(tmp_path/row['mask_path']);before=(tmp_path/row['mask_path']).read_bytes()
+ decision=dict(frame_id=row['frame_id'],episode_index=0,frame_index=0,annotation_revision=0,reviewed=False,
+               issue='',accepted_limitation='small crossing boundary error accepted',reviewed_at='synthetic-test')
+ p=tmp_path/'decisions.json'
+ m.write(p,dict(schema='aubo_joint_target_review_decisions',source_dataset_root='/example',frames={row['frame_id']:decision}))
+ m.import_decisions(tmp_path,s,p)
+ assert (tmp_path/row['mask_path']).read_bytes()==before
+ assert not row['reviewed'] and row['accepted_annotation_limitations'][0]['mask_modified'] is False

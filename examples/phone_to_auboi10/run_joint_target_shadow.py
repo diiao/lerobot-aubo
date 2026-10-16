@@ -60,13 +60,16 @@ def capture(args):
         station.close()
 
 
-def reviewed_masks(snapshot, labels):
+def reviewed_masks(snapshot, labels, *, allow_multiple=False):
     import cv2
     import numpy as np
     if (labels.get('schema')!='joint_target_shadow_selection' or labels.get('snapshot_id')!=snapshot['snapshot_id']
             or labels.get('human_reviewed') is not True):
         raise ValueError('explicit user review bound to this snapshot required')
     targets=labels.get('targets',[])
+    if allow_multiple:
+        from lerobot.bamboo_sorting.joint_target_separation import visible_seed_masks
+        return list(visible_seed_masks(targets).items())
     if len(targets)!=2 or len({t.get('target_id') for t in targets})!=2:
         raise ValueError('two distinct targets required')
     masks=[]

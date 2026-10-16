@@ -107,7 +107,8 @@ def test_suction_coordinate_receives_gradient_and_padding_does_not():
     torch.testing.assert_close(restored[..., 7:], torch.full_like(restored[..., 7:], .5))
 
 
-def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_path):
+@pytest.mark.parametrize("stack_mode", [False, True])
+def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_path, stack_mode):
     """Real record loop, normalization stats and video files; fake hardware only."""
     import av
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -123,6 +124,11 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     from tests.scripts.test_lerobot_record_observer import FakeTeleop
 
     robot, session, entry = _robot(), _session(tmp_path), _entry()
+    if stack_mode:
+        session.prepare_episode = lambda i: dict(scene_id='p-001', target_id='s-001', split='train',
+                                                 pick_step=1, available_target_count=2)
+        session.outcome_provider = lambda i: dict(human_outcome='single_success', target_outcome=dict(
+            target_matched=True, held=True, single_strip=True, delivered=True, neighbor_disturbed=False))
     del robot._control_softpaws_based_on_gripper  # Exercise the actual driver suction implementation.
     robot.is_suction_on = False
     robot.suction_on_pin, robot.suction_off_pin = 2, 3
@@ -192,3 +198,35 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     assert relocated["gripper_quality_passed"] and relocated["source_dataset_root"] == str(dataset.root)
     with pytest.raises(ValueError, match="matching finalized"):
         audit_joint_dataset(moved, tmp_path / "evidence", source_dataset_root=tmp_path / "foreign")
+    if stack_mode:
+        from tests.bamboo_sorting.test_joint_target_review_preparation import m as review_tool
+        capture_report = review_tool.prepare_capture_check(dataset.root, tmp_path/'evidence')
+        assert all(v['decoded_frames'] == 6 for v in capture_report['videos'])
+        annotations, _ = review_tool.approach_manifest(dataset.root, tmp_path/'evidence')
+        ep = annotations['episodes'][0]
+        assert ep['pick_step'] == 1 and ep['available_target_count'] == 2
+        folder = tmp_path/'evidence/target_annotations'
+        folder.mkdir()
+        for name in ('images', 'masks', 'outlines'):
+            (folder/name).mkdir()
+        review_tool.extract_images(dataset.root, folder, annotations)
+        # Synthetic raw RGB is blank; these masks are deliberately test-only.
+        from PIL import Image
+        mask = np.zeros((480, 640), np.uint8)
+        mask[100:300, 200:212] = 255
+        for row in ep['frames']:
+            Image.fromarray(mask).save(folder/row['mask_path'])
+            row.update(status='visible', reviewed=True)
+        ep['reviewed'] = True
+        review_tool.write(folder/'annotations.json', annotations)
+        review_tool.verify_dataset(dataset.root, tmp_path/'evidence', folder, annotations)
+        assert annotations['target_source_ready'] is True
+        import json
+        evidence = tmp_path / 'evidence'
+        stored = json.loads((evidence/'session.json').read_text())
+        stored['attempts'][0]['target_outcome']['target_matched'] = False
+        (evidence/'session.json').write_text(json.dumps(stored))
+        (evidence/'episode-0000.json').write_text(json.dumps(stored['attempts'][0]))
+        failed = audit_joint_dataset(dataset.root, evidence)
+        assert failed['supervised_candidate_episodes'] == []
+        assert failed['stack_summary']['target_choice_eligible_episodes'] == [0]
