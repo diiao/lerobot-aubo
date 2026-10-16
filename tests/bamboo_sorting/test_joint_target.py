@@ -139,48 +139,6 @@ def test_review_page_uses_requested_saved_frame_and_preserves_sources(tmp_path, 
     assert json.loads(source.read_text()) == confirmed
 
 
-def test_flow_moves_visible_fragments_without_bridging_the_gap():
-    import cv2
-    from lerobot.bamboo_sorting.joint_target_tracking import TargetMaskFlow, mask_overlap
-
-    rng = np.random.default_rng(42)
-    gray = rng.integers(40, 230, (96, 128), dtype=np.uint8)
-    # Resolvable texture, rather than independent single-pixel noise that aliases
-    # in the optical-flow image pyramid.
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    rgb = np.repeat(gray[..., None], 3, axis=2)
-    mask = np.zeros((96, 128), bool)
-    mask[30:50, 20:50] = True
-    mask[30:50, 65:100] = True
-    move = np.float32([[1, 0, 3], [0, 1, 2]])
-    shifted = cv2.warpAffine(rgb, move, (128, 96))
-    expected = cv2.warpAffine(mask.astype(np.uint8), move, (128, 96)).astype(bool)
-    tracker = TargetMaskFlow()
-    tracker.seed(rgb, mask)
-    candidate, detail = tracker.step(shifted)
-    assert detail["status"] == "draft" and detail["reviewed"] is False
-    assert mask_overlap(candidate, expected)["iou"] > 0.9
-    assert not candidate[32:52, 55:65].any()
-
-
-def test_flow_disappearance_requires_explicit_reseed():
-    from lerobot.bamboo_sorting.joint_target_tracking import TargetMaskFlow, mask_overlap
-
-    rgb = np.full((96, 128, 3), 200, np.uint8)
-    mask = np.zeros((96, 128), bool)
-    mask[20:50, 20:60] = True
-    tracker = TargetMaskFlow()
-    tracker.seed(rgb, mask)
-    candidate, detail = tracker.step(np.zeros_like(rgb))
-    assert candidate is None and detail["status"] == "lost"
-    candidate, detail = tracker.step(rgb)
-    assert candidate is None and detail["reason"] == "explicit_seed_required"
-    assert mask_overlap(candidate, mask) == {"iou": 0.0, "recall": 0.0, "track_available": False}
-    tracker.seed(rgb, mask)
-    candidate, detail = tracker.step(rgb)
-    assert mask_overlap(candidate, mask)["iou"] == 1.0
-
-
 def test_segmentation_png_ids_and_oracle_overlap_are_not_class_selection():
     from pathlib import Path
     import runpy

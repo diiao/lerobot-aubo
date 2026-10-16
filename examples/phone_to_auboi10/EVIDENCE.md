@@ -10,6 +10,7 @@
 ## 目录
 
 - [三根堆叠软件准备](#三根堆叠软件准备)
+- [腕部离线诊断与人工复核](#腕部离线诊断与人工复核)
 - [动作模型与部署](#当前双摆放模型)
 - [现场抓放记录](#最新三轮现场记录)
 - [目标条件模型A/B现场复核](#目标条件模型最新ab现场结果与b失败复核)（含[重新摆放与斜条J6欠转](#重新摆放后的指定ab抓取)）
@@ -17,24 +18,44 @@
 - [指定目标输入离线原型](#指定目标输入离线原型)
 - [分割训练、轮廓复核与独立测试](#分割模型与独立测试)
 - [相机与环境记录](#相机与环境记录)
+- [目录与退役代码清理](#目录与退役代码清理)
+- [按AUBO用途裁剪测试](#按aubo用途裁剪测试)
 - [文档整理与历史原文](#文档整理与历史原文)
 - [更早历史与证据](#历史原文与证据)
 
 ## 三根堆叠软件准备
 
-2026-10-16按更新后的主线完成本地软件准备；操作顺序、字段和能力边界统一见[项目手册](README.md#三根堆叠目标示教方案)。本轮没有三根堆叠实采、冻结模型推理、真实训练、远端部署或机械臂动作，也未改写原始实验、录像、模型或已接受标注。
+2026-10-16完成本地软件准备；操作顺序和边界见[项目手册](README.md#三根堆叠目标示教方案)。尚无三根堆叠实采、训练或新服务部署，原始实验、录像、模型和已接受标注保持原样。软件与文档已保存到整理前检查点`d13870a`，未推送；Git提交不包含被忽略的实验产物。
 
 - **采集与数据**：新增堆内序号、可选上层条数和五项独立人工结果。假设备验证同堆六次尝试保存（交替失败与成功）、重录不占保存序号、失败／未知保留；实际LeRobot/PyAV合成视频往返覆盖采后检查、接近帧提取及训练／运行输入一致。抓错目标即使原菜单为`single_success`也不进入成功目标示教候选；按整堆检查训练／验证泄漏，包含被排除的失败步骤。
 - **分离与运行接口**：新多实例可见种子方法与旧双根方法并存；合成测试覆盖交叉、遮挡缺口、实例编号变换、小位移、合并实例、单根消失和未知前景。离线标注与实时准备输出逐像素一致；单次运行计划覆盖1／2／3根剩余条，通信层拒绝请求新模式却返回旧模式的结果。这些不证明真实堆叠像素身份或物理抓放。
+- **页面边界**：接手时浏览器控制清单为空，真实点选、多边形、确认、导出与导入验收尚待操作者完成。[三根种子合成预览](../../artifacts/joint_stack_preparation/synthetic_review/review.html)及既有Python往返检查不能替代浏览器验收或真实交叉分离准确率。
+
+### 软件准备的历史验证范围
+
+以下是不同阶段的既有记录，不相加为本次测试结果；本次文档整理没有复跑软件测试。
+
+| 历史范围 | 记录 | 证据与限制 |
+| --- | --- | --- |
+| 首次软件准备 | 203项相关测试，另2项真实LeRobot／PyAV后端＋假设备往返，共205项通过 | [JUnit](../../artifacts/joint_stack_preparation/software_tests.xml)、[验证摘要](../../artifacts/joint_stack_preparation/verification.json)；该批包含腕部范围，并非独立的205项堆叠验证。后两项曾因缓存锁目录只读失败，获权限后重跑通过，未改共享环境配置 |
+| 清单生成器与每堆6次尝试补充 | 5个相关测试文件、84项通过 | 验证摘要中的`wrist_followup`；未重跑上项2个后端往返用例 |
+| 页面渲染与自定义时间窗 | 腕部8项通过 | [补充JUnit](../../artifacts/joint_stack_preparation/wrist_followup_tests.xml)；与84项有重叠，不相加 |
+| 夹指误识别修正 | 腕部11项通过 | [JUnit](../../artifacts/joint_stack_preparation/wrist_gripper_mask_tests.xml)；覆盖同色夹指／竹条、宽条、短碎片、倾角分层、时间窗去重、有效率提示和旧报告拒绝，当时未重跑采集／分离测试 |
+| 完整序列与人工误差入口 | 16项通过 | [JUnit](../../artifacts/joint_stack_preparation/wrist_distribution_tests.xml)；包含无未来动作／预测／闭合时仍取帧、独立来源计数、无效帧保留、合成2°差异及完整导出要求，不证明真实测量精度 |
+
+历史首次软件准备另通过Python语法与`git diff --check`；各轮范围以验证摘要和对应JUnit为准。
+
+## 腕部离线诊断与人工复核
+
+遗留J6问题独立于堆叠主线。完整序列和跳变检查已有结果，当前只待真实20帧人工标注导入；操作见[手册](README.md#斜条j6欠转的腕部角度诊断)。以下保留各阶段范围和限制，不把程序可测等同于测对，也不将数值重叠当作共同状态。
+
 - **腕部工具**：清单取帧和时间对齐已实现。首次24条草稿经用户复核发现右夹指误识别（`sample-0010`的−6.7°／−107像素无效），成功B被夹指颜色错误排除；旧数字不作诊断结论。现增加固定张开夹指遮罩、候选主轴跨度大于ROI高度一半、适用于较宽竹条的形状门槛，橙红色显示排除区。同帧重测重点叠加图中拟合轴落在竹条上；六张原问题帧及各来源首末抽样图已由助手查看，不替代用户验收或逐帧定量真值。
 - **腕部覆盖与草稿**：从78条已接受首帧目标掩码重新计算起始倾角，抽取全部6条−30°～−15°示教、6条中等倾角及全部2条±5°内直条；每条闭合前候选窗口等间隔取样。共84个专家画面＋失败B 4帧＋成功B 3帧，合计91帧／167条时间窗记录，均为程序判有效、未人工接受。旧同帧成功率筛选为0／3、失败4／4，新两组为3／3和4／4；小样本且前置时间筛选仍存在，不能宣称不存在选择偏差。按不同画面统计有效率，超过20个百分点差距提示风险。[固定复核入口](../../artifacts/joint_target_live_preparation/ab_outcome_review/review.html#wrist-angle)链接新叠加图与[修订检查记录](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/measurement_revision_check.json)，包含旧新比较、分层来源、可视检查范围。旧报告保留、旧页面标为失效，回归入口拒绝旧颜色单筛选报告；未做真实回归。
 - **腕部完整序列与误差准备**：后续按“先分布、再误差、暂不回归”扩展：图像取样不再依赖未来动作窗口，6条斜条示教取完整闭合前记录，19轮具备录像和侧录的实机按配置逐轮保留，包含中止及启动报错轮。0.5秒间隔共643帧，专家155帧中44帧、实机488帧中138帧通过程序条件；无效帧保留，独立单位是6条示教／19轮实机，其中15轮有程序可测角度。未确认首次可见和真实下探边界。程序草稿范围专家−22.08°～15.97°、实机−12.91°～23.23°，这些极值包含早期视角／潜在邻条身份问题，不用于共同状态或覆盖不足结论。助手查看了6条示教与最新5轮各自最大绝对角度的叠加图及分布图；没有逐帧身份或真值验收。
-- **人工参考与边界**：[分布复核入口](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/distribution_review/review.html)链接20帧两点标注页（15个来源、4帧程序无效），先看原图，不显示程序拟合结果。人工标注尚未导入，真实误差中位数／最大值均未知。新独立工具支持完整样本导入、无向轴误差计算、不可测记录保留和误差尺度对照，不执行回归。验证见[本次JUnit](../../artifacts/joint_stack_preparation/wrist_distribution_tests.xml)：16项通过，含无预测／无闭合／无未来动作仍取帧、独立来源计数、无效帧保留、合成2°人工差值及完整导出要求。PNG／PDF使用系统现有Matplotlib独立绘制，未改项目依赖。浏览器清单仍为空，两个标注页面的实际点选验收未完成；未提交、试采、推理或训练。
+- **人工参考与边界**：[分布复核入口](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/distribution_review/review.html)链接20帧两点标注页（15个来源、4帧程序无效），先看原图，不显示程序拟合结果。人工标注尚未导入，真实误差中位数／最大值均未知。新独立工具支持完整样本导入、无向轴误差计算、不可测记录保留和误差尺度对照，不执行回归。验证见[本次JUnit](../../artifacts/joint_stack_preparation/wrist_distribution_tests.xml)：16项通过，含无预测／无闭合／无未来动作仍取帧、独立来源计数、无效帧保留、合成2°人工差值及完整导出要求。PNG／PDF使用系统现有Matplotlib独立绘制，未改项目依赖。浏览器清单仍为空，两个标注页面的实际点选验收未完成；当时未提交、试采、推理或训练；代码现已收入`d13870a`，人工验收状态未变。
 - **跳变敏感性检查**：[逐帧与统计对照](../../artifacts/joint_target_live_preparation/ab_outcome_review/wrist_angle/distribution_review/jump_sensitivity.html)及同目录`jump_sensitivity.json`、`jump_sensitivity.py`保存复现依据。按手册的排查门槛得到17对／27个端点（专家8、实机19），助手查看全部27张叠加图；紫线大多沿可见木条，若干B序列前后在不同可见木条区域间切换，不能仅凭腕部图确认目标身份或认定测错。暂时排除后专家36帧、范围−1.69°～15.97°、帧中位数5.62°；实机119帧、范围−6.88°～23.10°、帧中位数12.30°。原始44／138帧和所有无效帧、来源清单不改；6条示教／15轮实机仍有保留角度，数值重叠仍存在，不代表共同状态证据。JSON另列15°／20°门槛对照、逐来源统计和每5°区间独立来源名单。人工两点结果尚未导入；未作回归或零点重设。本次仅增加离线分析产物和文档，未改采集、标注或控制代码；运行脚本的帧数断言、报告重算与本地链接检查通过，不重跑无关软件测试。
-- **验证**：首次软件准备203项相关测试通过，另2项真实数据集后端／假设备往返测试通过，合计205项；Python语法和`git diff --check`通过。前203项记录见[JUnit结果](../../artifacts/joint_stack_preparation/software_tests.xml)，范围及两个单独往返测试见[验证摘要](../../artifacts/joint_stack_preparation/verification.json)。后两项曾因默认Hugging Face数据缓存锁目录在沙箱内只读而失败，获权限后重跑通过；没有改共享环境配置。清单生成器与6次尝试补充后，重跑5个相关测试文件，84项通过（本次不重跑2项后端往返）；页面渲染及自定义时间窗边界补充后再跑腕部8项通过，不与84项重复相加。[补充JUnit](../../artifacts/joint_stack_preparation/wrist_followup_tests.xml)及原验证摘要中的`wrist_followup`记录该次范围。夹指误识别修正后，腕部11项测试通过，覆盖夹指与竹条同色、较宽竹条、短碎片、倾角层完整性、重复时间窗去重、分组有效率警告和旧报告拒绝；[本次JUnit](../../artifacts/joint_stack_preparation/wrist_gripper_mask_tests.xml)。本次未改采集或分离运行代码，不重跑其测试。
-- **页面边界**：当前会话的浏览器控制清单为空，未完成真实浏览器的点选、导出和导入交互验收。Python导出／导入与像素一致性测试通过，不替代浏览器验收。合成预览：[三根种子选择](../../artifacts/joint_stack_preparation/synthetic_review/review.html)、[腕部角度](../../artifacts/joint_stack_preparation/synthetic_wrist_review/review.html)；预览不含真实实验复核结论。
 
-修改前文件副本保存在`/tmp/aubo-stack-software-before-6uskjdkr/`，包含Claude本轮已经修改的文档，可用于按文件回退本轮软件改动；`/tmp`不是长期备份。本次清单生成器补充前副本在`/tmp/aubo-wrist-followup-before-to4cqaah/`，包含相应未提交文件和原复核入口。夹指遮罩修正前副本位于`/tmp/aubo-wrist-mask-before-h179tmpv/`。完整分布流程修改前副本在`/tmp/aubo-wrist-distribution-before-noybhoiw/`。新增文件及本轮差异以工作区为准，不用`git reset`覆盖Claude的未提交成果。改动尚未提交或推送；`artifacts/`仍由Git忽略。
+修改前文件副本保存在`/tmp/aubo-stack-software-before-6uskjdkr/`，包含Claude本轮已经修改的文档，可用于按文件回退本轮软件改动；`/tmp`不是长期备份。本次清单生成器补充前副本在`/tmp/aubo-wrist-followup-before-to4cqaah/`，包含相应未提交文件和原复核入口。夹指遮罩修正前副本位于`/tmp/aubo-wrist-mask-before-h179tmpv/`。完整分布流程修改前副本在`/tmp/aubo-wrist-distribution-before-noybhoiw/`。上述修改已收入`d13870a`；`/tmp`副本仅供局部核对，不整目录覆盖当前工作区。`artifacts/`仍由Git忽略。
 
 ## 当前双摆放模型
 
@@ -786,7 +807,76 @@ IoU≥0.9时top为2/14/13，covered为1/14/14，边缘仍有误差。
 释放1977417728字节（约1.84 GiB）；训练结束时余量约11.69 GiB，是当时快照。
 原始数据、模型、录像、uv缓存、trash、复用虚拟环境均保留；上述记录不是新的清理授权。
 
+## 目录与退役代码清理
+
+2026-10-16按用户授权逐目录清点，再核对候选代码的静态导入、动态脚本加载、测试与文档引用。清理基线为`d13870a`；保留此前尚未提交的README／EVIDENCE导航整理。旧入口从工作区移除后不再直接可运行，历史产物不改。
+
+| 目录 | 检查结果与处理 |
+| --- | --- |
+| `examples/phone_to_auboi10/` | 删除下表7个退役入口；保留当前采集、标注、训练、运行、腕部人工导入及共享辅助代码 |
+| 其余`examples/`、`src/lerobot/` | 删除2个仅被退役入口使用的模块；框架数据集、模型、驱动与其他示例保留，未做整体裁剪 |
+| `tests/` | 删除3个专属测试文件及混合文件中的2个光流用例；当前功能和框架回归测试保留 |
+| `datasets/`、示例内`datasets/` | 约14 GiB和8.4 GiB，含正式示教与未完成尝试，保留。`datasets/aubo_joint_two_strip_top45_train30_20260926/images/`的图片为索引29、元数据仅29条已保存示教；`examples/phone_to_auboi10/datasets/bamboo_act_report_s26/images/`图片为索引6、元数据仅6条，不能证明已有对应完整视频，未按缓存删除 |
+| `artifacts/` | 约21 GiB，含实验视频、模型、标注、复核页面和历史备份，保留；未批量删除派生掩码、图片或目录内缓存 |
+| `pile-json--/`、`log/`、`logs/`、示例内`logs/` | 人工标注与运行证据保留；无证据表明可丢弃 |
+| `.venv/`、`.git/` | 当前环境与版本历史保留；约8.7 GiB的虚拟环境不是废弃数据 |
+| `configs/`、`docs/`、`benchmarks/`、`docker/`、`.github/`、根目录构建文件 | 分别为相机／历史实验配置、文档证据、视频基准、构建与CI支持，保留；未仅因当前实验不用而删除 |
+| `.agents/`、`.aws/`、`.codex/`、`.claude/`、`.kilo/` | 工具／会话配置保留，不纳入项目源码清理 |
+| `.pytest_cache/`、源码／示例／测试的`__pycache__/` | 删除76个缓存根目录中的498个文件，共5,416,336字节；均未跟踪、无符号链接，字节码目录中仅有`.pyc`。后续运行会重新生成 |
+
+尺寸为清理时`du`的约数，不能相加为精确存储统计。本轮主要减少废弃入口，未释放大体积实验数据。
+
+| 退役功能 | 删除的已跟踪文件（相对仓库根目录） |
+| --- | --- |
+| ACT／C0旧批次聚合与13维状态／8维动作审计 | `examples/phone_to_auboi10/aggregate.py`、`examples/phone_to_auboi10/audit_recorded_batch.py`；`tests/datasets/test_aubo_batch_validation.py`、`tests/datasets/test_audit_recorded_batch.py` |
+| 旧双图层序评价 | `examples/phone_to_auboi10/evaluate_layer_order.py`、`src/lerobot/bamboo_sorting/layer_order_eval.py`、`tests/bamboo_sorting/test_layer_order_eval.py` |
+| 已冻结光流传播诊断 | `examples/phone_to_auboi10/track_joint_target.py`、`src/lerobot/bamboo_sorting/joint_target_tracking.py`；另从`tests/bamboo_sorting/test_joint_target.py`移除两个`test_flow_*`用例，保留目标输入、实例选择与复核页测试 |
+| 一次性IO扫描、旧笛卡尔伺服探测与ACT恢复位入口 | `examples/phone_to_auboi10/test_io.py`、`examples/phone_to_auboi10/test_servo.py`、`examples/phone_to_auboi10/move_to_recovery_start.py` |
+
+共删除12个已跟踪文件，原文件共97,387字节。`record_joint.py → record_c0_batch.py → record.py`、关节采集复用的`c0_*`、相机映射、框架聚合器`src/lerobot/datasets/aggregate.py`及其测试均保留。`review_joint_target.py`仍可展示已有光流报告；新生成该旧报告须从基线恢复相应工具。
+
+本轮实际验证：`test_joint_target.py`、`test_joint_camera_config.py`、`test_aubo_joint_capture.py`共**56项通过**，仅使用合成数据与假设备；有一条第三方`hebi`使用已弃用`imp`模块的警告。588个保留的已跟踪Python文件语法检查、两份文档252处本地链接与Markdown锚点检查、`git diff --check`通过。保留源码中未发现对退役模块／脚本的导入或动态加载引用。未复跑腕部分析、模型或训练，不替代种子页面实际交互验收。
+
+按文件查看旧源码：`git show d13870a:仓库内相对路径`。需要恢复时先核对同名路径是否有新改动，再按文件恢复；不要整目录覆盖两份仍在整理的文档。清理前副本、删除清单和本轮验证记录位于`/tmp/aubo-folder-cleanup-f6lmha5a/`，临时目录不是长期备份；已提交源码可长期从Git回溯，未跟踪缓存不作恢复保证。
+
+### 按AUBO用途裁剪测试
+
+2026-10-16用户进一步明确：按AUBO项目裁剪，删除明确无关的专属测试，保留公共依赖测试。这比上节“只清退役功能及其测试”的范围更广：下列功能实现仍在`src/`，本轮不再维护其专属测试覆盖，不把测试删除描述为功能已失效。数据迁移已取消，未移动数据或环境。
+
+本轮从当时198个测试目录文件中删除80个，保留118个，其中81个为`test_*.py`。删除文件包含55个测试文件、4个辅助Python文件和21个参考资产文件，合计691,003字节（约0.66 MiB）；参考资产主要是Git LFS指针，不是根`artifacts/`中的实验产物。559个测试函数定义随文件删除，该数字不是执行或通过数量。
+
+| 裁剪范围 | 文件数 | 对应路径／理由 |
+| --- | --- | --- |
+| 非当前策略与RTC模型集成 | 25 | `tests/policies/`中的ACT、Diffusion／TDMPC／VQBeT旧综合套件、PI0／PI05、GROOT、SAC／SARM、Wall-X、XVLA及RTC；另移除`smolvla/test_smolvla_rtc.py`。当前关节入口使用自己的推理与持续伺服链 |
+| 非当前策略／仿真处理器 | 7 | `tests/processor/test_{act,classifier,diffusion,libero,sac,tdmpc,vqbet}_processor.py` |
+| 其他机器人与相机 | 8 | Reachy2、SO100机器人，Reachy2遥操／相机，Mech-Mind及SDK布局，RealSense测试与独占`test_rs.bag`参考指针 |
+| 其他电机与独占模拟辅助 | 6 | Damiao、Dynamixel、Feetech专属测试及`mock_dynamixel.py`、`mock_feetech.py`、`mock_serial_patch.py` |
+| 上游异步服务、强化学习和仿真 | 12 | `tests/async_inference/`、`tests/rl/`、`tests/envs/`、仅服务这些链的`tests/transport/`，以及`test_replay_buffer.py`、`test_online_buffer.py` |
+| ACT多GPU训练集成 | 1 | `tests/training/test_multi_gpu.py`，实际用例为ACT／PushT训练，不是当前单GPU关节训练验证 |
+| 旧模型数值参考及生成脚本 | 21 | `tests/artifacts/policies/`，唯一读取者是本轮移除的旧策略综合测试 |
+
+保留全部28个`tests/bamboo_sorting/`文件及AUBO驱动、夹爪、手机动作处理测试；`c0_*`仍是当前采集依赖。保留SmolVLA损失／补齐／表示兼容、公共数据集／视频／处理器／配置／优化器／工具测试和辅助夹具。`MockRobot → MockMotorsBus`仍被通用录制测试使用，所以`test_motors_bus.py`和`mock_motors_bus.py`不随其他电机测试删除。`test_available.py`保留框架注册表检查，SmolVLA训练集成用例也保留但本轮未运行。
+
+删除前逐文件确认与`d13870a`一致，再检查保留代码对候选测试模块、脚本路径和参考资产的引用，未覆盖其他会话改动。本轮没有修改生产代码或共享测试辅助实现。验证结果：
+
+- 全部保留测试`--collect-only`成功，发现**1702个参数化用例**，未执行这些用例；有一条上游VQBeT弃用警告。该数量不是通过数，也不证明所有用例可在当前机器运行。
+- `tests/motors/test_motors_bus.py`与`tests/processor/test_policy_robot_bridge.py`实际运行**62项通过**，验证保留的模拟总线与动作／状态转换接口；不与上节56项或历史堆叠测试相加。
+- 529个保留的已跟踪Python文件语法检查、删除测试模块的导入引用检查及`git diff --check`通过。未连接设备、下载模型、执行推理或真实训练。
+
+目录导航见[手册](README.md#测试目录入口)。完整删除清单、修改前文档副本、发现日志与JUnit位于`/tmp/aubo-tests-audit-tbecxft9/`；临时记录不是长期备份。源码和原有测试从`d13870a`按文件回溯，不整目录恢复而覆盖此前整理。重新启用已裁剪功能时，应同时恢复相应测试与参考资产。
+
 ## 文档整理与历史原文
+
+2026-10-16整理前检查点为 **`d13870a`**，保存当时30个未提交文件的改动，包含堆叠软件、腕部工具与文档。提交前执行25个Python文件语法检查和差异空白检查，没有复跑历史测试；页面交互与20帧人工标注仍待完成。
+
+先完成README与本索引的导航整理：当前堆叠流程前置、按任务区分代码入口、腕部证据单列；已结束的A／B逐批过程与旧原型操作不再重复占据日常手册。该阶段未改源码或产物；后续获授权的源码删除见上节。需要旧参数或完整过程时只读查阅：
+
+```bash
+git show d13870a:examples/phone_to_auboi10/README.md
+git show d13870a:examples/phone_to_auboi10/EVIDENCE.md
+```
+
+以下为此前文档合并记录。
 
 整理前检查点为 **`129513a`**，包含当时全部代码、测试、配置、48份人工标注JSON和文档；相关121项软件测试通过。
 本次集中维护为[项目手册](README.md)＋本证据索引；[AGENT.md](../../AGENT.md#文档维护规则)规定后续更新位置。
@@ -801,7 +891,7 @@ git show 129513a:docs/AUBO_I10_TOP_LAYER_VLM_RL_ROUTE_2026-09-26.md
 ```
 
 旧 `TopLayerTruthV1` / `TopLayerPredictionV1` 双图层序格式及 `evaluate_layer_order.py` 的操作规范也从上列旧路线回溯；
-评价器保留，未用于当前单图分割。更早的代码、已退役说明及证据见下节。
+评价器当时保留，2026-10-16随专属测试退役，源码可从`d13870a`回溯，未用于当前单图分割。更早的代码、已退役说明及证据见下节。
 
 ## 历史原文与证据
 
