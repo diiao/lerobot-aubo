@@ -123,13 +123,16 @@ def visible_seed_masks(targets, instance_map=None):
 
 
 class MultiStripSeparation:
-    """Instance-first draft association for one pick, including crossing strips.
+    """Seed-anchored drafts for a nearly stationary scene before one grasp.
 
-    Current instances supported by one visible seed retain their full shape.
-    Merged instances use distances to the last visible regions, with centerline
+    Current instances retain their shape only near their visible seed.
+    Merged instances use distances to the confirmed visible regions, with centerline
     distance only as a secondary cue. Ties stay unassigned. This does not infer
     depth order: every split is explicitly flagged for human review. References
-    guide ownership; only current candidate pixels can enter output masks.
+    stay fixed: learning from draft assignments can transfer identity between
+    merged strips or shrink a reference to an occluded tip. The motion radius
+    is relative to the seed, not cumulative inter-frame travel. Only current
+    candidate pixels can enter output masks; larger motion requires new seeds.
     """
 
     def __init__(self, seeds, *, motion_radius_px=8):
@@ -145,6 +148,8 @@ class MultiStripSeparation:
         self.targets = tuple(sorted(seeds))
         self.references = {t: seeds[t].copy() for t in self.targets}
         self.motion_radius_px = motion_radius_px
+        self.distances = {t: cv2.distanceTransform((~m).astype(np.uint8), cv2.DIST_L2, 5)
+                          for t, m in self.references.items()}
         self.last_frame = -1
 
     def step(self, frame_index, instance_map, segments):
@@ -152,8 +157,7 @@ class MultiStripSeparation:
             raise ValueError('consecutive offline frame index required')
         candidates = TargetAssociation._candidates(instance_map, segments)
         masks = {t: np.zeros((480, 640), bool) for t in self.targets}
-        distances = {t: cv2.distanceTransform((~self.references[t]).astype(np.uint8), cv2.DIST_L2, 5)
-                     for t in self.targets}
+        distances = self.distances
         assignments, merged, unassigned = [], [], 0
         for segment, current in candidates:
             supports = [t for t in self.targets if np.any(current & self.references[t])]
@@ -163,12 +167,18 @@ class MultiStripSeparation:
                 # Small motion at a crossing may overlap a few pixels of the
                 # other seed. Preserve a strongly supported CURRENT instance
                 # rather than splitting it along yesterday's crossing edge.
-                if overlap[dominant] >= .8 * sum(overlap.values()) and overlap[dominant] >= .5 * current.sum():
+                # A distant minority can be another real strip, not crossing
+                # jitter. Never let overlap majority erase that identity.
+                if (overlap[dominant] >= .8 * sum(overlap.values())
+                        and overlap[dominant] >= .5 * current.sum()
+                        and np.all(distances[dominant][current] <= self.motion_radius_px)):
                     supports = [dominant]
             if not supports:
                 supports = [t for t in self.targets if np.any(current & (distances[t] <= self.motion_radius_px))]
             if len(supports) == 1:
-                masks[supports[0]] |= current
+                supported = current & (distances[supports[0]] <= self.motion_radius_px)
+                masks[supports[0]] |= supported
+                unassigned += int(np.count_nonzero(current & ~supported))
                 assignments.append({'mask_id': segment['mask_id'], 'target_id': supports[0], 'method': 'current_instance_seed_support'})
             elif supports:
                 y, x = np.nonzero(current)
@@ -177,11 +187,15 @@ class MultiStripSeparation:
                     center, axis = TargetAssociation._geometry(self.references[target])
                     normal = np.array([-axis[1], axis[0]])
                     line_distance = np.abs((np.column_stack((x, y)) - center) @ normal)
-                    costs.append(distances[target][y, x] + .05 * line_distance)
+                    costs.append(np.where(distances[target][y, x] <= self.motion_radius_px,
+                                          distances[target][y, x] + .05 * line_distance, np.inf))
                 costs = np.asarray(costs)
                 owner = np.argmin(costs, axis=0)
                 ordered = np.sort(costs, axis=0)
-                ambiguous = (ordered[1] - ordered[0]) < .25
+                unsupported = ~np.isfinite(ordered[0])
+                margin = np.full(len(x), np.inf)
+                np.subtract(ordered[1], ordered[0], out=margin, where=~unsupported)
+                ambiguous = unsupported | (margin < .25)
                 # Explicit visible seeds decide overlap pixels; geometry must
                 # never override these disjoint identity anchors.
                 for i, target in enumerate(supports):
@@ -197,15 +211,13 @@ class MultiStripSeparation:
             else:
                 unassigned += int(current.sum())
                 assignments.append({'mask_id': segment['mask_id'], 'target_id': None, 'method': 'no_seed_support'})
-        # Do not learn a potentially incorrect ownership split as a new seed.
-        split_targets = {t for item in merged for t in item['targets']}
-        for target in self.targets:
-            if masks[target].any() and target not in split_targets:
-                self.references[target] = masks[target].copy()
+        # Even a nominally single-supported instance can contain another strip.
+        # Never promote these unreviewed pixels into persistent identity anchors.
         self.last_frame = frame_index
         return masks, {'frame': frame_index, 'method': 'multi_instance_visible_seed_support',
                        'execution_eligible': False, 'human_reviewed': False,
                        'motion_radius_px': self.motion_radius_px,
+                       'reference_policy': 'fixed_visible_seeds',
                        'assignments': assignments, 'merged_instances': merged,
                        'unassigned_foreground_pixels': unassigned,
                        'targets': {t: {'current_pixels': int(masks[t].sum()),

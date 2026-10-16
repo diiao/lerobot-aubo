@@ -142,6 +142,46 @@ def test_multi_disappearance_and_unknown_foreground_do_not_invent_identity():
     assert not np.any(np.logical_or.reduce(list(result.values())) & unknown)
 
 
+def test_multi_occluded_drafts_do_not_shrink_identity_references():
+    original = crossing_seeds()
+    tracker = MultiStripSeparation(original)
+    partial = {t: m.copy() for t, m in original.items()}
+    for mask in partial.values():
+        mask[200:] = False
+    tracker.step(0, *instance_map(partial))
+    for name in original:
+        np.testing.assert_array_equal(tracker.references[name], original[name])
+    # Reappearance must recover using current pixels, without a learned tip.
+    result, _ = tracker.step(1, *merged(original))
+    for name in original:
+        np.testing.assert_array_equal(result[name], original[name])
+
+
+def test_multi_single_supported_instance_cannot_absorb_distant_foreground():
+    original = crossing_seeds()
+    unknown = np.zeros((480, 640), bool)
+    unknown[20:80, 20:40] = True
+    current = {'merged': original['s-003'] | unknown}
+    tracker = MultiStripSeparation(original)
+    result, evidence = tracker.step(0, *instance_map(current))
+    np.testing.assert_array_equal(result['s-003'], original['s-003'])
+    assert evidence['unassigned_foreground_pixels'] == int(unknown.sum())
+    # No current detections means no output, despite the retained anchors.
+    result, _ = tracker.step(1, *instance_map({}))
+    assert not any(m.any() for m in result.values())
+
+
+def test_multi_dominant_strip_does_not_erase_distant_visible_fragment():
+    original = crossing_seeds()
+    fragment = original['s-003'].copy()
+    fragment[115:] = False
+    result, evidence = MultiStripSeparation(original).step(
+        0, *instance_map({'merged': original['s-001'] | fragment}))
+    np.testing.assert_array_equal(result['s-003'], fragment)
+    np.testing.assert_array_equal(result['s-001'], original['s-001'])
+    assert evidence['merged_instances']
+
+
 def test_visible_polygon_and_candidate_seeds_have_same_pixel_contract():
     masks = crossing_seeds()
     instances, _ = instance_map(masks)

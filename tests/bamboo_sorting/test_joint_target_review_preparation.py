@@ -26,6 +26,32 @@ def test_single_id_keeps_both_visible_components_without_gap_fill(tmp_path):
  assert not s['episodes'][0]['frames'][0]['reviewed']
  with pytest.raises(ValueError,match='overwritten'):m.import_predictions(tmp_path,s,p)
 
+def test_predictions_accept_relocated_source_alias_and_reject_other_run(tmp_path):
+ old=tmp_path/'old_run';new=tmp_path/'classified'/'run';folder=new/'target_annotations'
+ folder.mkdir(parents=True);old.symlink_to(new,target_is_directory=True)
+ s=setup(folder);a=np.zeros((480,640),np.uint16);a[10:30,10:30]=7
+ p=prediction(folder,s,[a],[[dict(mask_id=7,class_id=0,pixels=400,score=.9)]])
+ report=m.read(p);report['plan']['source_run']=str(old);m.write(p,report)
+ m.import_predictions(folder,s,p,single_strip_scenes=True)
+ assert np.array_equal(np.array(Image.open(folder/'masks/s0.png'))!=0,a==7)
+ other=tmp_path/'other_run';other.mkdir()
+ report['plan']['source_run']=str(other);m.write(p,report)
+ with pytest.raises(ValueError,match='source run mismatch'):m.import_predictions(folder,s,p)
+
+def test_verify_entry_accepts_dataset_alias_without_changing_identity(tmp_path,monkeypatch):
+ import sys
+ dataset=tmp_path/'classified'/'data';dataset.mkdir(parents=True)
+ old=tmp_path/'old_data';old.symlink_to(dataset,target_is_directory=True)
+ evidence=tmp_path/'evidence';folder=evidence/'target_annotations';folder.mkdir(parents=True)
+ spec={'source_dataset_root':str(old),'episodes':[]};m.write(folder/'annotations.json',spec)
+ calls=[]
+ monkeypatch.setattr(m,'verify_dataset',lambda data,ev,f,s:calls.append((data,s['source_dataset_root'])))
+ monkeypatch.setattr(sys,'argv',['review','--stage','verify','--dataset-root',str(dataset),'--evidence-root',str(evidence)])
+ m.main();assert calls==[(dataset,str(old))]
+ other=tmp_path/'other_data';other.mkdir();spec['source_dataset_root']=str(other)
+ m.write(folder/'annotations.json',spec)
+ with pytest.raises(ValueError,match='source dataset mismatch'):m.main()
+
 def test_missing_and_ambiguous_candidates_remain_missing_not_union(tmp_path):
  s=setup(tmp_path,2);a=np.zeros((480,640),np.uint16);b=a.copy();b[10:20,10:30]=1;b[10:20,40:60]=2
  p=prediction(tmp_path,s,[a,b],[[],[dict(mask_id=1,class_id=0,pixels=200,score=.8),dict(mask_id=2,class_id=0,pixels=200,score=.8)]])
@@ -116,6 +142,21 @@ def test_seed_selection_bound_to_first_frame_and_includes_selected_target(tmp_pa
  with pytest.raises(ValueError,match='first approach'):m.import_seeds(tmp_path,s,p)
  selection['frame_id']='0/global_rgb/0';selection['targets'][0]['target_id']='other';m.write(p,d)
  with pytest.raises(ValueError,match='selected target'):m.import_seeds(tmp_path,s,p)
+
+
+def test_automatic_seed_draft_cannot_be_imported_as_human_confirmation(tmp_path):
+ s=setup(tmp_path)
+ selection={'frame_id':'0/global_rgb/0','human_reviewed':False,
+            'annotation_source':'assistant_assisted_current_image_seed_draft',
+            'targets':[{'target_id':'strip_001','polygons':[[[10,10],[30,10],[30,20],[10,20]]]}]}
+ s['episodes'][0]['draft_visible_seeds']=copy.deepcopy(selection)
+ p=tmp_path/'draft.json'
+ m.write(p,{'schema':'aubo_joint_target_review_decisions','source_dataset_root':'/example',
+            'seeds':{'0':selection},'frames':{}})
+ with pytest.raises(ValueError,match='explicit seed review'):
+  m.import_seeds(tmp_path,s,p)
+ assert 'visible_seeds' not in s['episodes'][0]
+ assert not list((tmp_path/'masks').glob('*.png'))
 
 
 def test_accepted_crossing_limitation_keeps_mask_and_still_requires_review(tmp_path):

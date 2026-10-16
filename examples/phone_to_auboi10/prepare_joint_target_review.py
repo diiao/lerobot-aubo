@@ -221,7 +221,8 @@ def extract_images(dataset, folder, spec):
 
 def import_predictions(folder, spec, path, *, single_strip_scenes=False):
     report = read(path)
-    if report.get("plan", {}).get("source_run") != str(folder.parent.resolve()):
+    source_run = report.get("plan", {}).get("source_run")
+    if not source_run or Path(source_run).resolve() != folder.parent.resolve():
         raise ValueError("prediction source run mismatch")
     frames = {f["sample_id"]: f for ep in spec["episodes"] for f in ep["frames"]}
     predictions = {s["id"]: s for s in report["samples"]}
@@ -507,12 +508,12 @@ def verify_dataset(dataset, evidence, folder, spec):
     stack_audit = None
     if any("pick_step" in ep for ep in selected_episodes):
         from lerobot.bamboo_sorting.aubo_joint_audit import audit_joint_dataset
-        stack_audit = audit_joint_dataset(dataset, evidence)
+        stack_audit = audit_joint_dataset(dataset, evidence, source_dataset_root=spec["source_dataset_root"])
         selected_episodes = [ep for ep in selected_episodes
                              if ep["episode_index"] in stack_audit["supervised_candidate_episodes"]]
         if not selected_episodes:
             raise ValueError("no successful target demonstrations available for interface acceptance")
-    record = {"root": str(dataset), "source_dataset_root": str(dataset),
+    record = {"root": str(dataset), "source_dataset_root": spec["source_dataset_root"],
               "evidence_root": str(evidence),
               "episodes": [e["episode_index"] for e in selected_episodes],
               "frames": sum(e["total_frames"] for e in selected_episodes)}
@@ -663,7 +664,7 @@ def main():
             "pre_execution": "verify remote Python, best checkpoint, input/output absence; copy only listed RGB inputs and standalone predictor after authorization"})
     else:
         spec = read(folder / "annotations.json")
-        if spec["source_dataset_root"] != str(dataset):
+        if Path(spec["source_dataset_root"]).resolve() != dataset:
             raise ValueError("source dataset mismatch")
         if args.stage == "import-predictions":
             if args.predictions is None:

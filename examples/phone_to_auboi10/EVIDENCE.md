@@ -10,6 +10,7 @@
 ## 目录
 
 - [三根堆叠软件准备](#三根堆叠软件准备)
+- [三根堆叠首批试采](#三根堆叠首批试采)
 - [腕部离线诊断与人工复核](#腕部离线诊断与人工复核)
 - [动作模型与部署](#当前双摆放模型)
 - [现场抓放记录](#最新三轮现场记录)
@@ -25,11 +26,12 @@
 
 ## 三根堆叠软件准备
 
-2026-10-16完成本地软件准备；操作顺序和边界见[项目手册](README.md#三根堆叠目标示教方案)。尚无三根堆叠实采、训练或新服务部署，原始实验、录像、模型和已接受标注保持原样。软件与文档已保存到整理前检查点`d13870a`，未推送；Git提交不包含被忽略的实验产物。
+2026-10-16完成本地软件准备；操作顺序和边界见[项目手册](README.md#三根堆叠目标示教方案)。软件准备时尚无三根堆叠实采、训练或新服务部署；随后首批实采见[本批记录](#三根堆叠首批试采)。原始实验、录像、模型和已接受标注保持原样。软件与文档已保存到整理前检查点`d13870a`，未推送；Git提交不包含被忽略的实验产物。
 
 - **采集与数据**：新增堆内序号、可选上层条数和五项独立人工结果。假设备验证同堆六次尝试保存（交替失败与成功）、重录不占保存序号、失败／未知保留；实际LeRobot/PyAV合成视频往返覆盖采后检查、接近帧提取及训练／运行输入一致。抓错目标即使原菜单为`single_success`也不进入成功目标示教候选；按整堆检查训练／验证泄漏，包含被排除的失败步骤。
 - **分离与运行接口**：新多实例可见种子方法与旧双根方法并存；合成测试覆盖交叉、遮挡缺口、实例编号变换、小位移、合并实例、单根消失和未知前景。离线标注与实时准备输出逐像素一致；单次运行计划覆盖1／2／3根剩余条，通信层拒绝请求新模式却返回旧模式的结果。这些不证明真实堆叠像素身份或物理抓放。
-- **页面边界**：接手时浏览器控制清单为空，真实点选、多边形、确认、导出与导入验收尚待操作者完成。[三根种子合成预览](../../artifacts/joint_stack_preparation/synthetic_review/review.html)及既有Python往返检查不能替代浏览器验收或真实交叉分离准确率。
+- **页面边界**：接手时浏览器控制清单为空，真实点选、多边形、确认、导出与导入验收尚待操作者完成。2026-10-16用本机Chrome无头模式加载合成页，脚本正常填充episode、种子状态和帧状态，无报错；首帧ID编码图与实例图逐像素一致。这只证明页面可加载，不是交互验收。
+- **合成种子导入往返**：同日用户在单独的[自动草稿审核页](../../artifacts/joint_stack_preparation/synthetic_review/auto_seed_review.html)核对三根身份（草稿由合成实例图直接生成：s-001上层、s-002被压两段、s-003独立）并确认导出`manual_exports/three-strip-demo_review_decisions_auto.json`；在`/tmp`副本执行`import-seeds`与`separate`通过，[检查记录](../../artifacts/joint_stack_preparation/synthetic_review/auto_seed_import_check.json)显示种子零重叠，3帧目标草稿均等于当前帧对应实例（各帧实例编号不同），全部仍为未复核，原目录未改。该页面不在仓库代码中，也没有经过仓库复核页的点选／多边形交互；真实图像上实例与身份的对应须由人工指定，不能沿用合成图的自动对应。[三根种子合成预览](../../artifacts/joint_stack_preparation/synthetic_review/review.html)及既有Python往返检查不能替代浏览器验收或真实交叉分离准确率。
 
 ### 软件准备的历史验证范围
 
@@ -44,6 +46,59 @@
 | 完整序列与人工误差入口 | 16项通过 | [JUnit](../../artifacts/joint_stack_preparation/wrist_distribution_tests.xml)；包含无未来动作／预测／闭合时仍取帧、独立来源计数、无效帧保留、合成2°差异及完整导出要求，不证明真实测量精度 |
 
 历史首次软件准备另通过Python语法与`git diff --check`；各轮范围以验证摘要和对应JUnit为准。
+
+## 三根堆叠首批试采
+
+2026-10-16，`datasets/stack/train/joint_stack_pilot`保存`p-001`、`p-002`两堆6条训练示教，共4094帧、25 FPS；另保留1次未保存重录记录。数据整理完成，[采后检查](../../artifacts/capture/stack/joint_stack_pilot/capture_check.json)与[原始审计](../../artifacts/capture/stack/joint_stack_pilot/raw_audit.json)通过：双640×480视频各完整解码4094帧，全部帧时间匹配，每条恰好一个完整夹紧／释放命令周期。检查未运行分割推理或训练。
+
+| 人工条号（程序episode） | 堆 | 目标ID | 堆内序号 | 可选目标数 | 帧数 |
+| --- | --- | --- | --- | --- | --- |
+| 1（0） | p-001 | s-001 | 1 | 2 | 686 |
+| 2（1） | p-001 | s-002 | 2 | 2 | 641 |
+| 3（2） | p-001 | s-003 | 3 | 1 | 706 |
+| 4（3） | p-002 | s-001 | 1 | 2 | 631 |
+| 5（4） | p-002 | s-002 | 2 | 1 | 724 |
+| 6（5） | p-002 | s-003 | 3 | 1 | 706 |
+
+操作者确认第4条目标误填`s-002`，实际为`s-001`；同步更正episode侧录与session，保留[更正记录及原文件](../../artifacts/capture/stack/joint_stack_pilot/metadata_corrections/episode-0003-target-id/correction.json)。随后确认第二堆堆内序号应为1／2／3，先抓旁边独立条，因此可选数2／1／1正确；同步更正相关侧录、重录元数据、报告和复核页，保留[第二次更正记录及原文件](../../artifacts/capture/stack/joint_stack_pilot/metadata_corrections/p-002-pick-steps/correction.json)。更正后重新审计通过，视频、状态、动作和人工结果未改。回退须按第二次、第一次的逆序恢复各备份，不单独覆盖session或episode侧录；已生成的派生报告需同步恢复或重新生成。
+
+**本批身份约定**：`p-002/s-001`是先抓的独立条，与计划中的跨堆角色命名不同；后续标注按本堆实际身份，不能把`s-001`自动解释成交叉上层条。两堆内部均按`s-001→s-002→s-003`保存，但实际角色顺序不同。
+
+6条人工填写均为单根成功、抓对／夹住／恰好一根／送达为真、邻条扰动为假；软件审计据此全部列为成功示教候选，不能当作独立验证的物理成功率。已抽查每条起始／闭合／结束双视角关键帧共36张，第二堆起止全局图支持先移走独立条；未逐帧人工复核完整视频。[固定复核页](../../artifacts/capture/stack/joint_stack_pilot/review.html)保留采后关键帧，并已加入接近阶段逐帧原图；目标轮廓、真实种子交互、训练接口验收及独立验证堆仍待完成。
+
+**标注准备已完成**：`target_annotations/`提取2004张原640×480 RGB（各条336／305／354／313／350／346帧），生成`annotations.json`、`inference_manifest.json`及`inference_request.json`；其余2090帧属于搬运阶段，不生成目标描边。全部解码时间与录像偏移匹配，更正后的目标ID、堆内序号及可选数与采集侧录一致。核对2004张图片数量／尺寸／模式、12张首尾帧与采后关键帧逐像素一致、复核页嵌入数据与侧录一致，见[准备检查](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/preparation_check.json)与[完整性检查](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/integrity_check.json)。准备阶段未运行模型或训练，掩码和已复核帧均为0；浏览器交互未验收。随后获得单次冻结分割授权，结果如下。
+
+**冻结分割与首帧候选已完成**：操作者明确授权“可以，进行下一步”后，核对`gpu`既有虚拟环境、CUDA、项目`deps`和第15轮最佳模型；在`/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/artifacts/joint_stack_pilot/target_annotations/`新建独立批次目录，上传2004张RGB、清单和独立预测脚本，未覆盖训练源码或旧批次。仅执行一次冻结推理，原640×480、batch size 2、置信度／掩码阈值0.5、0次优化，耗时71.07秒；模型无缺失、多余或不匹配参数。2004张实例图及报告已回传并导入，详见[执行记录](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/inference_request.json)、[完整预测](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/predictions/predictions.json)和[候选统计](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/prediction_check.json)。
+
+首帧候选数按第1～6条为3／2／1／2／2／2；全部2004帧有至少一个候选，这不代表目标正确或实例分离准确。已查看[6条首帧原图与候选对照](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/first_frame_candidates.jpg)：第2条合并右侧两根剩余条，第4条合并独立目标与交叉上层条，第5条合并左侧已放置条与右侧待抓上层条；第6条放置区两根也合并，第3条左侧已放置条没有候选。操作者随后确认第2／4／5条上述合并情况属实，并确认已放置竹条保持原ID；此确认针对问题与身份约定，不代表接受合并掩码或提交了首帧种子边界。以上仅为首帧抽查，不是全序列误差统计，详见[抽查记录](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/visual_check.json)。
+
+[固定复核页](../../artifacts/capture/stack/joint_stack_pilot/review.html)已提供彩色候选和首帧身份编辑，6条首帧ID编码与实例图一致，页面嵌入数据与侧录一致；当前浏览器工具无可用浏览器，实际交互验收待操作者完成。未用`--single-strip-scenes`，未自动选择目标或代填人工确认，目标掩码／已复核帧仍为0。下一步逐条在首帧确认全部可见竹条身份（已搬至放置区的同堆竹条仍保持原ID），混入多根的候选须改画各根当前可见区域，交叉遮挡处不能补画或重叠。导出种子JSON后再执行`import-seeds → separate`，生成草稿并复核；不是训练就绪。导入前侧录和页面保存在本批`target_annotations/before_prediction_import/`，原始预测、视频、状态、动作及人工结果保持原样。
+
+**首帧自动草稿与导出归档**：用户随后要求“可以自动标注吗，标注完我来看”，并指定所有导出统一归入`pile-json--/`。已生成[本批自动种子JSON](../../pile-json--/stack/joint_stack_pilot/joint_stack_pilot_auto_seed_drafts.json)，6条各含3根可见竹条，均为`human_reviewed=false`；[彩色预览](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/auto_seed_preview.jpg)按粉／青／黄对应`s-001`／`s-002`／`s-003`。草稿结合当前模型实例与助手查看本批图像后设定的区域提示拆分合并；第3条两根已放置条、第6条左侧已放置条的漏分使用当前RGB色度与窄区域提示补出，保留来源。不是通用自动身份识别，也未传播历史完整形状填补遮挡。
+
+18个种子均非空、零重叠，交叉下层保留分开的可见区域；逐份多边形栅格化未加入源掩码外像素。助手已查看6张叠图，RGB辅助区域仍有纹理造成的小碎片／边缘缺口，需要用户复核。仓库复核页新增自动草稿预载、身份颜色、原候选显示开关和导出目录提示；保留已有浏览器编辑／确认，重新载入需用户明确选择。脚本语法与草稿克隆／保留编辑检查通过，相关Python检查12项通过，含未确认自动草稿拒绝作为人工种子导入；无可用浏览器，实际点选验收仍待用户。[检查结果](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/auto_seed_check.json)记录范围；本批生成器在同目录`build_auto_seed_drafts.py`，修改前页面／侧录副本在`before_auto_seed_drafts/`。本阶段未生成整段目标掩码、未运行训练或新增模型推理；随后操作者完成审核，确认记录如下。
+
+**首帧人工确认与保存检查**：用户明确反馈“检查后没有错误，你帮我导出保存并检查”。据此将既有6条首帧草稿的原始多边形不变地保存为[人工复核JSON](../../pile-json--/stack/joint_stack_pilot/joint_stack_pilot_review_decisions.json)，记录确认来源为用户对话、原话、时间及仅限首帧种子的范围；这是助手按用户确认保存，不声称经浏览器下载。原自动草稿保留。检查6条／18个身份区域非空、零重叠、帧绑定和目标ID匹配，成功执行`import-seeds`，导入结果与导出JSON完全一致，页面嵌入数据一致，见[导出与导入检查](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/confirmed_seed_export_check.json)。修改前侧录和复核页在`before_confirmed_seed_import/`。2004帧接近序列仍未复核、目标掩码仍为0；下一步为`separate`生成整段目标轮廓草稿，不能把首帧确认当作全序列接受。
+
+**整段自动草稿与问题定位**：随后获授权执行本地`separate`，复用现有2004帧预测与已确认首帧种子，未新增模型推理。各条有轮廓／总帧数为336／336、305／305、173／354、313／313、350／350、260／346；共1737帧有轮廓、267帧缺失，全部`reviewed=false`，训练未就绪。非空轮廓均为当前模型前景子集，仅证明像素来源，不证明身份正确。缺失的267帧当前模型仍有与初始目标种子重叠的前景，不能直接记为真实遮挡或不可见。
+
+助手查看每条6帧、共36帧叠图：第1／2条抽样身份未见明显串条；第3／6条目标仍可见却丢失或仅剩错误小块，第4条末段混入邻条，第5条中后段混入左侧已放置竹条。第3条第23帧两个实例均被分配给`s-001`，`s-003`为0，确认存在身份关联错误；完整参考漂移触发链尚未逐步重放。问题已写入[固定复核页](../../artifacts/capture/stack/joint_stack_pilot/review.html)的异常跳转，详见[序列检查](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/sequence_separation_check.json)及同目录`sequence_review_episode-0000.jpg`至`0005.jpg`。抽查不等于全帧人工验收；下一步先修复关联并与本轮草稿对照，再由用户复核，不能以“有轮廓”批量接受。生成前侧录和页面在`before_sequence_separation/`，问题标注前侧录在`before_sequence_issue_notes/`；原始数据、预测与确认种子不变。复核页仅在种子尚未确认时默认开启首帧编辑，已确认批次默认查看逐帧轮廓。
+
+**身份关联修正与补标草稿**：随后按用户“可以，继续任务”完成本地修正。旧算法重放第3条前24帧发现：第2帧已有506个初始`s-003`像素分给`s-001`，未审核输出更新身份参考，随后参考重叠／收缩和错误占用累积，至第23帧目标归零。现保持首帧种子为固定身份参考，输出仅限对应种子8像素邻域内的当前模型前景；多数支持规则只在整个实例处于主种子邻域时生效，保留远处少量真实目标。邻域相对首帧，不支持无限累计运动；此改动影响离线和显式多根实时共用类，未连接或运行机械臂。
+
+复用同一2004帧预测重放，关联输出缺失从267降至0；但4帧仅剩99／489／273／10像素，原图目标仍可见，因此不能据此宣布全部有效。助手查看42帧前后对照，原先第3／6条身份丢失、第4／5条明显混入邻条的样例得到改善。对第3条frame 258／278／349、第6条frame 331的严重模型漏分，另用各自当前RGB色度、首帧附近区域和逐张查看后指定的夹爪下方可见边界生成多边形草稿；未复制前帧形状、未填遮挡，四份区域栅格化均为当前颜色支持像素子集。最初色度候选混入暖色金属，已在导入前排除，候选版本仍保留。补标不是模型／身份算法效果，也不是人工确认。
+
+当前2004份掩码／轮廓已接入[原审核页](../../artifacts/capture/stack/joint_stack_pilot/review.html)，来源为2000份当前模型分配＋4份RGB辅助补标，全部未审核。补标导出为[本批序列修补草稿](../../pile-json--/stack/joint_stack_pilot/joint_stack_pilot_sequence_repairs_draft.json)，已按草稿导入，旧4份掩码保存在逐帧`previous_masks`中。每帧标注修订号均已更新，避免旧审核记录应用到新轮廓。首帧确认种子、模型预测和原始数据不变；上一轮完整掩码、轮廓、侧录、报告和页面保留在`target_annotations/before_association_repair/`，恢复时需成套恢复这些产物及同目录保存的分离器源码，不能只换侧录。
+
+[修正对照记录](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/association_repair/comparison_check.json)保存逐条变化、抽样帧号与补标来源，同目录保存前后对照图、4张补标原图对照和可重现的批次辅助脚本；[当前检查](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/sequence_separation_check.json)汇总当前结果。分离器、复核准备、运行时接口共49项测试通过，新增回归覆盖遮挡后参考不收缩、远处前景不能整块吞入、少数目标片段不被多数规则抹掉；最终页面与侧录、种子一致性另行核对。未新增模型推理或训练，浏览器交互未验收，尚不能用于训练。下一步由用户重点复核4帧补标与全段交叉／遮挡边缘。
+
+**全序列人工确认与真实数据接口验收**：用户明确反馈“我已检查完毕，确认没有错误，”，按当前修正后整段复核上下文记录6条、2004帧人工确认（包含4帧RGB辅助补标），保存[全序列审核JSON](../../pile-json--/stack/joint_stack_pilot/joint_stack_pilot_full_sequence_review_decisions.json)。记录来源为用户对话及原话／时间，不声称经浏览器下载；2004个帧ID及修订号匹配，成功导入，每条与每帧`reviewed=true`。1658条原待复核提示已依确认关闭，原文保存在审核历史与导出记录；没有代填“接受已知误差”，没有改轮廓或首帧种子。修改前侧录／报告／页面保存在`target_annotations/before_full_sequence_confirmation/`，原先首帧确认与补标来源JSON均保留。详见[导出导入检查](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/full_sequence_review_export_check.json)。
+
+执行`--stage verify`，最初因沙箱禁止写入本地Hugging Face缓存锁而退出；随后通过工具授权在沙箱外重跑同一项本地检查，无环境配置修改。真实LeRobotDataset／PyAV遍历全部4094帧、6条均纳入且无排除：2004帧接近图逐像素匹配标注源，2090帧搬运使用原双RGB；全部7维状态、50步动作块及294个尾部填充样本与原始数据一致，训练／运行时图像及首次已接受夹紧后的阶段切换逐帧一致。`p-001`与`p-002`两堆中，可选数≥2的episode为0／1／3，2／4／5仅计抓放能力，未据此计算新模型成功率。见[数据接口验收](../../artifacts/capture/stack/joint_stack_pilot/target_annotations/dataset_check.json)。
+
+已更新原审核页和当前检查记录，`target_source_ready=true`、`target_training_ready=false`；人工审核通过与接口正确不等于逐像素真值、模型训练完成或物理成功证明。本轮未加载策略模型、训练或访问硬件。独立验证数据尚无，下一步按手册单独采集`p-101`，之后再定训练方案。
+
+原`pile-json--/`的48份静态标注和2份目标选择JSON分别移动到`segmentation/`与`target_selection/`，保留原路径相对链接与`.hidden`，内容、文件身份、大小和修改时间核对一致；新批次目录为`pile-json--/stack/joint_stack_pilot/`。详见[迁移清单](../../artifacts/maintenance/annotation_export_organization/manifest.json)，回滚入口及未来导出规则统一见[手册](README.md#人工标注导出目录)。
 
 ## 腕部离线诊断与人工复核
 
@@ -470,7 +525,7 @@ t-023～t-033的最后三处训练录制目录已完成采后检查，原录制�
 - 最终模型身份SHA-256为`93fd4a6835a98e4d7a0b04bc6aafd51b7d07508e57dccd19e698472968ca6e0a`，用于新影子入口的加载身份检查。`transport_check/check.json`确认新目标契约握手、无损双RGB、50×7动作块和相同种子重复一致，两次往返约0.266／0.262秒，模型部分约0.100／0.099秒；仅用保存观察，未连接设备。推理服务脚本部署于远端独立`artifacts/joint_target_shadow_service/`，没有修改权重或训练来源。
 - `run_joint_target_shadow.py`、`joint_target_shadow_review.html`准备静止只读采集、人工A/B可见区域复核与保存观察预测；`InferencePipe`仅增加显式目标协议，旧默认保持。针对诊断、目标契约、影子入口及既有trial/smooth共165项测试通过；无界面Chrome用合成图验证双目标多边形、确认勾选及绑定snapshot ID的导出。`preparation_check.json`明确`shadow_software_prepared=true`、`onsite_capture_executed=false`、`full_grasp_ready=false`；动态掩码／目标身份、实际闭合驱动的阶段切换和动作块执行时序仍需运行接入。没有自动采集、连接机械臂、执行动作、重训或放宽保护。
 - 现场准备反馈：首次影子采集在上电检查处退出，用户确认当时未上电；上电后重试到达DO读取，报`(False, False)`，用户确认夹爪肉眼张开。该输出组合不能作为明确松开命令状态，当时未保存有效快照。按用户要求新增`release_joint_gripper.py`，复用既有驱动独立松开并核对读回，不连接相机、不发送机械臂运动；执行说明见[现场影子对照](README.md#当前模型的现场影子对照)。新入口8项、既有trial 99项、夹爪驱动27项假设备测试均通过，默认计划命令及`git diff --check`通过。用户随后手动执行，截图显示DO2=OFF、DO3=ON读回通过（2次读回尝试）；这是控制器输出证据，不是位置传感器反馈。
-- 首次有效现场影子快照在`artifacts/joint_target_shadow_retry_20261011_060338/`，snapshot ID为`1435452ce75f4aa8b66c56f9f814420a`：双640×480 RGB、夹爪命令0、两相机时间差约9.3 ms，快照与复核页面匹配。用户接受的`pile-json--/target_shadow_1435452ce75f4aa8b66c56f9f814420a_selection.json`指定A=右条、B=左条；绑定、非空、不重叠及叠图检查通过。`artifacts/joint_target_shadow_retry_20261011_060338_predictions/result.json`保留种子42/43/44的六次50×7预测，`analysis.json`核对模型身份、形状及所有值有限。全50步／6关节平均绝对A/B差异分别为0.319934°、0.331395°、0.295080°，平均0.315470°；同目标不同种子平均差异0.208441°。本次保存观察预测未连接设备、未发送运动或夹爪命令，`execution_eligible=false`；一个场景的数值响应不证明运动方向、轨迹安全或物理目标服从。原`preparation_check.json`仍是现场采集前的历史快照。
+- 首次有效现场影子快照在`artifacts/joint_target_shadow_retry_20261011_060338/`，snapshot ID为`1435452ce75f4aa8b66c56f9f814420a`：双640×480 RGB、夹爪命令0、两相机时间差约9.3 ms，快照与复核页面匹配。用户接受的`pile-json--/target_selection/target_shadow_1435452ce75f4aa8b66c56f9f814420a_selection.json`指定A=右条、B=左条；绑定、非空、不重叠及叠图检查通过。`artifacts/joint_target_shadow_retry_20261011_060338_predictions/result.json`保留种子42/43/44的六次50×7预测，`analysis.json`核对模型身份、形状及所有值有限。全50步／6关节平均绝对A/B差异分别为0.319934°、0.331395°、0.295080°，平均0.315470°；同目标不同种子平均差异0.208441°。本次保存观察预测未连接设备、未发送运动或夹爪命令，`execution_eligible=false`；一个场景的数值响应不证明运动方向、轨迹安全或物理目标服从。原`preparation_check.json`仍是现场采集前的历史快照。
 - 用户选择停止离线轨迹检查、直接准备监督下真机实验后，新增`run_joint_smooth.py --model target-pair`：加载本轮模型及固定分割best，每个接近输入使用新分割和种子身份关联，模型输出仍通过既有平滑限速控制；仅在夹爪闭合命令实际成功后记录`TargetInputSession.accept_command`，按相机来源时间切换搬运输入并丢弃闭合前的在途预测。默认只显示计划，操作者现场执行一次周期，所有旧模型入口保持。新实时掩码明确`human_reviewed=false`，共享描边像素实现与训练一致；未自动执行机器人。
 - 准备证据集中在`artifacts/joint_target_live_preparation/`。首轮保存图像检查`saved_input_check.json`显示A/B几何匹配均可返回，但叠图发现B实例混入右边A的437像素；不能据返回成功认定目标正确。加入另一根人工圈选区域的排除检查后，`guarded_input_check.json`确认A三次通过、往返0.3307／0.3215／0.3341秒、侵入左条0像素，空画面拒绝；B按437像素冲突拒绝。仅使用同一保存图像重复调用，不证明实际动态关联或实时相机时延。首轮目标明确A=右条；B须另行解决自动分割混入问题。
 - 对应206项测试通过，覆盖新掩码与训练描边一致、失效不复用旧掩码、跨目标混入拒绝、单次抓放假设备循环、接受闭合后的因果阶段切换以及推理报错／超时停伺服；默认计划与`git diff --check`通过。服务代码部署到GPU独立`artifacts/joint_target_live_service/`，原始候选归档`service.tar.gz`及补充`competitor_guard.tar.gz`保留；修订前运行模块另存`joint_target_runtime_before_competitor_guard.py`，模型与环境未修改。`preparation_check.json`只登记监督试验启动准备通过，未登记物理成功；操作统一见[单次真机试验](README.md#目标条件模型单次真机试验)。
@@ -577,7 +632,7 @@ t-023～t-033的最后三处训练录制目录已完成采后检查，原录制�
 
 #### 重新摆放后的指定A/B抓取
 
-快照`artifacts/joint_target_reposition_20261011_083944_072360764`与人工标注`pile-json--/target_shadow_ae44bab73e02455197e55c1fc994a4bd_selection.json`匹配；本组A为左边较直竹条，B为右边较斜竹条，不能沿用上组左右身份。用户确认A成功、B抓歪失败，并明确两次之间“两根都大致恢复了原摆放”，登记`approximate_pair_candidate`，不作为严格同一观察或独立成功率估计。
+快照`artifacts/joint_target_reposition_20261011_083944_072360764`与人工标注`pile-json--/target_selection/target_shadow_ae44bab73e02455197e55c1fc994a4bd_selection.json`匹配；本组A为左边较直竹条，B为右边较斜竹条，不能沿用上组左右身份。用户确认A成功、B抓歪失败，并明确两次之间“两根都大致恢复了原摆放”，登记`approximate_pair_candidate`，不作为严格同一观察或独立成功率估计。
 
 | 本轮目标及目录后缀 | 预测／控制帧 | 闭合／释放时间（录像秒） | 现场结果 |
 | --- | --- | --- | --- |
