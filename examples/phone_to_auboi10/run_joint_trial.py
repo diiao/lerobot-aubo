@@ -23,6 +23,7 @@ import zlib
 
 from lerobot.bamboo_sorting.aubo_joint_contract import finite_vector, joint_contract_record
 from lerobot.bamboo_sorting.joint_smooth import validated_action_chunk
+from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing, decode_mask
 from lerobot.bamboo_sorting.joint_trial import TrialLimits, check_step, SingleStepSession, home_to_start, stationary_step_limits, short_loop_limits, wait_until_stationary
 
 REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-legacy-v2-20260922'
@@ -117,6 +118,8 @@ class InferencePipe:
                 raise ValueError('live target protocol mismatch')
             if live_target_seed is not None and ready.get('segmentation_checkpoint') != str(segmentation_checkpoint):
                 raise ValueError('segmentation checkpoint mismatch')
+            if live_target_seed and live_target_seed.get('motion_tracking') and ready.get('target_motion_available') is not True:
+                raise ValueError('inference worker does not support target motion references')
         except BaseException:
             self.close()
             raise
@@ -128,10 +131,11 @@ class InferencePipe:
         line=self.process.stdout.readline(100000)
         if not line:raise RuntimeError('inference exited; inspect inference_stderr.log')
         result=json.loads(line)
-        if 'error' in result:raise RuntimeError(result['error'])
+        if 'error' in result and result.get('error_code')!=TargetForegroundMissing.code:
+            raise RuntimeError(result['error'])
         return result
 
-    def predict(self, index, state, images, *, codec='jpeg95', seed=None, target_input=None):
+    def predict(self, index, state, images, *, codec='jpeg95', seed=None, target_input=None, target_motion=None):
         start = time.perf_counter()
         if self.target_conditioned:
             keys=('global_rgb','grasp_rgb') if self.live_target_seed is not None else self.contract['image_keys']
@@ -146,12 +150,35 @@ class InferencePipe:
             packet.update(target_contract=self.contract,target_input=target_input)
         if self.live_target_seed is not None:
             packet['target_seed']=self.live_target_seed
+        if target_motion is not None:
+            if (not self.live_target_seed or not self.live_target_seed.get('motion_tracking')
+                    or target_input['phase'] != 'approach'
+                    or target_motion.get('frame_id') != target_input['frame_id']):
+                raise ValueError('unexpected or mismatched motion reference')
+            packet['target_motion']=target_motion
         if seed is not None:
             packet['seed'] = seed  # Offline paired comparison only; live requests omit it.
         encoded_at = time.perf_counter()
         wire = json.dumps(packet)+'\n'
         self.process.stdin.write(wire);self.process.stdin.flush()
         result=self.receive(self.request_timeout_s)
+        if 'error' in result:
+            evidence=result.get('target_evidence',{})
+            if (result.get('error_code')!=TargetForegroundMissing.code
+                    or result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256
+                    or not self.live_target_seed or self.live_target_seed.get('target_selection_mode')!='multi_foreground'
+                    or result.get('target_input')!=target_input or target_input.get('phase')!='approach'
+                    or evidence.get('target_id')!=target_input['target_id']
+                    or evidence.get('frame_id')!=target_input['frame_id']
+                    or evidence.get('phase')!='approach'
+                    or evidence.get('seed_snapshot_id')!=self.live_target_seed['snapshot_id']
+                    or evidence.get('target_selection_mode')!='multi_foreground'
+                    or evidence.get('source')!='same_frame_segmentation'
+                    or evidence.get('human_reviewed') is not False
+                    or evidence.get('association',{}).get('status')!='missing'
+                    or decode_mask(evidence.get('mask_png'),allow_empty=True).any()):
+                raise ValueError('invalid empty-target response identity or evidence')
+            raise TargetForegroundMissing(evidence)
         if result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256 or result.get('shape')!=[50,7]:
             raise ValueError('invalid prediction identity or shape')
         if self.live_target_seed is not None:
@@ -166,8 +193,14 @@ class InferencePipe:
             if separated and evidence.get('target_selection_mode')!=selection_mode:
                 raise ValueError('requested target separation was not used')
             if target_input['phase']=='approach':
-                from lerobot.bamboo_sorting.joint_target_runtime import decode_mask
                 decode_mask(evidence.get('mask_png'))
+                if self.live_target_seed.get('motion_tracking'):
+                    motion=evidence.get('motion_reference',{})
+                    if (motion.get('frame_id')!=target_input['frame_id']
+                            or motion.get('source')!='rgb_optical_flow'
+                            or motion.get('human_reviewed') is not False
+                            or not motion.get('current_foreground_support')):
+                        raise ValueError('motion tracking evidence missing')
                 if (evidence.get('source')!='same_frame_segmentation'
                         or evidence.get('association',{}).get('status')!=('separated' if separated else 'matched')):
                     raise ValueError('fresh target association required')

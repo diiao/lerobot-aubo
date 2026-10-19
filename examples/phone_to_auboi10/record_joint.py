@@ -17,7 +17,7 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     joint_command, joint_contract_record, joint_dataset_features,
 )
 from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, write_joint_json
-from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_PICK_STEP
+from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_PICK_STEP, confirmed_target_outcome
 from lerobot.bamboo_sorting.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
 )
@@ -85,13 +85,6 @@ def bounded_integer(prompt, low=1, high=3):
         print(f"请输入 {low}～{high} 的整数。")
 
 
-def human_boolean(prompt):
-    while True:
-        value = input(prompt + "（1 是，2 否，3 不确定）：").strip()
-        if value in ("1", "2", "3"):
-            return {"1": True, "2": False, "3": None}[value]
-
-
 def main(argv=None):
     args = parse_args(argv)
     camera_configuration = load_joint_camera_configuration(args.camera_set)
@@ -104,6 +97,7 @@ def main(argv=None):
             "teleoperation_profile": "legacy_abs_j6yaw",
             "target_demonstrations": args.target_demonstrations,
             "stack_demonstrations": args.stack_demonstrations,
+            **({"target_outcome_entry": "single_operator_confirmation"} if args.stack_demonstrations else {}),
             "mode": "supervised_capture" if args.record else "plan_only"}
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if not args.record:
@@ -237,16 +231,14 @@ def main(argv=None):
                 listener = None
             choices = {"1": "single_success", "2": "empty", "3": "multi_pick", "4": "slip",
                        "5": "blocked", "6": "uncertain"}
+            labels = ("1 成功（抓对目标、单根夹起、送达松开）", "6 不确定或抓错目标") if args.stack_demonstrations \
+                else ("1 单根成功", "6 不确定")
             while True:
-                choice = input(f"第 {index + 1} 条结果：1 单根成功，2 抓空，3 多抓，4 滑落，5 受阻，6 不确定：").strip()
+                choice = input(f"第 {index + 1} 条结果：{labels[0]}，2 抓空，3 多抓，4 滑落，5 受阻，{labels[1]}：").strip()
                 if choice in choices:
                     if args.stack_demonstrations:
-                        return {"human_outcome": choices[choice], "target_outcome": {
-                            "target_matched": human_boolean("是否抓对指定目标"),
-                            "held": human_boolean("是否实际夹住"),
-                            "single_strip": human_boolean("是否恰好带起一根"),
-                            "delivered": human_boolean("是否送达左侧放置区并松开"),
-                            "neighbor_disturbed": human_boolean("是否碰动邻条")}}
+                        return {"human_outcome": choices[choice],
+                                "target_outcome": confirmed_target_outcome(choices[choice])}
                     return choices[choice]
 
         session = JointCaptureSession(dataset_root=args.dataset_root, evidence_root=args.evidence_root,

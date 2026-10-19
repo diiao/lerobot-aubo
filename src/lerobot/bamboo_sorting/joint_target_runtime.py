@@ -1,7 +1,7 @@
 """Fresh segmentation plus explicit human seed; no hardware or motion commands.
 
 Automatic masks remain reviewed=False. Association failure stops the request;
-no old mask is returned and no automatic identity recovery is attempted.
+no old mask is returned. Explicit multi-target misses carry diagnostic evidence.
 """
 import base64
 import time
@@ -12,6 +12,17 @@ import numpy as np
 from .joint_target import outline_target_images
 from .joint_target_association import TargetAssociation
 from .joint_target_policy import target_policy_contract_record
+
+
+class TargetForegroundMissing(ValueError):
+    """Only a same-frame multi-target empty assignment; never a model/IO error."""
+
+    code = 'target_foreground_missing'
+
+    def __init__(self, evidence):
+        super().__init__('target association failed: selected target has no current foreground: '
+                         + evidence['target_id'])
+        self.evidence = evidence
 
 
 def encode_mask(mask, *, allow_empty=False):
@@ -111,7 +122,7 @@ class FreshTargetInputs:
         self.last_frame = None
         self.transport_started = False
 
-    def prepare(self, frame, metadata):
+    def prepare(self, frame, metadata, *, motion_reference=None):
         if (not isinstance(metadata, dict) or metadata.get('target_id') != self.target_id
                 or not metadata.get('frame_id') or metadata['frame_id'] == self.last_frame
                 or metadata.get('phase') not in ('approach', 'transport')):
@@ -128,6 +139,26 @@ class FreshTargetInputs:
         evidence = dict(frame_id=self.last_frame, target_id=self.target_id, phase=metadata['phase'],
                         human_reviewed=False, seed_snapshot_id=self.seed['snapshot_id'],
                         target_selection_mode=self.selection_mode)
+        motion_masks = None
+        if self.seed.get('motion_tracking') and not transport:
+            if (self.selection_mode != 'multi_foreground' or not isinstance(motion_reference, dict)
+                    or motion_reference.get('schema') != 'joint_target_motion_reference'
+                    or motion_reference.get('frame_id') != metadata['frame_id']
+                    or motion_reference.get('source') != 'rgb_optical_flow'
+                    or motion_reference.get('human_reviewed') is not False
+                    or set(motion_reference.get('masks_png', {})) != set(self.separator.targets)):
+                raise ValueError('same-frame motion references required')
+            motion_masks = {t: decode_mask(m) for t, m in motion_reference['masks_png'].items()}
+            # References come from RGB motion, never previous segmentation drafts.
+            # The human seed remains unchanged, and only CURRENT foreground can
+            # become the policy outline.
+            from .joint_target_separation import MultiStripSeparation
+            self.separator = MultiStripSeparation(motion_masks)
+            self.separator.last_frame = self.index-1
+            evidence['motion_reference'] = {k:motion_reference[k] for k in
+                ('frame_id', 'source', 'human_reviewed', 'diagnostics', 'failures')}
+        elif motion_reference is not None:
+            raise ValueError('unexpected motion reference')
         if transport:
             self.transport_started = True
             prepared = dict(target_global_rgb=images['global_rgb'].copy(), grasp_rgb=images['grasp_rgb'].copy())
@@ -138,14 +169,12 @@ class FreshTargetInputs:
             if self.separator is not None:
                 masks, separation = self.separator.step(self.index-1, instances, segments)
                 mask = masks[self.target_id]
-                if not mask.any():
-                    raise ValueError('target association failed: selected target has no current foreground: ' + self.target_id)
-                prepared = outline_target_images(images, mask)
                 ok, encoded = cv2.imencode('.png', instances)
                 if not ok:
                     raise ValueError('instance evidence encoding failed')
-                evidence.update(source='same_frame_segmentation', mask_png=encode_mask(mask),
-                    association=dict(frame=self.index, target_id=self.target_id, status='separated', reviewed=False),
+                evidence.update(source='same_frame_segmentation', mask_png=encode_mask(mask, allow_empty=True),
+                    association=dict(frame=self.index, target_id=self.target_id,
+                                     status='separated' if mask.any() else 'missing', reviewed=False),
                     association_geometry_limits_enforced=False, association_match_thresholds_enforced=False,
                     association_selection_mode=separation['method'],
                     separation=separation,
@@ -157,6 +186,22 @@ class FreshTargetInputs:
                 if self.selection_mode == 'multi_foreground':
                     evidence['visible_masks_png'] = evidence.pop('paired_masks_png')
                 evidence['preparation_s'] = time.perf_counter()-started
+                if not mask.any():
+                    if self.selection_mode == 'multi_foreground':
+                        raise TargetForegroundMissing(evidence)
+                    raise ValueError('target association failed: selected target has no current foreground: ' + self.target_id)
+                if motion_masks is not None:
+                    failures = motion_reference['failures']
+                    # Failed optical flow can only fall back to the last location
+                    # when this frame's segmentation still supports that region.
+                    # A tiny nonempty fragment cannot certify a moved identity.
+                    support = {t: float(np.count_nonzero(masks[t] & m) / m.sum())
+                               for t, m in motion_masks.items()}
+                    evidence['motion_reference']['current_foreground_support'] = support
+                    for target in motion_masks:
+                        if support[target] < (.5 if target in failures else .25):
+                            raise ValueError('target motion reference lacks current foreground support: ' + target)
+                prepared = outline_target_images(images, mask)
                 return {'observation.state':frame['observation.state'], 'task':frame['task'],
                         'target_contract':target_policy_contract_record(), 'target_input':dict(metadata),
                         **{'observation.images.'+name:value for name,value in prepared.items()}}, evidence

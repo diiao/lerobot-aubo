@@ -133,7 +133,11 @@ class MultiStripSeparation:
     merged strips or shrink a reference to an occluded tip. The motion radius
     is relative to the seed, not cumulative inter-frame travel. Only current
     candidate pixels can enter output masks; larger motion requires new seeds.
+    Widening the search must not relax the whole-instance ownership shortcut:
+    that shortcut remains limited to the original small-jitter neighborhood.
     """
+
+    DOMINANT_SUPPORT_RADIUS_PX = 8
 
     def __init__(self, seeds, *, motion_radius_px=8):
         if not seeds or any(not isinstance(t, str) or not t.strip() for t in seeds):
@@ -169,9 +173,13 @@ class MultiStripSeparation:
                 # rather than splitting it along yesterday's crossing edge.
                 # A distant minority can be another real strip, not crossing
                 # jitter. Never let overlap majority erase that identity.
+                # Search expansion is not evidence that a merged instance has
+                # one owner. Preserve the original ownership tolerance even
+                # when a diagnostic requests a larger foreground search area.
                 if (overlap[dominant] >= .8 * sum(overlap.values())
                         and overlap[dominant] >= .5 * current.sum()
-                        and np.all(distances[dominant][current] <= self.motion_radius_px)):
+                        and np.all(distances[dominant][current] <= min(
+                            self.motion_radius_px, self.DOMINANT_SUPPORT_RADIUS_PX))):
                     supports = [dominant]
             if not supports:
                 supports = [t for t in self.targets if np.any(current & (distances[t] <= self.motion_radius_px))]

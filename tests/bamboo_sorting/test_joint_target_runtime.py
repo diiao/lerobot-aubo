@@ -159,6 +159,32 @@ def test_paired_mode_does_not_rename_only_competitor_as_selected_target():
         session.prepare(frame,dict(frame_id='new',target_id='A',phase='approach'))
 
 
+def test_multi_empty_evidence_and_next_fresh_frame_preserve_indices_and_seeds():
+    from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing
+    mask,other,seed,frame=paired_inputs()
+    seed['target_selection_mode']='multi_foreground'
+    seed['visible_targets']=seed.pop('paired_targets')
+    maps=[mask|other,other,mask|other]
+    session=FreshTargetInputs(seed,lambda rgb:(maps.pop(0).astype(np.uint16),[dict(mask_id=1,class_id=0)]))
+    session.prepare(frame,dict(frame_id='first',target_id='A',phase='approach'))
+    with pytest.raises(TargetForegroundMissing) as caught:
+        session.prepare(frame,dict(frame_id='lost',target_id='A',phase='approach'))
+    evidence=caught.value.evidence
+    assert evidence['association']['status']=='missing'
+    assert evidence['segmentation_segments']==[dict(mask_id=1,class_id=0)]
+    assert evidence['visible_masks_png']['A'] is None
+    np.testing.assert_array_equal(decode_mask(evidence['visible_masks_png']['B']),other)
+    assert not decode_mask(evidence['mask_png'],allow_empty=True).any()
+    assert session.last_frame=='lost' and session.index==2 and session.separator.last_frame==1
+    with pytest.raises(ValueError,match='fresh frame'):
+        session.prepare(frame,dict(frame_id='lost',target_id='A',phase='approach'))
+    _,recovered=session.prepare(frame,dict(frame_id='new',target_id='A',phase='approach'))
+    assert session.index==3 and recovered['separation']['frame']==2
+    np.testing.assert_array_equal(decode_mask(recovered['mask_png']),mask)
+    assert session.transport_started is False
+    np.testing.assert_array_equal(session.separator.references['A'],mask)
+
+
 def test_paired_transport_uses_raw_rgb_without_segmentation():
     _,_,seed,frame=paired_inputs()
     def forbidden(rgb):raise AssertionError('transport segmentation')

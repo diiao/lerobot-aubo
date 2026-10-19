@@ -246,6 +246,27 @@ def test_stack_capture_preserves_sequence_counts_and_separate_human_outcomes(tmp
     assert summary['grasp_only_episodes'] == [2, 3, 4, 5]
 
 
+def test_stack_single_confirmation_derives_target_fields(tmp_path):
+    from lerobot.bamboo_sorting.joint_stack_metadata import (
+        confirmed_target_outcome, stack_summary, successful_target_outcome)
+    session = _session(tmp_path)
+    session.prepare_episode = lambda i: dict(scene_id='p-001', target_id=f's-{i+1:03}', split='train',
+                                             pick_step=i+1, available_target_count=[2, 1, 1][i])
+    results = ['single_success', 'empty', 'uncertain']
+    session.outcome_provider = lambda i: dict(human_outcome=results[i], target_outcome=confirmed_target_outcome(results[i]))
+    for index in range(3):
+        _, dataset = _record_one(tmp_path, session.episode_frame_observer())
+        dataset.num_episodes = index
+        session.save_episode(dataset=dataset, episode_index=index)
+    session.on_dataset_finalize_success(dataset=dataset, recorded_episode_count=3)
+    records = json.loads((tmp_path/'evidence/session.json').read_text())['attempts']
+    assert [successful_target_outcome(r['target_outcome']) for r in records] == [True, False, False]
+    assert all(r['target_outcome']['neighbor_disturbed'] is None for r in records)
+    summary = stack_summary([dict(episode_index=r['episode_index'], **r['metadata'], human_outcome=r['human_outcome'],
+                                  target_outcome=r['target_outcome']) for r in records])
+    assert summary['unknown_outcome_episodes'] == [2]
+
+
 @pytest.mark.parametrize('changes', [{'pick_step': True}, {'pick_step': 7}, {'available_target_count': 0}, {'available_target_count': 4}])
 def test_stack_metadata_rejected_before_recording(tmp_path, changes):
     session = _session(tmp_path)
@@ -277,7 +298,9 @@ def test_stack_plan_has_no_hardware_and_creates_no_directory(tmp_path, capsys):
     entry = _entry()
     assert entry.main(['--stack-demonstrations', '--split', 'train', '--num-episodes', '9',
                        '--dataset-root', str(tmp_path/'data'), '--evidence-root', str(tmp_path/'evidence')]) == 0
-    assert '"stack_demonstrations": true' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert '"stack_demonstrations": true' in out
+    assert '"target_outcome_entry": "single_operator_confirmation"' in out
     assert not (tmp_path/'data').exists() and not (tmp_path/'evidence').exists()
 
 

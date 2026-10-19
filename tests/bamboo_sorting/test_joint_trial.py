@@ -610,3 +610,37 @@ def test_observe_reuses_state_without_refreshing_its_timestamp(max_camera_age_ms
                                   max_camera_age_ms=max_camera_age_ms)
     assert state==snapshot[0] and stamps==[10.02,10.02,10.]
     assert ages==[max_camera_age_ms,max_camera_age_ms]
+
+
+@pytest.mark.parametrize('corruption',[None,'id','checkpoint','target','frame','phase','snapshot','mode','nonempty','ordinary_error'])
+def test_empty_target_pipe_requires_matching_typed_evidence(monkeypatch,corruption):
+    import io
+    from types import SimpleNamespace
+    import numpy as np
+    from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing,encode_mask
+    m=load_entry()
+    pipe=m.InferencePipe.__new__(m.InferencePipe)
+    pipe.target_conditioned=True;pipe.contract={};pipe.expected_sha256='model';pipe.request_timeout_s=5
+    pipe.live_target_seed=dict(snapshot_id='snapshot',target_selection_mode='multi_foreground')
+    pipe.process=SimpleNamespace(stdin=io.StringIO())
+    meta=dict(target_id='B',frame_id='snapshot/live/42',phase='approach')
+    mask=np.zeros((480,640),bool)
+    if corruption=='nonempty':mask[10,10]=True
+    evidence=dict(**meta,seed_snapshot_id='snapshot',target_selection_mode='multi_foreground',
+        source='same_frame_segmentation',human_reviewed=False,association={'status':'missing'},
+        mask_png=encode_mask(mask,allow_empty=True))
+    response=dict(id=42,checkpoint_sha256='model',error='missing B',error_code=TargetForegroundMissing.code,
+        target_input=meta.copy(),target_evidence=evidence)
+    if corruption=='id':response['id']=41
+    if corruption=='checkpoint':response['checkpoint_sha256']='other'
+    if corruption=='target':evidence['target_id']='C'
+    if corruption=='frame':evidence['frame_id']='old'
+    if corruption=='phase':evidence['phase']='transport'
+    if corruption=='snapshot':evidence['seed_snapshot_id']='old'
+    if corruption=='mode':evidence['target_selection_mode']='paired_foreground'
+    if corruption=='ordinary_error':response['error_code']='model_error'
+    monkeypatch.setattr(pipe,'receive',lambda timeout:response)
+    images={k:np.zeros((480,640,3),np.uint8) for k in ('global_rgb','grasp_rgb')}
+    with pytest.raises(TargetForegroundMissing if corruption is None else ValueError) as caught:
+        pipe.predict(42,[*START_DEG,0],images,codec='rgb_zlib',target_input=meta)
+    if corruption is not None:assert not isinstance(caught.value,TargetForegroundMissing)

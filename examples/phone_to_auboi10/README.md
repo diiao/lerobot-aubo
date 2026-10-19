@@ -1,6 +1,6 @@
 # AUBO i10 项目手册
 
-更新：2026-10-16。本文集中维护当前状态、操作方法和后续计划；实验指标与原始路径只维护在
+更新：2026-10-17。本文集中维护当前状态、操作方法和后续计划；实验指标与原始路径只维护在
 [证据索引](EVIDENCE.md)。所有命令从仓库根目录 `/home/rentao/program/lerobot-aubo` 执行。
 
 ## 目录
@@ -43,7 +43,11 @@
 
 ## 三根堆叠目标示教方案
 
-**状态：2026-10-16首批两堆6条训练试采已完成采后检查、全段标注人工审核及数据接口验收，尚未训练三根堆叠模型。** 本批目标编号和堆内序号已按操作者确认更正，见[首批实采证据](EVIDENCE.md#三根堆叠首批试采)。6条首帧种子与全部2004帧接近轮廓均获操作者明确确认，包含4帧当前RGB辅助补标；完整审核JSON已归档到`pile-json--/stack/joint_stack_pilot/`。真实LeRobot/PyAV逐帧检查4094帧通过：2004帧接近、2090帧搬运，原始状态／动作、50步动作块填充及训练／运行时图像与阶段一致。当前`target_source_ready=true`、`target_training_ready=false`：本批来源接口已通过，但独立验证堆仍缺失。下一步另行采集`p-101`验证堆，再确定正式采集规模和训练方案；不将同堆片段拆到验证集。浏览器点选／多边形编辑交互未单独验收；未部署新远端服务。采集、推理、训练及实机运行仍需各自现场授权，现场命令由操作者执行。
+**状态（2026-10-18）：两组均完成30000步、最终保存、严格重载及同一6023帧验证验收，离线对照完成。基线夹紧／释放命中0／9、0／9，目标模型为0／9、1／9；目标描边未显示一致的整体优势，主动夹爪切换问题尚未解决。训练完成不代表抓放能力通过。** 训练p-001～p-020共20堆60条40673帧（含pilot），验证p-101～p-103共3堆9条6023帧；最后新增三批已完整解码双路视频并核对帧时间、夹紧／释放周期与目标元数据。四个跨目录堆身份／步号连续，训练与验证无重复`scene_id`；这只检查编号，实际独立摆放仍依据现场记录。历史`capture_complete=false`保持原样，续录已补齐。新增批有少量真实采样间隔增大，存储检查通过不等于持续稳定25 Hz，具体帧号见[完整采后记录](EVIDENCE.md#三根堆叠正式采集)。
+
+**标注与接口验收**：全部69条示教的23107个接近帧已获用户对话确认，12批共46696帧通过真实LeRobot／PyAV接口验收，无排除episode。剩余10批的18013个接近帧包含179帧RGB辅助修订，确认后掩码与首帧种子未改；原问题提示、旧掩码及修订来源均保留。确认来源是用户对话，不声称逐帧点击或独立逐像素真值，人工审核用时未知。[原审核入口](../../artifacts/capture/stack/joint_stack_train_20261017/review.html#remaining-stack-seed-review)保留各批确认JSON与验收结果。标注阶段复用项目现有目录，没有重复上传或推理；本次获授权训练另建独立远端项目。
+
+**训练准备**：[数据准备检查](../../artifacts/capture/stack/joint_stack_train_20261017/training_data_readiness_check.json)已逐来源、逐episode核对无描边基线与目标条件模型使用完全相同的训练20堆60条40673帧、验证3堆9条6023帧，场景编号无交集。七维归一化统计量只使用40673个训练帧，验证帧未参与；两模型共享相同统计量。12批均`target_source_ready=true`，整组`data_interface_ready=true`；训练起点及两组参数、新目录和实际运行已获用户明确授权；首次传输完成，两组零更新合成模型检查和严格重载通过，基线已产生真实优化步数，`target_training_ready=true`。两组远端实际预检均与本地69条选择及训练集归一化一致，两组远端统计完全相同。[准备状态](../../artifacts/capture/stack/joint_stack_train_20261017/training_readiness.json)维护剩余事项。本轮已加载策略模型并启动训练，未操作硬件；浏览器点选／多边形交互未单独验收。
 原“下探高度修正”方案已取消（见[分阶段路线](#分阶段路线)），堆叠层高由模型从示教中学习，本方案不加任何高度、姿态或轨迹补偿。
 
 **场景规格**
@@ -65,7 +69,7 @@
 
 - `scene_id`为堆编号，同一堆各条共用：训练用`p-001`起，验证用`p-101`起，不与历史`t-*`混用。`target_id`为该堆内竹条编号`s-001`～`s-003`；不同竹条不共用ID，若失败后再试同一根仍沿用其ID。
 - 新增`--stack-demonstrations`，自动启用目标示教；每条询问`pick_step`（本堆保存的抓取尝试序号1～6）和`available_target_count`（当时可选且有下指空间的上层条数1～3）。失败也占一次已保存尝试，未保存的重录不占；同一会话内同堆序号递增，允许不完整堆，不从序号推算剩余根数。每堆最多保存6次尝试，为失败后人工重试留出余量；可选条数仍最多3根，不随尝试上限增加。自动重试属于后续阶段。文字描述字段仍留空，旧数据无需补填新字段。
-- 结果除原`human_outcome`外保存`target_outcome`：`target_matched`、`held`、`single_strip`、`delivered`、`neighbor_disturbed`，分别为抓对、夹住、单根、送达和邻条扰动，取`true/false/null`。前四项明确为真、原结果为`single_success`且恰好一个完整闭合／释放周期，才成为成功目标示教候选；未知或失败保留在原记录中，不自动改标成功。
+- 结果除原`human_outcome`外保存`target_outcome`：`target_matched`、`held`、`single_strip`、`delivered`、`neighbor_disturbed`，分别为抓对、夹住、单根、送达和邻条扰动，取`true/false/null`。2026-10-17起按用户要求不再逐项询问：每条结束只按一次结果菜单，`1`表示操作者现场确认“抓对目标、单根夹起、送达松开”，前四项自动记为真；其他结果前四项记`null`，失败类别只保存在`human_outcome`，抓错目标选`6`；邻条扰动不再记录（`null`）。`plan.json`中`target_outcome_entry=single_operator_confirmation`标明来源；汇总的未知结果只计`6`及缺项的成功记录。首批`joint_stack_pilot`为逐项回答，不改写。前四项明确为真、原结果为`single_success`且恰好一个完整闭合／释放周期，才成为成功目标示教候选；未知或失败保留在原记录中，不自动改标成功。
 - 训练集和验证集按整堆划分，同一堆各步不得拆到两边；泄漏检查包含被排除的失败步骤所在堆，避免只检查成功样本而漏掉同堆关联。
 
 **目标轮廓标注（离线）**
@@ -76,13 +80,34 @@
 - 交叉处一个实例覆盖两根时，须拆分或登记为已知误差；草稿经用户复核接受后才进入训练，沿用`reviewed`与`accepted_annotation_limitations`约定。
 - 实时入口`run_joint_smooth.py`的目标输入同样推广到N根种子，每次抓放前重新拍照圈选；初期人工选目标，之后可由`top_strip`候选加规则选择。
 
-`MultiStripSeparation`以已确认可见种子作为固定身份参考，不把未审核轮廓写回参考，避免合并实例造成身份漂移和遮挡造成参考缩小。当前实例像素须在对应种子8像素范围内；这限制相对首帧的位移，不是逐帧累计移动范围，适用于本批夹紧前竹条基本静止的场景，明显位移需重新标种子。合并实例按可见区域距离拆分，中心线为次要依据；等距及超范围像素不分配，拆分处保留复核提示。主支持判定仍为至少占种子重叠80%、覆盖当前实例50%，并要求整个实例处于主种子邻域，避免远处的小块目标被多数规则吞掉。这些是草稿启发式，不是识别精度或物理安全阈值。相关49项软件测试通过，并重放本批2004帧、查看42帧对照；不等于独立场景或实机验收。离线与显式多根模式实时接口共用此类，本次未启动实机；旧`PairedStripSeparation`及其行为不变。
+`MultiStripSeparation`以已确认可见种子作为固定身份参考，不把未审核轮廓写回参考，避免合并实例造成身份漂移和遮挡造成参考缩小。当前实例像素须在对应种子8像素范围内；这限制相对首帧的位移，不是逐帧累计移动范围，适用于本批夹紧前竹条基本静止的场景，明显位移需重新标种子。合并实例按可见区域距离拆分，中心线为次要依据；等距及超范围像素不分配，拆分处保留复核提示。主支持判定仍为至少占种子重叠80%、覆盖当前实例50%，并要求整个实例处于主种子的固定小抖动邻域（最多8像素；搜索半径更小时随之收紧），避免放宽搜索范围时把其他身份的小片吞掉。默认搜索半径仍为8像素；修复后的5094帧默认重放与原记录一致，16／24像素诊断不再触发本次发现的身份转移，详见[正式批次证据](EVIDENCE.md#三根堆叠正式采集)。这些是草稿启发式，不是识别精度或物理安全阈值。相关49项软件测试通过，并重放本批2004帧、查看42帧对照；不等于独立场景或实机验收。离线与显式多根模式实时接口共用此类，本次未启动实机；旧`PairedStripSeparation`及其行为不变。
+
+冻结分割漏检诊断已完成两次授权推理，原始候选已保留，后续后处理比较可在本地进行。当前证据显示部分目标形状存在于极低分、含多根竹条的候选中；降低阈值或改变插值方式尚不能替代完整人工审核。维持原参数及已确认标注，剩余10批已完成整段用户确认与接口验收；详细结果与限制统一见[正式批次证据](EVIDENCE.md#三根堆叠正式采集)。若后续要微调分割模型，须补充所选训练图中全部可见竹条的实例及类别，不能直接把仅含目标条的动作训练掩码当作完整分割真值；独立整堆验证与训练授权另行确定。
+
+**当前问题与补录边界（2026-10-17）**：身份判定的半径耦合已修复，冻结分割漏检尚未解决。漏检影响离线轮廓草稿，不是原始RGB／关节示教录制故障，因此不把根治漏检作为补录前置条件；新批次仍须采后检查、完整人工标注审核和接口验收。采集侧另有两项未解决问题：腕部相机曾多次空帧超时，原因未确认；LeRobot的`clear_episode_buffer`不清理视频字段临时帧，中断后可能残留PNG，清理缺陷尚未修复。历史中断及一次收尾伺服关闭未及时确认的记录见[正式采集证据](EVIDENCE.md#三根堆叠正式采集)。不将已通过的采后检查当作当前相机或伺服状态保证；若中断，先核对现场状态与实际保存进度，再用新批次目录续录，不覆盖已有数据。
 
 **规模与训练**
 
-- 先试采2～3堆（约6～9条），走通“连续清堆采集→多实例标注→数据接口验收”，再定正式规模（初步约20～30堆训练、约60～90条，另加独立验证堆）。
-- 试采安排：训练批`p-001`、`p-002`用下方命令，验证批`p-101`另行运行，均为上述布局。第1步`p-001`先抓交叉上层条、`p-002`先抓独立条、`p-101`先抓独立条，各堆交叉位置和朝向不同。`--split`每次运行固定、已有输出目录被拒绝，训练／验证因此分批分目录；失败占满名额时允许堆不完整，不为凑满补录。身份统一为`s-001`交叉上层条、`s-002`交叉下层条、`s-003`独立条；每堆开始前拍一张俯视照，种子页按同一身份命名。竹条上不贴标签或记号。首批实采存在已确认的身份命名差异，标注时以[本批身份记录](EVIDENCE.md#三根堆叠首批试采)为准，不按计划角色重新编号。
-- 训练起点待试采后决定：在`target-pair`检查点上用堆叠示教微调，或合并成对与堆叠数据从基座训练。同数据无描边基线同步规划，用于核心证据“模型服从描边”。
+- 首批`p-001`、`p-002`试采计入训练；当前已录完20堆训练、3堆验证，验证堆按独立摆放分批穿插采集。用户已确定剩余10批全部逐帧完整审核，正式试做批审核用时未知，不据此估算人工总工时。
+- 摆放与顺序：每次现场前列简单摆放清单（交叉位置、上层条倾斜方向、抓取顺序），验证堆和最终测试堆事先指定。本布局有三种抓取顺序：上层→下层→独立、上层→独立→下层（k为2／2／1）、独立→上层→下层（k为2／1／1），各堆轮换；最终训练A／B／C为7／6／7堆，验证各1堆（见[正式采集记录](EVIDENCE.md#三根堆叠正式采集)）。清单的左右与远近按操作者现场视角书写。首批两堆的交叉上层条同为“左下→右上”倾斜、支撑台右边缘均有竖直条，后续避免重复这一模式。`--split`每次运行固定、已有输出目录被拒绝，训练／验证因此分批分目录；失败占满名额时允许堆不完整，不为凑满补录。目标ID按本堆抓取顺序编号（2026-10-17用户确定，与首批实采一致）：最先抓的竹条为`s-001`，其后依次为`s-002`、`s-003`；失败后重试同一根沿用原ID，`pick_step`照常递增。各根角色（交叉上层／下层／独立）只写在摆放清单和俯视照上，不由ID推断。每堆开始前拍一张俯视照，种子页按同一身份命名。竹条上不贴标签或记号。首批身份见[本批记录](EVIDENCE.md#三根堆叠首批试采)。
+- 全部目标标注及接口验收已完成；当前[已授权配置](../../artifacts/capture/stack/joint_stack_train_20261017/training_run_authorized.json)确定两组均从同一`SmolVLA base`开始，仅使用本次堆叠数据，每组30000步、batch 8、seed 42，共用训练集归一化。无描边基线与目标条件模型使用相同60条训练／9条验证示教，顺序运行；这样可控制初始化和数据差异，比较接近阶段描边的作用。旧成对检查点和数据保留，本次候选不混入。该方案及新目录、传输、模型检查和实际训练已获用户明确授权；两组模型检查、30000步、严格重载及保存观测验证均已完成，原顺序运行器正常结束。离线误差、夹紧／释放事件及逐堆结果用于诊断，目标服从与抓取效果仍需事先指定测试堆上的实机验证。
+- 远端新建独立项目`/home/rentao/program/lerobot-aubo-joint-stack`，复用原Python环境及模型缓存；[授权传输清单](../../artifacts/capture/stack/joint_stack_train_20261017/training_transfer_authorized.json)只含训练所需原始视频／数据、采集证据、已确认标注及隔离代码，不重复上传分割RGB、旧预测或模型权重。用户已明确允许新建目录，原成对项目和结果保留；训练器拒绝已有输出目录，只保存最终检查点，不支持隐式断点续训。具体资源、估时和验收边界见[证据](EVIDENCE.md#三根堆叠正式采集)。
+
+两组完成验收和离线对照后，本线程每30分钟自动跟进已停止。逐关节、逐堆、分阶段和夹爪事件结论统一见[证据](EVIDENCE.md#三根堆叠正式采集)及[离线对照](../../artifacts/capture/stack/joint_stack_train_20261017/offline_comparison.json)。已收集的完成报告与预测保存在现有总产物目录`training_results/`，原始数据和模型保持不变。下一步优先只读定位夹爪切换问题，核对状态／动作对齐、事件样本占比与动作块各步输出；这些是待验证方向，不是已确认原因。不据当前结果直接增加训练步数、改变阈值或加入脚本抓放；实机比较仍须另行授权。
+
+**补录范围与原计划（2026-10-17，已完成）**：新增训练p-017～p-020共12条，验证p-103共3条，达到训练20堆60条、验证3堆9条。以下保留录制前建议；实际角色以原图及`layout_record.json`为准，p-020已确认改为C顺序。
+
+| 堆编号 | 划分 | 建议抓取顺序 | 三步可选数k（按计划摆放时） |
+|---|---|---|---|
+| p-017 | 训练 | B：交叉上层→独立→交叉下层 | 2／2／1 |
+| p-018 | 训练 | C：独立→交叉上层→交叉下层 | 2／1／1 |
+| p-019 | 训练 | A：交叉上层→交叉下层→独立 | 2／2／1 |
+| p-020 | 训练 | B：交叉上层→独立→交叉下层 | 2／2／1 |
+| p-103 | 验证 | A：交叉上层→交叉下层→独立 | 2／2／1 |
+
+原计划对应训练A／B／C为7／7／6堆；p-020实际C，因此最终为7／6／7堆，验证各1堆。左右位置按操作者视角描述，各堆改变交叉位置和朝向，独立条与交叉对留出可辨间隔；保持现有相机、起点和放置区。每堆按实际抓取顺序编号`s-001`～`s-003`，每条的`pick_step`与k依据实际现场填写；跨批续录同一堆保留身份及已保存尝试序号。新堆开录前拍照，并将实际角色／顺序补充到既有`layout_record.json`，不改旧堆记录。
+
+**补录当前进度**：`joint_stack_train_20261017_p017_p020`保存7条4744帧，续录`joint_stack_train_20261017_from_p019_step2`保存5条3502帧，`joint_stack_validation_20261017_p103`保存3条2055帧；三批均完成采后检查及本地标注准备，无残留临时PNG。助手已核对五堆三步起始全局图：p-017 B、p-018 C、p-019 A、p-020 C、p-103 A；原摆放记录已补齐并保留修改前副本。p-020仍保留用户确认来源和原计划B，未改示教元数据或ID。采集已结束，下面两个补录输出目录均已存在，命令仅供历史回溯，不能直接重复执行。续录成功不证明腕部相机间歇故障根因已解决。
 
 **评价**：每次指定目标，分别记录抓对、夹住、恰好一根、送达及邻条扰动，以及当时可选上层条数k。目标服从只统计k≥2的步骤；1／k仅是“均匀随机选择”的参考水平，主要对照是同样步骤下无描边基线的实际选择分布。k=1的步骤只用于抓放能力统计。中止轮记为未知，不剔除。
 
@@ -96,7 +121,23 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
   --dataset-root datasets/stack/train/joint_stack_pilot --evidence-root artifacts/capture/stack/joint_stack_pilot
 ```
 
-验证批改为`--split validation --num-episodes 3 --dataset-root datasets/stack/validation/joint_stack_pilot_validation --evidence-root artifacts/capture/stack/joint_stack_pilot_validation`，其余参数相同；两批各自走下方采后流程。
+正式批次按日期命名、每批换新目录，同日多批在日期后加堆号范围（如`_p010_p016`）：训练如`--split train --num-episodes 21 --dataset-root datasets/stack/train/joint_stack_train_<日期> --evidence-root artifacts/capture/stack/joint_stack_train_<日期>`，验证如`--split validation --num-episodes 3 --dataset-root datasets/stack/validation/joint_stack_validation_<日期> --evidence-root artifacts/capture/stack/joint_stack_validation_<日期>`，其余参数相同；各批分别走下方采后流程。
+
+下列为已完成补录的历史命令，原输出目录均已存在，不再执行。`--num-episodes`计保存尝试数；中断续录的实际目录及进度见上文。
+
+```bash
+# 训练：p-017～p-020；首次输入p-017、s-001、pick_step=1、k=2。
+PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
+  --stack-demonstrations --camera-set original-global --split train --num-episodes 12 \
+  --dataset-root datasets/stack/train/joint_stack_train_20261017_p017_p020 \
+  --evidence-root artifacts/capture/stack/joint_stack_train_20261017_p017_p020 --record
+
+# 验证：p-103；独立新摆放，按A顺序录3条。
+PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
+  --stack-demonstrations --camera-set original-global --split validation --num-episodes 3 \
+  --dataset-root datasets/stack/validation/joint_stack_validation_20261017_p103 \
+  --evidence-root artifacts/capture/stack/joint_stack_validation_20261017_p103 --record
+```
 
 采后始终显式传入同批`--dataset-root`和`--evidence-root`，依次调用`prepare_joint_target_review.py`：
 
@@ -107,7 +148,7 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 5. `--stage separate`生成全部接近帧草稿，离线与实时调用同一分离器。不覆盖已有掩码；发现误差用页面逐帧修改，或“登记可接受的已知误差”，再`--stage import-review --decisions /导出的记录.json`。修改后必须查看重新生成的轮廓，明确确认范围后再次导入；浏览页面不会自动复核。
 6. `--stage verify`只对通过原始审计的成功目标示教做真实LeRobot/PyAV接口验收，报告排除的失败／未知episode；检查原始状态、动作、50步动作块尾部填充及训练／运行阶段一致。数据就绪仍不等于训练或物理成功。
 
-实时软件新增`--multi-target-separation`，与旧`--paired-target-separation`互斥；沿用`--model target-pair`的目标输入和单次抓放契约，支持1／2／3根剩余条的圈选。模型仍是既有检查点，**不是已训练的堆叠模型**；新服务路径为远端既有项目下`artifacts/joint_target_live_service/multi_foreground/`，本轮只准备路径和协议，未部署或启动。真实试验前须核对服务、模型与新现场圈选，不能直接把本地软件完成视为可运行部署。
+实时软件的`--multi-target-separation`与旧`--paired-target-separation`互斥，支持1／2／3根剩余条的圈选。早期`--model target-pair`的软件准备绑定旧成对检查点及其`artifacts/joint_target_live_service/multi_foreground/`路径，不能代替本次模型。2026-10-18新增`--model target-stack`，绑定已完成训练的堆叠目标模型和独立服务，自动启用多目标分离；现行部署验收、现场快照和自动归位连续抓放流程统一见[真机入口](#目标条件模型单次真机试验)。
 
 合成页面、检查结果及回滚位置统一见[软件准备证据](EVIDENCE.md#三根堆叠软件准备)。[腕部诊断工具](#斜条j6欠转的腕部角度诊断)独立于堆叠采集流程。
 
@@ -124,7 +165,7 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 | 审计原始关节数据 | [audit_joint_dataset.py](audit_joint_dataset.py) | `aubo_joint_audit.py`、`joint_gripper_quality.py`；成功候选筛选不代替物理结果确认 |
 | 多实例分离与目标输入 | [joint_target_separation.py](../../src/lerobot/bamboo_sorting/joint_target_separation.py)、[joint_target_policy.py](../../src/lerobot/bamboo_sorting/joint_target_policy.py) | `MultiStripSeparation`由离线与实时共用；[接口约定](#目标条件接口约定) |
 | 动作训练／离线评价 | [train_joint_smolvla.py](train_joint_smolvla.py)、[diagnose_joint_target_policy.py](diagnose_joint_target_policy.py) | `joint_training.py`、`smolvla_joint_adapter.py`；[训练阶段](#阶段与默认值)，已有诊断不重复运行 |
-| 目标圈选与现场运行 | [run_joint_target_shadow.py](run_joint_target_shadow.py)、[joint_target_shadow_review.html](joint_target_shadow_review.html)、[run_joint_smooth.py](run_joint_smooth.py) | `joint_target_live_setup.py`、`joint_target_runtime.py`、`joint_smooth.py`；[运行说明](#目标条件模型单次真机试验)，新堆叠服务尚未部署 |
+| 目标圈选与现场运行 | [run_joint_target_shadow.py](run_joint_target_shadow.py)、[joint_target_shadow_review.html](joint_target_shadow_review.html)、[run_joint_smooth.py](run_joint_smooth.py) | `joint_target_live_setup.py`、`joint_target_runtime.py`、`joint_smooth.py`；[运行说明](#目标条件模型单次真机试验)，`target-stack`已完成trial04一轮三根成功反馈及现场空目标恢复，见[实机复核](EVIDENCE.md#第四轮三根成功与现场空目标恢复) |
 | 静态分割采集／人工修边 | [capture_placement_sequence.py](capture_placement_sequence.py)、[review_placement_sequence.py](review_placement_sequence.py) | `placement_sequence.py`、`placement_review.py`／`.html`；[采集与复核](#静态分割采集与人工复核) |
 | 分割数据／训练／预测评价 | [export_strip_segmentation.py](export_strip_segmentation.py)、[train_strip_segmentation.py](train_strip_segmentation.py)、[predict_strip_images.py](predict_strip_images.py)、[evaluate_strip_segmentation.py](evaluate_strip_segmentation.py)、[review_strip_predictions.py](review_strip_predictions.py) | `strip_segmentation_data.py`、`strip_segmentation_training.py`；[分割流程](#静态分割数据训练与独立评价) |
 | 腕部20帧人工结果导入 | [review_joint_wrist_distribution.py](review_joint_wrist_distribution.py) 的 `--stage errors` | [人工复核流程](#斜条j6欠转的腕部角度诊断)；`diagnose_joint_wrist_angle.py`保留已完成测量的复现入口 |
@@ -181,12 +222,13 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 | `datasets/target_conditioned/pilot/` | 早期单目标试采`joint_target_pilot` | 1 |
 | `datasets/single_strip/train/`、`validation/` | 历史单根关节示教 | 8／1 |
 | `datasets/two_strip/train/`、`validation/` | 双根、两种上下摆放的关节示教 | 3／3 |
-| `datasets/stack/train/` | 三根堆叠目标示教试采，标注人工审核与来源接口验收已通过 | 1 |
+| `datasets/stack/train/` | 三根堆叠p-001～p-020，20堆60条40673帧；9批采后检查、完整标注接受及真实接口verify全部通过，训练候选已准备 | 9 |
+| `datasets/stack/validation/` | 独立验证p-101～p-103，3堆9条6023帧；3批采后检查、完整标注接受及真实接口verify全部通过 | 3 |
 | `datasets/segmentation/` | `short_strip_segmentation`（内含train／validation）与`short_strip_segmentation_test` | 2 |
 
 `joint_target_pair_pilot`已纳入正式训练来源，因此归入`target_conditioned/train/`，不单凭名称中的pilot判断用途。
 这些目录仅分类存储，不改变来源清单中的episode筛选、失败排除或训练／验证划分；同类批次没有合并。
-新录制按用途显式设置`--dataset-root`，`--evidence-root`仍在`artifacts/`下；三根堆叠使用`datasets/stack/train/`和`datasets/stack/validation/`，训练首批已录制，验证批待采，不预建空批次。
+新录制按用途显式设置`--dataset-root`，`--evidence-root`仍在`artifacts/`下；三根堆叠使用`datasets/stack/train/`和`datasets/stack/validation/`，本轮采集已完成（训练20堆、验证3堆），不预建空批次。
 
 2026-10-16已移动30个数据集，保留旧`datasets/<批次名>`为相对符号链接，以兼容既有训练清单、脚本默认值和历史报告。
 `datasets/.hidden`使支持该约定的文件管理器在普通视图隐藏这些旧入口；终端及不支持`.hidden`的编辑器仍会列出链接。
@@ -206,6 +248,7 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 | `pile-json--/segmentation/` | 48份静态堆放`pile_XXX_polygons.json` |
 | `pile-json--/target_selection/` | 2份历史现场`target_shadow_*_selection.json` |
 | `pile-json--/stack/joint_stack_pilot/` | 本次首帧自动草稿、已确认首帧`joint_stack_pilot_review_decisions.json`，4帧补标来源草稿`joint_stack_pilot_sequence_repairs_draft.json`及全序列确认`joint_stack_pilot_full_sequence_review_decisions.json` |
+| `pile-json--/stack/joint_stack_train_20261017_p010_p016/` | 正式试做批次的首帧草稿／确认、68帧RGB修订来源草稿及3090帧全序列确认JSON |
 
 2026-10-16按用户要求移动原50份文件，根目录同名入口保留相对符号链接；`.hidden`在支持它的文件管理器中隐藏旧入口，不重复占用数据空间。迁移核对文件身份、大小、修改时间和JSON可读性；清单与回滚脚本在`artifacts/maintenance/annotation_export_organization/`。回滚预览：`.venv/bin/python artifacts/maintenance/annotation_export_organization/rollback.py`，加`--apply`恢复这50份文件的旧布局，不删除新批次导出。
 
@@ -490,7 +533,7 @@ PYTHONPATH=src \
 ## 动作模型：现场运行
 
 本节1～5小节以自选目标的 `run_joint_smooth.py --model mixed-both-orders --approach-age-aligned` 为例，下表限制也是该模型的数值；
-已有目标条件运行入口使用 `--model target-pair`，其参数与命令只维护在[目标条件模型单次真机试验](#目标条件模型单次真机试验)。
+目标条件入口中，`--model target-stack`绑定本次三根堆叠模型，`target-pair`保留旧成对模型；参数与命令只维护在[目标条件模型单次真机试验](#目标条件模型单次真机试验)。
 运行前核对模型部署、CameraSetV2 和 GPU 占用；全部实机命令由现场操作者手动执行。
 当前代码不检测整堆清空。`--cycles N` 指定夹紧→松开指令周期数；省略时保留旧行为：混训两次，旧单根一次。
 单根试验使用 `--cycles 1`；只改变结束条件，不改变模型、动作选择、运动限制或总时限。
@@ -616,15 +659,83 @@ Ctrl+C、异常及超时进入停止伺服流程，不自动释放或归位。
 
 ### 目标条件模型单次真机试验
 
-`run_joint_smooth.py --model target-pair`保留既有目标条件模型的单次抓放入口；A／B现场实验已经阶段性结束，历史结果见[证据索引](EVIDENCE.md#目标条件模型最新ab现场结果与b失败复核)。新堆叠服务未部署、模型未训练，不能直接当成堆叠部署入口。
+`run_joint_smooth.py --model target-stack`绑定本次30000步目标模型，自动使用多目标可见种子分离。`--target-id`只抓一个指定目标；`--target-sequence A B C`依次抓放三根，两次之间自动归位，最后一根结束后停止。`target-pair`保留旧成对模型，不能用它代替新模型试验。新模型位于`/home/rentao/program/lerobot-aubo-joint-stack/outputs/joint_stack_target_smolvla/final`，独立服务为同项目`artifacts/joint_stack_live_service/joint_inference_stdio.py`；身份与无硬件验收见[部署记录](EVIDENCE.md#三根堆叠正式采集)。旧A／B历史见[原证据](EVIDENCE.md#目标条件模型最新ab现场结果与b失败复核)。
+
+此前`stack_target_20261018_trial03/three_pick_run`已由操作者运行：三次指令周期完成，但操作者确认B未抓到，不能记为三根物理成功。保存记录与成功下层示教对照表明，B闭爪高度偏高且腕部姿态存在差异；第118次非空小掩码异常不是唯一解释。详见[第三轮B抓空对照](EVIDENCE.md#第三轮b抓空与成功下层示教对照)。本节trial03命令保留为已执行流程示例，已有快照及输出目录不可覆盖；下一轮须按实际摆放选择新目录及对应标注。下方trial02的B/C续跑命令仅对应旧场景。
+
+最新`stack_target_20261018_trial04/three_pick_run`已执行，2026-10-19操作者反馈“一轮抓取，三根竹条都抓取了”。日志确认A→B→C各一个抓放周期、两次归位，关键帧显示三根依次送至左侧、右侧抓取区清空；本轮启用了实时预览与运动跟随。A第33次请求出现空目标，停稳后第34次新观察恢复，随后完成整轮。B本次闭爪附近反馈高度比上次低约5.63 mm，未添加脚本高度补偿；新摆放与跟踪同时变化，不能据单轮归因或宣称稳定成功率。详见[第四轮实机复核](EVIDENCE.md#第四轮三根成功与现场空目标恢复)。当前快照和运行目录均为已完成实验，不可直接复用为新试验输出；标准标注`selection.json`保留，重复导出`selection (1).json`已按用户授权核对一致后删除。
+
+**实时预览与扰动后的目标跟随（显式试验模式）**：用户已选择自动跟随移动目标、由模型持续修正。在本节运行命令上增加`--target-preview --track-target-motion`；后者只支持`target-stack`，前者也可单独用于目标模型。启动后终端显示`http://127.0.0.1:<端口>/`，在本机浏览器打开；地址同时写入新运行目录`preview.json`。左图显示该次预测的全局图像、实际输入模型的紫色轮廓及仅供观看的黄色外框，右图为同次请求的腕部图像；目标编号、阶段、预测编号、目标像素数和图像年龄同步显示。随新预测更新，不把旧框贴到较新的相机图像上；不是30 FPS无延迟检测。浏览器断开或图像变旧会显示提示，搬运和切换目标时清除旧框。预览是独立进程，队列满则丢预览帧，不阻塞伺服，不打开第二路相机，也不从网页发送机械臂命令。
+
+默认模式仍使用最初人工种子附近8像素的当前分割。`--track-target-motion`则用连续RGB纹理运动估计平移／旋转，移动身份参考后，仍只把本帧分割前景作为模型轮廓；不把分割草稿反复当作新身份种子，也不改原始人工标注。A搬运期间继续更新B/C的运动参考，切换模型会话后保留这些参考，已夹取目标从跟踪集合中移除。光流（相邻图像特征点的移动）需通过前后匹配和刚性拟合检查：单次观测中心位移≤35 px、旋转≤15°、尺度0.97～1.03、至少6个一致点及足够轴向跨度。特征不足时保留最近可靠参考，只有当前分割覆盖该参考至少50%才继续；正常运动匹配也要求至少25%当前前景支持。参考发生可见区域重叠时不接受该运动更新。这些是实验性身份关联条件，不是已验证的物理运动范围。
+
+现有空目标有界恢复仍保留。新跟随模式中，非空但支持不足的轮廓／无法确认的运动参考会按错误停止整轮，不自动改抓邻条，也不放宽阈值强行完成；它不是完整遮挡后重新识别同一根竹条的方案。该模式通过合成运动、保存录像、模拟三根流程及远端保存图像检查；trial04已有B参考随小幅运动更新并完成三根抓取的现场记录，仍未验证大位移、完全遮挡后身份恢复或稳定成功率。移除`--track-target-motion`即可回到固定种子关联，预览可以保留。新现场必须使用对应的新快照／人工种子和新运行目录；不能直接重用已移走A/C的trial03摆放。结果见[受控预测与跟随验证](EVIDENCE.md#受控轮廓预测与实时目标跟随)。
+
+**三根连续抓放的现场流程（2026-10-18授权）**：摆两根交叉、一根独立，保持原机位、起点和放置区。当前现场身份A为交叉上层条、B为下层条、C为独立条。使用`--target-sequence A B C`后，操作者一次启动：A夹紧—释放完成→停止伺服→自动归位→切换B→B完成后同样归位→切换C→C完成后停止。每次都重新读取当前图像并分割，原人工标注只作身份种子；剩余目标按A/B/C→B/C→C递减。两次之间不再要求重新拍照、圈选或输入命令。若其他竹条被带动或抓放异常，由现场操作者停止并重建场景；程序的夹爪命令计数不能自动证明物体已移走。trial04已有操作者确认三根均抓取成功及对应关键帧，自动物理成功判断仍未实现。
+
+每次归位复用现有`home_to_start`，只在释放命令成功且伺服关闭、机器人静止后执行；沿用60°/s、80°/s²及50%速度比例并在结束后恢复原比例，不受策略5°/s限速替代。每根使用独立推理会话，归位后会等待下一次模型加载，清空上一根动作块和阶段；权重、任务文字及模型动作不变。除下述有界空目标重新观察外，异常停止后续目标；不在最后一根后归位。`--max-seconds 600`在顺序模式中表示每根最多600秒（完成即结束），归位和模型加载另计。
+
+**空目标暂停与恢复**：`target-stack`接近阶段若收到与当前请求／身份／快照一致的`target_foreground_missing`，先关闭伺服、等待静止，保持实际夹爪命令；清空旧动作块、待夹紧目标和轨迹速度。随后使用停止之后的双路新图像与当前关节状态请求预测，有效且通过原有校验后从实测位置、零轨迹速度重新接续。每根累计最多3次新观测重试（成功一次不重置预算），第4次空目标停止整轮，不跳过当前目标。3次是监督试验的有限恢复预算，并非已验证的漏检持续时间；每次仍受原响应等待限制，每根总时限不重置。已经接受夹紧后不进入此恢复路径，通信／模型／状态／停伺服错误仍停止。
+
+远端仅对这种明确的多目标空分配保留会话；失败帧仍消耗自己的序号，不调用动作模型，不返回旧动作或旧掩码。错误证据保存在新运行目录`target_failures/<请求编号>/`：双路原始RGB无损PNG、候选实例PNG，以及`failure.json`中的请求编号、目标／阶段、观测关节、来源时间戳、候选列表、各目标掩码与分配报告。旧双目标服务不因本地修改自动获得此协议。trial04已在A的一次空目标后实测停稳并用新观察接续；这一例验证恢复流程，不代表分割漏检已修复或连续多帧丢失均可恢复；[软件与保存图像验证](EVIDENCE.md#三根堆叠正式采集)。
+
+第一抓先由现场操作者在[归位条件](#2-归位)满足后拍摄静止快照；此命令只读相机和机器人状态，不发运动或夹爪命令：
+
+```bash
+.venv/bin/python examples/phone_to_auboi10/run_joint_target_shadow.py \
+  --stage capture --onsite-confirmed \
+  --output artifacts/live/stack/stack_target_20261018_trial03/scene_snapshot
+```
+
+打开该目录`review.html`，将可见竹条数设为3，逐条填写A／B／C身份并标出可见区域；下层条的遮挡两侧分开圈选，不补画遮挡部分。人工确认后导出JSON，保存为该快照目录的`selection.json`。这是新现场种子，不复用训练图片或上一次抓取的圈选。快照工具的`predict`仍为旧成对影子对照，本流程只使用其`capture`及圈选功能。
+
+核对第一抓计划（不连接设备或加载模型）：
+
+```bash
+.venv/bin/python examples/phone_to_auboi10/run_joint_smooth.py \
+  --model target-stack \
+  --target-snapshot artifacts/live/stack/stack_target_20261018_trial03/scene_snapshot \
+  --target-selections artifacts/live/stack/stack_target_20261018_trial03/scene_snapshot/selection.json \
+  --target-sequence A B C --transport-age-aligned --latency-tolerant --max-seconds 600
+```
+
+计划须指向上述新检查点、`multi_foreground`、三次抓放及`automatic_home=true`。执行时由操作者在同一命令后加`--execute --output <尚不存在的新运行目录>`；trial03已执行目录及原单根记录不覆盖。若本堆A已经成功移走、B/C和全局相机未变，只需把顺序改为`--target-sequence B C`，并使用新输出目录；A会从候选种子中排除。重新摆满三根后必须使用与新摆放相符的快照和标注，不能因为目录里有旧A标注就再次抓已经移走的A。
+
+**本轮故障后继续剩余B/C**：以下命令只由现场操作者执行。先确认未持物、归位路径安全；如果B/C或全局机位已变化，先按上面的capture流程在**新目录**取得对应快照并重新人工圈选，替换命令中的快照与selection路径。`pick2_snapshot`包含原本全部三根，名称不表示B专属；只有A已移走且B/C与相机仍与该快照一致时，才能复用它。`--target-sequence B C`会在内存中排除A。
+
+先归位，确认成功后再执行第二条命令；不要在归位失败后继续：
+
+```bash
+.venv/bin/python examples/phone_to_auboi10/run_joint_trial.py \
+  --stage home --onsite-confirmed
+
+.venv/bin/python examples/phone_to_auboi10/run_joint_smooth.py \
+  --model target-stack \
+  --target-snapshot artifacts/live/stack/stack_target_20261018_trial02/pick2_snapshot \
+  --target-selections artifacts/live/stack/stack_target_20261018_trial02/pick2_snapshot/selection.json \
+  --target-sequence B C --transport-age-aligned --latency-tolerant --max-seconds 600 \
+  --execute --output artifacts/live/stack/stack_target_20261018_trial02/remaining_BC_recovery_run
+```
+
+输出目录须尚不存在；重跑时另取新名，原`three_pick_run`故障记录保持不动。去掉`--execute`可只查看计划；本次修复已完成此无硬件计划核对，但未启动以上现场命令。
+
+仍可用`--target-id A`运行原单次模式，默认不自动归位。单纯加`--cycles 3`不能替代明确目标顺序；顺序模式的周期数由列表长度决定。每轮记录各目标完成的指令周期、归位反馈和当前目标；物理抓对、夹住、单根送达由现场反馈记录。
+
+新入口沿用下述目标模型控制限制；`--transport-age-aligned`复用已有搬运取步方式，未加入夹爪触发补丁或轨迹补偿。首轮因观测年龄512.6 ms超过500 ms停止后，用户授权放宽截图中的时效限制和总运行时间；后续采用上述显式宽容选项。保存图像的通信耗时不能代替现场相机帧龄与控制时序验收。
 
 | 选项 | 行为与边界 |
 | --- | --- |
 | 不加分离选项 | 按最高分选择当前分割候选；实时位置／方向／面积／重合度／分数拒绝门限已取消，评分不证明身份正确，完全无候选时停止 |
 | `--paired-target-separation` | 已有双目标前景分离路径，限两根；保留历史部署 |
-| `--multi-target-separation` | 与双目标选项互斥，使用全部可见种子和当前实例；仅完成本地软件准备，服务路径见[堆叠章节](#三根堆叠目标示教方案) |
+| `--multi-target-separation` | 与双目标选项互斥，使用全部可见种子和当前实例；新`target-stack`自动启用，支持剩余3／2／1根；旧`target-pair`同名选项不改变其旧检查点绑定 |
 | `--transport-age-aligned` | 搬运按观察年龄取完整动作行，不跨过首次释放边界，到位后才松爪；省略时保留搬运首步行为 |
-| `--latency-tolerant` | `target-pair`预测年龄与无新预测看门狗均放宽至1.5秒，通信等待5秒；相机帧龄250 ms／时差100 ms保持，不能与`mixed-both-orders`的表格混用 |
+| `--latency-tolerant` | 两种目标模型的预测年龄与看门狗均为1.5秒，响应等待5秒。`target-stack`另放宽相机帧龄至400 ms、双相机时差300 ms、控制循环及伺服发送间隔700 ms、发送时状态年龄250 ms；旧`target-pair`对应四项仍为250／100／350／100 ms |
+| `--max-seconds 600` | 将单次运行上限从120秒延长到600秒；顺序模式为每根600秒，完成后按目标列表继续，最后一根完成停止 |
+| `--target-sequence A B C` | 仅用于`target-stack`，与`--target-id`互斥；使用已审核的目标身份顺序，释放后自动归位并开启下一根独立会话，剩余候选按3→2→1缩减 |
+
+预测年龄／看门狗／响应等待沿用旧目标模型宽容配置，相机两项参考旧`mixed-both-orders`；700 ms控制间隔和250 ms状态年龄是本次新容限，尚待现场验证。放宽意味着允许更旧的输入及更长的控制停顿，不会提高模型推理速度。名义控制频率仍25 Hz、伺服指令时长仍80 ms，控制器自身的超时行为不由这些Python阈值保证。待夹爪切换目标期限仍1.5秒，关节、速度、工作区和停止收尾逻辑不变。省略宽容选项及总时长选项即回到原默认值；单根模式不变。
+
+当前`pick1_snapshot/selection.json`的实际身份为A／B／C，顺序必须与实际导出一致。首轮记录`pick1_run`保留，复测写入新目录`pick1_run_latency_tolerant`；仅在竹条和全局机位未改变、已满足归位条件时复用该快照，否则重新采集标注。
 
 以下仅为**已有双目标路径的计划模板**，用本次真实快照、导出和目标ID替换占位符；不加`--execute`不连接设备或加载模型：
 

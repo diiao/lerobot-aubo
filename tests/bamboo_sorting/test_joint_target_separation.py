@@ -182,6 +182,37 @@ def test_multi_dominant_strip_does_not_erase_distant_visible_fragment():
     assert evidence['merged_instances']
 
 
+@pytest.mark.parametrize('radius', [8, 16, 24])
+@pytest.mark.parametrize('minor_start', [315, 320])
+def test_multi_wider_search_cannot_give_a_nearby_minor_identity_to_the_majority(radius, minor_start):
+    a, b = (np.zeros((480, 640), bool) for _ in range(2))
+    a[200:400, 300:310] = True
+    b[200:400, minor_start:minor_start + 10] = True
+    fragment = b.copy()
+    fragment[210:] = False
+    original = {'A': a, 'B': b}
+    # A dominates the merged instance, but the visible B tip is still B.
+    # A wider search radius must not turn split ownership into wholesale A.
+    result, evidence = MultiStripSeparation(original, motion_radius_px=radius).step(
+        0, *merged({'A': a, 'B': fragment}))
+    np.testing.assert_array_equal(result['A'], a)
+    np.testing.assert_array_equal(result['B'], fragment)
+    assert evidence['merged_instances']
+
+
+def test_multi_wider_search_can_recover_unassigned_foreground_without_erasing_a_seed():
+    a, b = (np.zeros((480, 640), bool) for _ in range(2))
+    a[200:400, 300:310] = True
+    b[200:400, 400:410] = True
+    current = np.roll(a, -12, axis=1)
+    instance, segments = instance_map({'A': current, 'B': b})
+    narrow, _ = MultiStripSeparation({'A': a, 'B': b}).step(0, instance, segments)
+    wide, _ = MultiStripSeparation({'A': a, 'B': b}, motion_radius_px=16).step(0, instance, segments)
+    assert narrow['A'].sum() < current.sum()
+    np.testing.assert_array_equal(wide['A'], current)
+    np.testing.assert_array_equal(wide['B'], b)
+
+
 def test_visible_polygon_and_candidate_seeds_have_same_pixel_contract():
     masks = crossing_seeds()
     instances, _ = instance_map(masks)

@@ -54,11 +54,24 @@ def successful_target_outcome(value):
     return isinstance(value, dict) and all(value.get(key) is True for key in OUTCOME_FIELDS[:4])
 
 
+def confirmed_target_outcome(human_outcome):
+    """Derive target fields from the operator's single on-site result.
+
+Stack capture no longer asks each check: single_success means the operator saw
+the specified strip held alone and released in the placement area. Failures
+keep their category only in human_outcome; neighbor disturbance is not recorded.
+"""
+    confirmed = True if human_outcome == "single_success" else None
+    return {**dict.fromkeys(OUTCOME_FIELDS[:4], confirmed), "neighbor_disturbed": None}
+
+
 def stack_summary(episodes):
     rows = [e for e in episodes if stack_metadata(e)]
     return {"episodes": len(rows), "scenes": len({e["scene_id"] for e in rows}),
             "target_choice_eligible_episodes": [e["episode_index"] for e in rows if e["available_target_count"] >= 2],
             "grasp_only_episodes": [e["episode_index"] for e in rows if e["available_target_count"] == 1],
-            "unknown_outcome_episodes": [e["episode_index"] for e in rows
-                                         if any(e.get("target_outcome", {}).get(k) is None for k in OUTCOME_FIELDS[:4])],
+            # A known failure category is not an unknown outcome, even without target fields.
+            "unknown_outcome_episodes": [e["episode_index"] for e in rows if e.get("human_outcome") == "uncertain"
+                                         or (e.get("human_outcome") == "single_success" and any(
+                                             e.get("target_outcome", {}).get(k) is None for k in OUTCOME_FIELDS[:4]))],
             "uniform_random_reference_only": True}

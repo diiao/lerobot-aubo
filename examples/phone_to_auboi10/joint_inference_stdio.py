@@ -71,6 +71,7 @@ def main():
         if task != JOINT_TASK:
             raise ValueError('checkpoint supports only the recorded training task')
         from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+        from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing
         if args.target_conditioned:
             from lerobot.bamboo_sorting.joint_target_policy import (
                 SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
@@ -111,6 +112,7 @@ def main():
     print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':contract_record(),
                       'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk,
                       'target_live':segmenter is not None,
+                      'target_motion_available':True,
                       'segmentation_checkpoint':str(args.target_segmentation_checkpoint) if segmenter else None}),flush=True)
     for line in sys.stdin:
         start=time.perf_counter()
@@ -130,7 +132,8 @@ def main():
                     live_inputs = FreshTargetInputs(req.get('target_seed', {}), segmenter)
                 elif req.get('target_seed') != live_inputs.seed:
                     raise ValueError('target seed changed within live session')
-                frame, target_evidence = live_inputs.prepare(frame, req.get('target_input'))
+                frame, target_evidence = live_inputs.prepare(frame, req.get('target_input'),
+                    motion_reference=req.get('target_motion'))
             if 'seed' in req:
                 if type(req['seed']) is not int or not 0 <= req['seed'] < 2**32:
                     raise ValueError('invalid comparison seed')
@@ -145,6 +148,13 @@ def main():
             if target_evidence is not None:
                 response.update(target_input=dict(req['target_input']),target_evidence=target_evidence)
             print(json.dumps(response,allow_nan=False),flush=True)
+        except TargetForegroundMissing as exc:
+            # No policy call happened. Keep the same seed, frame index and phase;
+            # the controller must stop before requesting a fresh observation.
+            print(json.dumps({'id':req['id'], 'checkpoint_sha256':digest.hexdigest(),
+                'error':str(exc), 'error_code':exc.code,
+                'target_input':dict(req['target_input']), 'target_evidence':exc.evidence},
+                allow_nan=False), flush=True)
         except Exception as exc:
             print(json.dumps({'error':f'{type(exc).__name__}: {exc}'}),flush=True)
             return 1
