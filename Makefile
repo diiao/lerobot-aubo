@@ -32,12 +32,12 @@ test-aubo-offline:
 	@cache=$$(mktemp -d /tmp/aubo-offline-test-cache.XXXXXX); \
 	trap 'rm -rf "$$cache"' EXIT; \
 	mkdir -p "$$cache/datasets"; \
-	PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+	CUDA_VISIBLE_DEVICES= PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 	HF_DATASETS_CACHE="$$cache/datasets" LEROBOT_TEST_DEVICE=cpu \
 	$(AUBO_PYTHON) -m pytest -q -p no:cacheprovider $(AUBO_TEST_PATHS)
 
 test-aubo-collect:
-	PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+	CUDA_VISIBLE_DEVICES= PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 	$(AUBO_PYTHON) -m pytest --collect-only -q -p no:cacheprovider tests/bamboo_sorting
 
 # Explicit integration lane; may need downloads, GPU, transformers/scipy and

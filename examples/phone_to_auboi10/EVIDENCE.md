@@ -1305,13 +1305,23 @@ IoU≥0.9时top为2/14/13，covered为1/14/14，边缘仍有误差。
 
 | 文件 | 当前用途／调用者 | 替代位置 | 删除理由 |
 | --- | --- | --- | --- |
-| `examples/phone_to_auboi10/joint_target_live_setup.py` | 仅本地旧导入和测试；无外部或远端调用 | `runtime/live_setup.py` | 实现已迁走；调用者已直接导入新模块 |
-| `examples/phone_to_auboi10/record_c0_batch.py` | 仅旧C0批处理兼容；`record_joint.py`不再导入 | `capture/fresh_frames.py` | 退役CLI的薄壳；测试改为直接测共享实现 |
-| `examples/phone_to_auboi10/aubo_start_poses.py` | `record.py`、`move_to_start.py`的常量导入 | `start_poses.py` | 起点常量统一到任务包，两个入口已改导入 |
+| `examples/phone_to_auboi10/joint_target_live_setup.py` | 仓库内受维护的命令入口与测试已改；`artifacts/`下历史脚本见下节 | `runtime/live_setup.py` | 实现已迁走；三个仍复用的复核工具已更新，其余历史脚本冻结 |
+| `examples/phone_to_auboi10/record_c0_batch.py` | 仅旧C0批处理兼容；`record_joint.py`和仓库内测试不再导入；`artifacts/`下未发现调用者 | `capture/fresh_frames.py` | 退役CLI的薄壳；测试改为直接测共享实现 |
+| `examples/phone_to_auboi10/aubo_start_poses.py` | `record.py`、`move_to_start.py`的常量导入；`artifacts/`下未发现调用者 | `start_poses.py` | 起点常量统一到任务包，两个入口已改导入 |
+
+**实验脚本复核（2026-10-22）**：常规pytest不收集`artifacts/`下被Git忽略的实验脚本，因此单独检查了其中对旧模块路径的引用。以下仍复用的保存图像复核工具已更新到分组布局，并完成语法与依赖导入检查：
+
+- `artifacts/live/stack/stack_target_20261018_trial03/motion_preview_check/preview_smoke.py`
+- `artifacts/live/stack/stack_target_20261018_trial03/motion_preview_check/replay_motion.py`
+- `artifacts/live/stack/stack_target_20261018_trial03/motion_preview_check/replay_checked.py`
+
+其余历史脚本保持原样，不按当前源码维护。`artifacts/training/`、`artifacts/live/stack/stack_target_20261018_trial02/`、`..._trial03/`、`..._trial04/`、`artifacts/capture/stack/`、`artifacts/diagnostics/`、`artifacts/maintenance/artifact_organization/`下已放置`SOURCE_VERSION.txt`，注明其对应重构前源码`bf791c9a42b7232d73aca6eeace8b23b28e8afdd`；原始数据、录像、日志和结果文件未修改。上述三工具以外的冻结脚本未在当前源码上运行，也不把它们的导入成功当作回归通过。
 
 未删除仍受支持的入口：`record.py`、`run_joint_live.py`、`run_joint_trial.py`、`run_joint_smooth.py`、`run_joint_target_shadow.py`、`run_joint_wrist_distribution.py`等。未删除或放宽测试；无重复覆盖文件被移除。
 
-软件验证：`make test-aubo-offline`（AUBO离线回归，假设备／合成数据，无下载、GPU、真实模型推理或现场动作）结果为**766项通过、11项跳过**，与`bf791c9a`基线一致；跳过原因仍为缺少`transformers`、`scipy`、CUDA或至少两块GPU。对`run_joint_trial.py`、`run_joint_live.py`、`run_joint_target_shadow.py`、`run_joint_smooth.py`的legacy／mixed／both-orders／target-pair／target-stack计划和`record_joint.py`计划做了重构前后逐字比较，除仓库路径归一化外一致。`git diff --check`通过。未连接机器人、相机或IO，未启动训练、真实推理或GPU服务。
+`run_joint_smooth.py`的持续伺服实现已移入`runtime/continuous.py`，入口只保留参数解析、目标准备、计划生成、调用和退出状态；执行模块内部按`setup_continuous`、`run_targets`、`accept_prediction`、`command_goal`、`switch_target`、`request_observation`、`finalize_continuous`分开连接、单目标循环、目标切换和收尾，异常仍由`execute_continuous`的一个外层边界统一处理。
+
+软件验证：`make test-aubo-offline`（AUBO离线回归，假设备／合成数据，无下载、GPU、真实模型推理或现场动作）结果为**766项通过、11项跳过**，与`bf791c9a`基线一致；跳过原因仍为缺少`transformers`、`scipy`、CUDA或至少两块GPU。离线目标显式设置`CUDA_VISIBLE_DEVICES=`，因此即使主机有GPU，直接指定`cuda`的四项处理器用例也会按“CUDA not available／Requires at least 2 GPUs”跳过；`make test-aubo-gpu-integration`保留为独立GPU入口，不隐藏设备。对`run_joint_trial.py`、`run_joint_live.py`、`run_joint_target_shadow.py`、`run_joint_smooth.py`的legacy／mixed／both-orders／target-pair／target-stack计划和`record_joint.py`计划做了重构前后逐字比较，除仓库路径归一化外一致。`git diff --check`通过。未连接机器人、相机或IO，未启动训练、真实推理或GPU服务。
 
 源码迁移不等于远端部署同步：GPU项目中的独立服务目录和文件未改动；下次同步时按上表核对导入路径和协议，不自动覆盖远端独立服务。trial01～trial04数据、模型、录像、人工标注和`artifacts/`均保持原位。
 

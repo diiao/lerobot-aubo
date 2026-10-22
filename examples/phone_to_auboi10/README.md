@@ -160,7 +160,7 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 
 命令入口在 `examples/phone_to_auboi10/`，任务实现集中在 `src/lerobot/bamboo_sorting/`；机器人驱动在 `src/lerobot/robots/aubo_i10/`。先按下表定位，不按文件名猜测当前方案。
 
-任务包按职责分为 `capture/`（采集、相机、时间戳、夹爪证据、采后检查）、`perception/`（分割、目标身份关联、前景分离、运动跟随）、`policy/`（目标图像、训练数据、动作模型适配）、`runtime/`（设备连接、推理通信、执行调度、预览录像）和 `diagnostics/`（腕部角度等离线诊断）。公共契约与路径常量保留在根级 `aubo_joint_contract.py`、`joint_gripper_quality.py`、`joint_stack_metadata.py`、`mask_codec.py`、`model_profiles.py`、`paths.py`、`start_poses.py`；命令入口只保留参数、调用和退出状态。
+任务包按职责分为 `capture/`（采集、相机、时间戳、夹爪证据、采后检查）、`perception/`（分割、目标身份关联、前景分离、运动跟随）、`policy/`（目标图像、训练数据、动作模型适配）、`runtime/`（设备连接、推理通信、执行调度、预览录像）和 `diagnostics/`（腕部角度等离线诊断）。公共契约与路径常量保留在根级 `aubo_joint_contract.py`、`joint_gripper_quality.py`、`joint_stack_metadata.py`、`mask_codec.py`、`model_profiles.py`、`paths.py`、`start_poses.py`。命令入口保留参数解析、计划生成、调用和退出状态；采集连接、持续执行、目标切换与收尾在任务模块中，`run_joint_trial.py`仍保留其单步／归位命令流程。
 
 ### 当前任务入口
 
@@ -220,7 +220,7 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 | 公共配置、优化器、工具与测试辅助 | `tests/configs/`、`tests/optim/`、`tests/utils/`、`tests/fixtures/`、`tests/mocks/`；`tests/motors/test_motors_bus.py`保留通用总线与假设备支持 |
 | 相机或模型集成 | `tests/cameras/test_opencv.py`、`tests/training/`、`tests/test_cli_peft.py`等需先检查具体用例的设备／下载／训练条件，不是默认现场检查命令 |
 
-AUBO离线回归统一用 `make test-aubo-offline`（等价于本手册记录的pytest范围）：只使用假设备与合成数据，禁止下载、GPU、真实模型推理和现场动作；测试缓存写入临时目录并在结束时删除。`make test-aubo-collect`只收集AUBO用例，不执行。GPU／下载／真实模型集成检查单独列出为 `make test-aubo-gpu-integration`，需要相应授权和环境，不属于默认回归。上游CI的`pytest tests`是框架整体检查，不是AUBO验收，也不应据此启动训练、推理或现场操作。
+AUBO离线回归统一用 `make test-aubo-offline`（等价于本手册记录的pytest范围）：只使用假设备与合成数据，禁止下载、GPU、真实模型推理和现场动作；命令显式设置`CUDA_VISIBLE_DEVICES=`，即使主机有GPU，直接指定`cuda`的处理器用例也会跳过。测试缓存写入临时目录并在结束时删除。`make test-aubo-collect`只收集AUBO用例，不执行。GPU／下载／真实模型集成检查单独列出为 `make test-aubo-gpu-integration`，需要相应授权和环境，不属于默认回归。上游CI的`pytest tests`是框架整体检查，不是AUBO验收，也不应据此启动训练、推理或现场操作。
 
 本地共有82个`test_*.py`文件，其中AUBO测试29个；不是所有保留测试都适合直接执行。删除范围及回溯见[测试裁剪记录](EVIDENCE.md#按aubo用途裁剪测试)。
 

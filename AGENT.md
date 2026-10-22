@@ -35,7 +35,7 @@ SHA-256 和哈希校验仅用于必要的文件身份、完整性或证据核对
 不加入高度补偿、整段轨迹平移、强制姿态或脚本抓放；当前主线见[项目手册](examples/phone_to_auboi10/README.md#三根堆叠目标示教方案)。
 保留当前关节/工作区/速度限制、输入与状态新鲜度、错误停止和伺服所有权检查。
 删除旧功能须核对调用和配置；以完整调用链为单位处理专属测试，不按文件前缀删除。
-当前七维采集和相机映射复用 `capture/` 中的 `c0_*` 模块；采集归位与新鲜帧读取已移入 `capture/homing.py`、`capture/fresh_frames.py`，不再依赖 `record.py` 或 `record_c0_batch.py`。任务模块按 `capture/`、`perception/`、`policy/`、`runtime/`、`diagnostics/` 分组，命令入口只保留参数、调用和退出状态。
+当前七维采集和相机映射复用 `capture/` 中的 `c0_*` 模块；采集归位与新鲜帧读取已移入 `capture/homing.py`、`capture/fresh_frames.py`，不再依赖 `record.py` 或 `record_c0_batch.py`。任务模块按 `capture/`、`perception/`、`policy/`、`runtime/`、`diagnostics/` 分组；命令入口保留参数解析、计划生成、调用和退出状态，采集连接、持续执行、目标切换与收尾在任务模块中。`run_joint_trial.py`仍保留其单步／归位命令流程。
 
 DO 读回和周期计数只证明控制命令，不证明物理抓取成功。原始数据、模型、录像和实验目录保持原样；
 `artifacts/`、`datasets/` 等受 Git 忽略，提交不是这些产物的备份。

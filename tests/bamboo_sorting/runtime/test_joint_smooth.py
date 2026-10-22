@@ -134,13 +134,15 @@ def load_entry(monkeypatch):
     monkeypatch.syspath_prepend(str(root))
     spec=importlib.util.spec_from_file_location('smooth_entry',root/'run_joint_smooth.py')
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    from lerobot.bamboo_sorting.runtime import continuous
+    m.continuous=continuous
     return m
 
 
 def test_age_aligned_approach_plan_is_explicit_and_hardware_free(monkeypatch,capsys):
     m=load_entry(monkeypatch)
     def fail(*a,**kw):raise AssertionError('hardware touched')
-    monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',fail);monkeypatch.setattr(m.continuous,'InferencePipe',fail)
     with pytest.raises(SystemExit):m.main(['--approach-age-aligned'])
     assert m.main(['--model','mixed-both-orders','--approach-age-aligned'])==0
     plan=json.loads(capsys.readouterr().out)
@@ -155,7 +157,7 @@ def test_target_plan_requires_seed_and_one_cycle_without_hardware(monkeypatch,ca
     m=load_entry(monkeypatch)
     from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
     def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
-    monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden);monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
     monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a:(
         dict(snapshot_id='seed'),dict(expected_sha256='target-model',segmentation_checkpoint='segmentation')))
     with pytest.raises(SystemExit):m.main(['--model','target-pair'])
@@ -180,7 +182,7 @@ def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatc
     from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
     from lerobot.bamboo_sorting.runtime.joint_target_runtime import decode_mask
     def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
-    monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden);monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
     (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',snapshot_id='s',execution_eligible=False)))
     labels=tmp_path/'labels.json'
     labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection',snapshot_id='s',human_reviewed=True,
@@ -220,8 +222,8 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
     from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
     from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs
     def forbidden(*a, **kw): raise AssertionError('hardware/model accessed')
-    monkeypatch.setattr(m, 'ReadOnlyStation', forbidden)
-    monkeypatch.setattr(m, 'InferencePipe', forbidden)
+    monkeypatch.setattr(m.continuous, 'ReadOnlyStation', forbidden)
+    monkeypatch.setattr(m.continuous, 'InferencePipe', forbidden)
     (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',
                                                          snapshot_id='stack', execution_eligible=False)))
     targets = [dict(target_id=f's-{i+1:03}', polygons=[[[100+i*100,100], [112+i*100,100],
@@ -288,7 +290,7 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
 def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
     m=load_entry(monkeypatch)
     def fail(*a,**k):raise AssertionError('device touched')
-    monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',fail);monkeypatch.setattr(m.continuous,'InferencePipe',fail)
     assert m.main(['--model',model])==0
     plan=json.loads(capsys.readouterr().out)
     assert plan['requested_suction_cycles']==expected_cycles
@@ -306,7 +308,7 @@ def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
 def test_latency_tolerance_changes_only_input_and_prediction_timing(monkeypatch,capsys):
     m=load_entry(monkeypatch)
     def fail(*a,**kw):raise AssertionError('hardware touched')
-    monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',fail);monkeypatch.setattr(m.continuous,'InferencePipe',fail)
     argv=['--model','mixed-both-orders','--approach-age-aligned','--cycles','1']
     assert m.main(argv)==0
     standard=json.loads(capsys.readouterr().out)
@@ -324,7 +326,7 @@ def test_latency_tolerance_changes_only_input_and_prediction_timing(monkeypatch,
 def test_explicit_cycle_count_preserves_mixed_control_limits(monkeypatch,capsys):
     m=load_entry(monkeypatch)
     def fail(*a,**kw):raise AssertionError('device touched')
-    monkeypatch.setattr(m,'ReadOnlyStation',fail);monkeypatch.setattr(m,'InferencePipe',fail)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',fail);monkeypatch.setattr(m.continuous,'InferencePipe',fail)
     for invalid in ('0','-1','1.5'):
         with pytest.raises(SystemExit):m.main(['--cycles',invalid])
     for invalid in ('0','-1','nan','inf'):
@@ -345,7 +347,7 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     from lerobot.robots.aubo_i10 import aubo_i10
     m=load_entry(monkeypatch);events=[]
     monkeypatch.setattr(m.sys.stdin,'isatty',lambda:True)
-    monkeypatch.setattr(m,'read_task',lambda:'Pick one strip and place it in the collection area.')
+    monkeypatch.setattr(m.continuous,'read_task',lambda:'Pick one strip and place it in the collection area.')
     replies=iter([answer,'q'])
     monkeypatch.setattr('builtins.input',lambda prompt:next(replies))
     class Station:
@@ -375,8 +377,8 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
             if release_ok:station[0].pins=(False,True)
             return release_ok
     station=[None]
-    monkeypatch.setattr(m,'ReadOnlyStation',Station)
-    monkeypatch.setattr(m,'InferencePipe',Pipe)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',Station)
+    monkeypatch.setattr(m.continuous,'InferencePipe',Pipe)
     monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
     out=tmp_path/'run'
     assert m.main(['--execute','--model','mixed-double','--output',str(out)])==expected_return
@@ -468,17 +470,17 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     recovery_case=str(inference_error).startswith('empty_')
     sequence_failure=inference_error in ('home_failure','next_failure') or recovery_case
     empty_requests=[];b_requests=[];recovery_starts=[]
-    original_trajectory=m.SmoothTrajectory
+    original_trajectory=m.continuous.SmoothTrajectory
     def trajectory(q):
         if empty_requests:recovery_starts.append(list(q))
         return original_trajectory(q)
-    monkeypatch.setattr(m,'SmoothTrajectory',trajectory)
-    original_save=m.save_target_failure
+    monkeypatch.setattr(m.continuous,'SmoothTrajectory',trajectory)
+    original_save=m.continuous.save_target_failure
     def save_failure(*args):
         events.append(('save_failure',args[1]))
         if inference_error!='empty_stop_failure':assert not enabled[0]
         return original_save(*args)
-    monkeypatch.setattr(m,'save_target_failure',save_failure)
+    monkeypatch.setattr(m.continuous,'save_target_failure',save_failure)
     worker_targets=[];homes=[]
     def fake_home(motion,read_state,**kw):
         assert not enabled[0] and read_state()[-1]==0
@@ -486,7 +488,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         if inference_error=='home_failure':raise RuntimeError('test homing failure')
         state[:6]=START_DEG;clock[0]+=2.
         return {'moved':True,'final_state':state.copy()}
-    monkeypatch.setattr(m,'home_to_start',fake_home)
+    monkeypatch.setattr(m.continuous,'home_to_start',fake_home)
     if model in ('target-pair','target-stack'):
         from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
         monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a,**kw:(
@@ -508,9 +510,9 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     phase_calls={};transport_responses=[0]
     delayed=[False];state_reads=[0];requests=[]
     def sleep(s):clock[0]+=s
-    monkeypatch.setattr(m.time,'perf_counter',lambda:clock[0]);monkeypatch.setattr(m.time,'sleep',sleep)
+    monkeypatch.setattr(m.continuous.time,'perf_counter',lambda:clock[0]);monkeypatch.setattr(m.continuous.time,'sleep',sleep)
     monkeypatch.setattr(m.sys.stdin,'isatty',lambda:True)
-    monkeypatch.setattr(m,'read_task',lambda:'Pick one strip and place it in the collection area.')
+    monkeypatch.setattr(m.continuous,'read_task',lambda:'Pick one strip and place it in the collection area.')
     monkeypatch.setattr('builtins.input',lambda _: '')
     class Station:
         lower=[-360]*6;upper=[360]*6
@@ -588,7 +590,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                     from lerobot.bamboo_sorting.runtime.joint_target_runtime import encode_mask
                     assert state[-1]==0
                     empty_requests.append(index);events.append(('empty',index))
-                    raise m.TargetForegroundMissing(dict(**kw['target_input'],
+                    raise m.continuous.TargetForegroundMissing(dict(**kw['target_input'],
                         segmentation_instances_png=encode_mask(np.zeros((480,640),bool),allow_empty=True)))
                 if len(b_requests)>2 and inference_error=='empty_interrupt':raise KeyboardInterrupt()
                 if len(b_requests)>2 and inference_error=='empty_bad_recovery':raise RuntimeError('recovery model failure')
@@ -689,9 +691,9 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         def close(self):
             assert not enabled[0]
             events.append(('video_close',True));return {'complete':True}
-    monkeypatch.setattr(m,'ReadOnlyStation',Station);monkeypatch.setattr(m,'InferencePipe',Pipe)
-    monkeypatch.setattr(m,'ThreadPoolExecutor',Pool);monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
-    monkeypatch.setattr(m,'TrialVideoRecorder',Recorder)
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',Station);monkeypatch.setattr(m.continuous,'InferencePipe',Pipe)
+    monkeypatch.setattr(m.continuous,'ThreadPoolExecutor',Pool);monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
+    monkeypatch.setattr(m.continuous,'TrialVideoRecorder',Recorder)
     out=tmp_path/'run'
     argv=['--execute','--model',model,'--output',str(out)]
     if model=='target-stack':argv+=['--max-seconds','600']
@@ -941,12 +943,12 @@ def test_failure_inputs_saved_losslessly_and_existing_evidence_not_overwritten(t
     meta=dict(target_id='B',phase='approach',frame_id='live/42')
     evidence=dict(**meta,segmentation_instances_png=encode_mask(np.zeros((480,640),bool),allow_empty=True),
         segmentation_segments=[],visible_masks_png={'B':None,'C':None})
-    exc=m.TargetForegroundMissing(evidence)
-    folder=tmp_path/m.save_target_failure(tmp_path,42,[*START_DEG,0],images,[1.,2.,3.],meta,exc)
+    exc=m.continuous.TargetForegroundMissing(evidence)
+    folder=tmp_path/m.continuous.save_target_failure(tmp_path,42,[*START_DEG,0],images,[1.,2.,3.],meta,exc)
     for key,value in images.items():
         np.testing.assert_array_equal(cv2.cvtColor(cv2.imread(str(folder/f'{key}.png')),cv2.COLOR_BGR2RGB),value)
     saved=json.loads((folder/'failure.json').read_text())
     assert saved['target_evidence']==evidence and saved['sensor_times']==[1.,2.,3.]
     before=(folder/'global_rgb.png').read_bytes()
-    with pytest.raises(FileExistsError):m.save_target_failure(tmp_path,42,[],{},[],meta,exc)
+    with pytest.raises(FileExistsError):m.continuous.save_target_failure(tmp_path,42,[],{},[],meta,exc)
     assert (folder/'global_rgb.png').read_bytes()==before
