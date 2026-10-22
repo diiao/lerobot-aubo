@@ -1,4 +1,5 @@
 """Camera selection and diagnostics with no physical devices."""
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 import builtins
 import importlib.util
@@ -12,7 +13,7 @@ from lerobot.bamboo_sorting.capture import joint_camera_config as config
 
 
 def entry(name):
-    path = Path(__file__).parents[2] / "examples/phone_to_auboi10" / f"{name}.py"
+    path = REPO_ROOT / "examples/phone_to_auboi10" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"camera_test_{name}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -45,7 +45,7 @@ from lerobot.teleoperators.phone.teleop_phone import Phone
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say, init_logging
 
-from aubo_start_poses import (
+from lerobot.bamboo_sorting.start_poses import (
     ACT90_RECOVERY_START_DEG,
     NORMAL_START_DEG,
     RECOVERY_START_DEG,
@@ -82,7 +82,7 @@ if RECORD_START_MODE != "normal" and RECORD_START_MODE not in RECOVERY_START_POS
 HANDEYE_DEV = "/dev/v4l/by-id/usb-GENERAL_GENERAL_WEBCAM_JH0319_20210712_v102-video-index0"
 FIXED_DEV = "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0"
 
-# 两个起点均来自 aubo_start_poses.py：normal 与推理相同；recovery 是固定失败恢复状态。
+# 两个起点均来自 lerobot.bamboo_sorting.start_poses：normal 与推理相同；recovery 是固定失败恢复状态。
 NORMAL_MOVE_SPEED_FRACTION = 0.5
 RECOVERY_MOVE_SPEED_FRACTION = 0.2
 

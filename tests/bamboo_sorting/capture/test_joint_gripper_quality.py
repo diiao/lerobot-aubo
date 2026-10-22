@@ -15,7 +15,12 @@ from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import (
 from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK, joint_contract_record
 from lerobot.policies.smolvla.losses import masked_action_loss
 from lerobot.policies.smolvla.action_padding import restore_action_padding
-from tests.processor.test_smolvla_processor import MockTokenizerProcessorStep
+from tests.bamboo_sorting.capture_fakes import (
+    entry as _entry, observation as _observation, phone_target as _phone_target,
+    robot as _robot, session as _session, stats as _stats,
+)
+from tests.mocks.mock_tokenizer import MockTokenizerProcessorStep
+from tests.mocks.record_fakes import FakeTeleop
 
 
 def _sequence(targets):
@@ -24,13 +29,6 @@ def _sequence(targets):
     states = np.zeros_like(actions)
     states[1:, 6] = actions[:-1, 6]
     return states, actions
-
-
-def _stats():
-    # Deliberately unbalanced suction: normalized zero means 80, not off.
-    return {key: {"mean": [0, 0, 0, 0, 0, 0, 80], "std": [1, 1, 1, 1, 1, 1, 40],
-                  "min": [-1, -1, -1, -1, -1, -1, 0], "max": [1, 1, 1, 1, 1, 1, 100]}
-            for key in ("observation.state", "action")}
 
 
 def test_constant_labels_are_consistent_but_not_usable_pick_release_demonstrations():
@@ -120,8 +118,6 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     from lerobot.processor import RobotProcessorPipeline
     from lerobot.processor.converters import robot_action_observation_to_transition, transition_to_robot_action
     from lerobot.scripts.lerobot_record import record_loop, finalize_recorded_dataset
-    from tests.bamboo_sorting.test_aubo_joint_capture import _robot, _observation, _phone_target, _entry, _session
-    from tests.scripts.test_lerobot_record_observer import FakeTeleop
 
     robot, session, entry = _robot(), _session(tmp_path), _entry()
     if stack_mode:
@@ -199,17 +195,20 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     with pytest.raises(ValueError, match="matching finalized"):
         audit_joint_dataset(moved, tmp_path / "evidence", source_dataset_root=tmp_path / "foreign")
     if stack_mode:
-        from tests.bamboo_sorting.test_joint_target_review_preparation import m as review_tool
-        capture_report = review_tool.prepare_capture_check(dataset.root, tmp_path/'evidence')
+        from lerobot.bamboo_sorting.capture.target_review import (
+            approach_manifest, extract_images, prepare_capture_check, write,
+        )
+        from lerobot.bamboo_sorting.policy.target_verification import verify_dataset
+        capture_report = prepare_capture_check(dataset.root, tmp_path/'evidence')
         assert all(v['decoded_frames'] == 6 for v in capture_report['videos'])
-        annotations, _ = review_tool.approach_manifest(dataset.root, tmp_path/'evidence')
+        annotations, _ = approach_manifest(dataset.root, tmp_path/'evidence')
         ep = annotations['episodes'][0]
         assert ep['pick_step'] == 1 and ep['available_target_count'] == 2
         folder = tmp_path/'evidence/target_annotations'
         folder.mkdir()
         for name in ('images', 'masks', 'outlines'):
             (folder/name).mkdir()
-        review_tool.extract_images(dataset.root, folder, annotations)
+        extract_images(dataset.root, folder, annotations)
         # Synthetic raw RGB is blank; these masks are deliberately test-only.
         from PIL import Image
         mask = np.zeros((480, 640), np.uint8)
@@ -218,8 +217,8 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
             Image.fromarray(mask).save(folder/row['mask_path'])
             row.update(status='visible', reviewed=True)
         ep['reviewed'] = True
-        review_tool.write(folder/'annotations.json', annotations)
-        review_tool.verify_dataset(dataset.root, tmp_path/'evidence', folder, annotations)
+        write(folder/'annotations.json', annotations)
+        verify_dataset(dataset.root, tmp_path/'evidence', folder, annotations)
         assert annotations['target_source_ready'] is True
         import json
         evidence = tmp_path / 'evidence'

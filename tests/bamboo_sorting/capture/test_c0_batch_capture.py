@@ -32,23 +32,19 @@ from lerobot.bamboo_sorting.capture.c0_batch_capture import (
 from lerobot.bamboo_sorting.capture.c0_gripper_capture_journal import C0GripperPendingCaptureJournalV1
 from lerobot.utils import control_utils
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from tests.bamboo_sorting.paths import REPO_ROOT
 
-BATCH_SCRIPT = REPO_ROOT / "examples" / "phone_to_auboi10" / "record_c0_batch.py"
+FRESH_MODULE = "lerobot.bamboo_sorting.capture.fresh_frames"
 
 _BATCH_IMPORT_PROBE = r"""
-import importlib.util
+import importlib
 import json
 import os
 import sys
 import threading
-from pathlib import Path
 
-script = Path(%r)
-spec = importlib.util.spec_from_file_location("record_c0_batch_under_test", script)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
+sys.path.insert(0, sys.argv[2])
+importlib.import_module(sys.argv[1])
 
 forbidden = [name for name in sys.modules if name.split(".")[0] in {"cv2", "pyaubo_sdk"}]
 threads = [thread.name for thread in threading.enumerate() if thread is not threading.main_thread()]
@@ -58,15 +54,11 @@ for fd in os.listdir("/proc/self/fd"):
     if os.path.islink(path) and "socket" in os.readlink(path):
         sockets.append(fd)
 print(json.dumps({"forbidden": forbidden, "threads": threads, "sockets": sockets}))
-""" % str(BATCH_SCRIPT)
+"""
 
 
 def _load_batch_script():
-    spec = importlib.util.spec_from_file_location("record_c0_batch_under_test", BATCH_SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module(FRESH_MODULE)
 
 
 def _hold_trace() -> dict[str, object]:
@@ -213,7 +205,7 @@ def test_formal_observer_rejects_cross_episode_journals() -> None:
 
 def test_importing_formal_batch_entry_is_hardware_free() -> None:
     result = subprocess.run(
-        [sys.executable, "-c", _BATCH_IMPORT_PROBE],
+        [sys.executable, "-c", _BATCH_IMPORT_PROBE, FRESH_MODULE, str(REPO_ROOT / "src")],
         capture_output=True,
         text=True,
         timeout=180,

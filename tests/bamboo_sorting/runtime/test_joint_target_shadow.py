@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import io
 import json
@@ -9,7 +10,7 @@ import pytest
 
 
 def load_shadow(monkeypatch):
-    directory=Path(__file__).parents[2]/'examples/phone_to_auboi10'
+    directory=REPO_ROOT/'examples/phone_to_auboi10'
     monkeypatch.syspath_prepend(str(directory))
     spec=importlib.util.spec_from_file_location('target_shadow_test',directory/'run_joint_target_shadow.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)

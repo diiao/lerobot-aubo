@@ -12,7 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: tests
+.PHONY: tests test-aubo-offline test-aubo-collect test-aubo-gpu-integration
+
+# AUBO offline regression: fake devices and synthetic data only.
+# No device, camera, robot IO, download, GPU or real-model inference.
+AUBO_PYTHON ?= .venv/bin/python
+AUBO_TEST_PATHS = \
+	tests/bamboo_sorting \
+	tests/robots/test_aubo_gripper_io.py \
+	tests/robots/test_aubo_i10_fail_fast.py \
+	tests/processor/test_aubo_gripper_and_safety.py \
+	tests/processor/test_aubo_lock_vertical_yaw.py \
+	tests/policies/smolvla \
+	tests/processor/test_smolvla_processor.py \
+	tests/scripts/test_lerobot_record_observer.py \
+	tests/scripts/test_lerobot_record_episode_lifecycle.py
+
+test-aubo-offline:
+	@cache=$$(mktemp -d /tmp/aubo-offline-test-cache.XXXXXX); \
+	trap 'rm -rf "$$cache"' EXIT; \
+	mkdir -p "$$cache/datasets"; \
+	PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+	HF_DATASETS_CACHE="$$cache/datasets" LEROBOT_TEST_DEVICE=cpu \
+	$(AUBO_PYTHON) -m pytest -q -p no:cacheprovider $(AUBO_TEST_PATHS)
+
+test-aubo-collect:
+	PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+	$(AUBO_PYTHON) -m pytest --collect-only -q -p no:cacheprovider tests/bamboo_sorting
+
+# Explicit integration lane; may need downloads, GPU, transformers/scipy and
+# local model caches. Never invoked by the offline target or upstream CI.
+test-aubo-gpu-integration:
+	LEROBOT_TEST_DEVICE=cuda $(AUBO_PYTHON) -m pytest -q -p no:cacheprovider $(AUBO_TEST_PATHS)
+
 
 PYTHON_PATH := $(shell which python)
 

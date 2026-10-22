@@ -1,4 +1,5 @@
 """Causal phase switching and training/runtime parity without models or devices."""
+from tests.bamboo_sorting.paths import REPO_ROOT
 import json
 from unittest.mock import Mock
 
@@ -148,7 +149,7 @@ def test_target_adapter_contracts_and_numerical_prediction():
 def test_target_capture_and_training_plan_do_not_open_devices(tmp_path, monkeypatch):
     import runpy
     from pathlib import Path
-    root = Path(__file__).resolve().parents[2] / 'examples/phone_to_auboi10'
+    root = REPO_ROOT / 'examples/phone_to_auboi10'
     capture = runpy.run_path(str(root / 'record_joint.py'))
     args = ['--target-demonstrations', '--num-episodes', '5', '--split', 'train',
             '--dataset-root', str(tmp_path/'data'), '--evidence-root', str(tmp_path/'evidence')]
@@ -172,7 +173,7 @@ def test_target_wire_images_require_new_key_and_preserve_pixels():
     import runpy
     import zlib
     from pathlib import Path
-    decode = runpy.run_path(str(Path(__file__).resolve().parents[2] /
+    decode = runpy.run_path(str(REPO_ROOT /
         'examples/phone_to_auboi10/joint_inference_stdio.py'))['decode_images']
     original = np.full((480, 640, 3), 37, np.uint8)
     payload = base64.b64encode(zlib.compress(original.tobytes())).decode()

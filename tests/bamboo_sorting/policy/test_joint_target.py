@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import numpy as np
 import pytest
 
@@ -101,7 +102,7 @@ def test_review_page_uses_requested_saved_frame_and_preserves_sources(tmp_path, 
             self.released = True
 
     monkeypatch.setattr(cv2, "VideoCapture", SavedVideo)
-    script = Path(__file__).resolve().parents[2] / "examples/phone_to_auboi10/review_joint_target.py"
+    script = REPO_ROOT / "examples/phone_to_auboi10/review_joint_target.py"
     build_page = runpy.run_path(str(script))["build_page"]
     source = tmp_path / "annotations.json"
     source.write_text(json.dumps({
@@ -144,7 +145,7 @@ def test_segmentation_png_ids_and_oracle_overlap_are_not_class_selection():
     import runpy
     from lerobot.bamboo_sorting.policy.joint_target import compare_target_instances
 
-    script = Path(__file__).resolve().parents[2] / "examples/phone_to_auboi10/predict_strip_images.py"
+    script = REPO_ROOT / "examples/phone_to_auboi10/predict_strip_images.py"
     pack = runpy.run_path(str(script))["instance_png"]
     segmentation = np.array([[-1, 0, 0], [9, 9, -1]])
     png, segments = pack(segmentation, [{"id": 0, "label_id": 1, "score": 0.7},
@@ -181,7 +182,7 @@ def test_segmentation_review_does_not_invent_truth_for_unreviewed_frames(tmp_pat
     ]}))
     spec = {"frames": [{"video_frame_index": 0, "reviewed": True,
                         "visible_polygons": [[[10, 10], [30, 10], [30, 20], [10, 20]]]}]}
-    script = Path(__file__).resolve().parents[2] / "examples/phone_to_auboi10/review_joint_target.py"
+    script = REPO_ROOT / "examples/phone_to_auboi10/review_joint_target.py"
     render = runpy.run_path(str(script))["segmentation_section"]
     page = render(tmp_path, spec, lambda _: "data:image/png;base64,preview")
     assert "共2帧" in page and "1个已确认关键帧" in page

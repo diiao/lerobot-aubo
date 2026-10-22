@@ -27,6 +27,7 @@ from lerobot.bamboo_sorting.capture.c0_smoke_capture import (
     C0_SMOKE_LEGACY_ACT_KEYS,
     frozen_c0_smoke_camera_mapping,
 )
+from tests.bamboo_sorting.paths import REPO_ROOT
 from lerobot.bamboo_sorting.capture.rgb_gate import FROZEN_CAMERA_SET_V2_SHA256
 
 
@@ -50,7 +51,7 @@ def test_camera_keys_and_frozen_device_mapping() -> None:
 
 @pytest.mark.parametrize("change", ["schema", "device"])
 def test_camera_mapping_rejects_changed_configuration(tmp_path: Path, change: str) -> None:
-    source = Path(__file__).resolve().parents[2] / "configs/aubo_i10/CameraSetV2.json"
+    source = REPO_ROOT / "configs/aubo_i10/CameraSetV2.json"
     record = json.loads(source.read_text())
     if change == "schema":
         record["schema_version"] = "CameraSetV1"

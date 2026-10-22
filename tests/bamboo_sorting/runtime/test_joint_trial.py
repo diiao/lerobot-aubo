@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import math
 from pathlib import Path
@@ -134,7 +135,7 @@ def test_interrupted_after_send_stops():
 
 
 def load_entry():
-    path=Path(__file__).resolve().parents[2]/'examples/phone_to_auboi10/run_joint_trial.py'
+    path=REPO_ROOT/'examples/phone_to_auboi10/run_joint_trial.py'
     spec=importlib.util.spec_from_file_location('joint_trial_entry',path)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module
@@ -225,7 +226,7 @@ def test_single_step_requires_shadow_before_connect(tmp_path,monkeypatch):
 def test_image_transport_preserves_rgb_roles(codec):
     import numpy as np
     entry = load_entry()
-    path = Path(__file__).resolve().parents[2]/'examples/phone_to_auboi10/joint_inference_stdio.py'
+    path = REPO_ROOT/'examples/phone_to_auboi10/joint_inference_stdio.py'
     spec = importlib.util.spec_from_file_location('joint_server', path)
     server = importlib.util.module_from_spec(spec);spec.loader.exec_module(server)
     red = np.full((480,640,3), [255,0,0], dtype=np.uint8)
@@ -512,7 +513,7 @@ def test_full_episode_retains_workspace_and_step_checks():
 def test_manual_live_episode_model_suction_and_exit(tmp_path,monkeypatch):
     import json,time
     import numpy as np
-    directory=Path(__file__).resolve().parents[2]/'examples/phone_to_auboi10'
+    directory=REPO_ROOT/'examples/phone_to_auboi10'
     monkeypatch.syspath_prepend(str(directory))
     spec=importlib.util.spec_from_file_location('joint_live_entry',directory/'run_joint_live.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)

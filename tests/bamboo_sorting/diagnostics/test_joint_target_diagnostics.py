@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import json
 from pathlib import Path
@@ -8,7 +9,7 @@ import pytest
 
 
 spec = importlib.util.spec_from_file_location(
-    'target_diagnostics', Path(__file__).parents[2] / 'examples/phone_to_auboi10/diagnose_joint_target_policy.py')
+    'target_diagnostics', REPO_ROOT / 'examples/phone_to_auboi10/diagnose_joint_target_policy.py')
 diagnostics = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(diagnostics)
 

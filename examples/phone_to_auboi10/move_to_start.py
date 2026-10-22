@@ -10,7 +10,7 @@ import time
 
 import pyaubo_sdk
 
-from aubo_start_poses import NORMAL_START_DEG
+from lerobot.bamboo_sorting.start_poses import NORMAL_START_DEG
 
 # 训练起始关节角(度) -- 30 条数据真实起始位姿中位数 (EE约 0.11,-0.72,0.15)。
 TARGET_DEG = NORMAL_START_DEG

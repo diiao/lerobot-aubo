@@ -1,4 +1,5 @@
 """Offline tests: real record-loop/data boundary, mocked SDK, no devices."""
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 import copy
 import importlib.util
@@ -23,55 +24,11 @@ from lerobot.bamboo_sorting.capture.aubo_joint_audit import audit_joint_dataset
 from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter, make_joint_smolvla_config
 from lerobot.robots.aubo_i10.joint_capture import AuboI10JointCaptureRobot, PhoneToJointAction
 from lerobot.scripts.lerobot_record import record_loop
-from tests.scripts.test_lerobot_record_observer import FakeTeleop, _no_transition_trace
-
-
-def _entry():
-    path = Path(__file__).parents[2] / "examples/phone_to_auboi10/record_joint.py"
-    spec = importlib.util.spec_from_file_location("record_joint_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _robot():
-    robot = object.__new__(AuboI10JointCaptureRobot)
-    robot.robot_rpc_client = Mock()
-    robot.robot_rpc_client.hasConnected.return_value = True
-    robot.disable_servo_mode = Mock(return_value=True)
-    robot.robot_interface = Mock()
-    current = [0, 0, 0, 0, math.pi / 2, 0]
-    robot.robot_interface.getRobotState().getJointPositions.return_value = current
-    robot.robot_interface.getRobotAlgorithm().inverseKinematics.return_value = ([0.01, 0.02, 0, 0, math.radians(91), 0], 0)
-    motion = robot.robot_interface.getMotionControl()
-    motion.setSpeedFraction.return_value = 0
-    motion.isServoModeEnabled.return_value = True
-    motion.servoJoint.return_value = 0
-    robot.is_servo_mode_enabled = True
-    robot.joint_lower_deg = (-360,) * 6
-    robot.joint_upper_deg = (360,) * 6
-    robot.max_joint_tracking_deg = 2
-    robot._joint_sequence = 0
-    robot._previous_joint_target = None
-    robot.last_joint_command_trace = None
-    robot.fixed_axis5_deg = 90
-    robot.servo_max_queue_retry = 1
-    robot.servo_time, robot.servo_blend_radius = 0.04, 0
-    robot.joint_acceleration, robot.joint_velocity = 1, 1
-    robot._control_softpaws_based_on_gripper = lambda value: setattr(robot, "last_gripper_command_trace", _no_transition_trace(False))
-    return robot
-
-
-def _observation(image_shapes=None):
-    shapes = image_shapes or {"global_rgb": (480, 640, 3), "grasp_rgb": (480, 640, 3)}
-    return {**dict.fromkeys(JOINT_NAMES, 0.0), "J5": 90.0, "gripper_pos": 0.0,
-            **dict.fromkeys(("ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"), 0.0),
-            **{name: np.zeros(shape, np.uint8) for name, shape in shapes.items()}}
-
-
-def _phone_target():
-    return {**dict.fromkeys(("ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz"), 0.0),
-            "ee_mode": "abs_j6yaw", "ee.j6_target": 0.015, "ee.gripper_pos": 0.0}
+from tests.bamboo_sorting.capture_fakes import (
+    entry as _entry, observation as _observation, phone_target as _phone_target,
+    robot as _robot, session as _session,
+)
+from tests.mocks.record_fakes import FakeTeleop, no_transition_trace as _no_transition_trace
 
 
 class Dataset:
@@ -214,14 +171,6 @@ def test_stale_or_corrupt_command_trace_refused():
     robot.last_joint_command_trace["joint_target_deg"][4] = 89
     with pytest.raises(ValueError, match="SDK joint target"):
         observer.on_send_success(**kwargs, sent_action=action)
-
-
-def _session(tmp_path):
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    return JointCaptureSession(dataset_root=tmp_path / "data", evidence_root=evidence, episode_count=60,
-        prepare_episode=lambda i: {"scene_id": f"scene-{i}", "placement_reference": "line B", "split": "train"},
-        outcome_provider=lambda i: "single_success")
 
 
 def test_stack_capture_preserves_sequence_counts_and_separate_human_outcomes(tmp_path):

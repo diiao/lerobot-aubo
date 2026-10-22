@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import copy
 import importlib.util
 from pathlib import Path
@@ -170,7 +171,7 @@ def test_independent_test_export_frozen_evaluation_and_review(selection, tmp_pat
         raise AssertionError("evaluation must not construct an optimizer or backpropagate")
     monkeypatch.setattr(torch.optim, "AdamW", prohibited)
     monkeypatch.setattr(torch.Tensor, "backward", prohibited)
-    directory = Path(__file__).resolve().parents[2] / "examples/phone_to_auboi10"
+    directory = REPO_ROOT / "examples/phone_to_auboi10"
 
     def load(name):
         module_spec = importlib.util.spec_from_file_location(name, directory / f"{name}.py")
@@ -231,7 +232,7 @@ def test_synthetic_model_forward_backward_and_training_entry(selection, tmp_path
     pretrained_config.num_labels = 80
     Mask2FormerForUniversalSegmentation(pretrained_config).save_pretrained(base)
     processor.save_pretrained(base)
-    path = Path(__file__).resolve().parents[2] / "examples/phone_to_auboi10/train_strip_segmentation.py"
+    path = REPO_ROOT / "examples/phone_to_auboi10/train_strip_segmentation.py"
     spec = importlib.util.spec_from_file_location("strip_train_cli", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

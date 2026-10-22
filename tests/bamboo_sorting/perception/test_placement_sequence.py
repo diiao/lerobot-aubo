@@ -1,4 +1,5 @@
 """Offline annotation and single-camera lifetime checks; no physical devices."""
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 import builtins
 import importlib.util
@@ -14,7 +15,7 @@ from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequen
 
 @pytest.fixture
 def entry():
-    path = Path(__file__).parents[2] / "examples/phone_to_auboi10/capture_placement_sequence.py"
+    path = REPO_ROOT / "examples/phone_to_auboi10/capture_placement_sequence.py"
     spec = importlib.util.spec_from_file_location("placement_entry", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Suction event validation and import isolation for current capture."""
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 import json
 import subprocess
@@ -469,7 +470,7 @@ def test_importing_gripper_modules_touches_no_hardware_network_threads_or_files(
     result = subprocess.run(
         [
             sys.executable, "-B", "-c", _IMPORT_PROBE,
-            f"lerobot.bamboo_sorting.capture.{module_name}", str(Path(__file__).resolve().parents[2] / "src"),
+            f"lerobot.bamboo_sorting.capture.{module_name}", str(REPO_ROOT / "src"),
         ],
         capture_output=True,
         text=True,

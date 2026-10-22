@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import json
 import math
 import numpy as np
@@ -129,7 +130,7 @@ def test_transport_age_selection_preserves_release_row_and_existing_checks():
 
 def load_entry(monkeypatch):
     import importlib.util
-    root=Path(__file__).resolve().parents[2]/'examples/phone_to_auboi10'
+    root=REPO_ROOT/'examples/phone_to_auboi10'
     monkeypatch.syspath_prepend(str(root))
     spec=importlib.util.spec_from_file_location('smooth_entry',root/'run_joint_smooth.py')
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -152,7 +153,7 @@ def test_age_aligned_approach_plan_is_explicit_and_hardware_free(monkeypatch,cap
 
 def test_target_plan_requires_seed_and_one_cycle_without_hardware(monkeypatch,capsys):
     m=load_entry(monkeypatch)
-    import joint_target_live_setup
+    from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
     def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
     monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
     monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a:(
@@ -176,7 +177,7 @@ def test_target_plan_requires_seed_and_one_cycle_without_hardware(monkeypatch,ca
 
 def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatch,capsys,tmp_path):
     m=load_entry(monkeypatch)
-    import joint_target_live_setup
+    from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
     from lerobot.bamboo_sorting.runtime.joint_target_runtime import decode_mask
     def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
     monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
@@ -216,7 +217,7 @@ def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatc
 @pytest.mark.parametrize('model', ['target-pair', 'target-stack'])
 def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch, capsys, tmp_path, count, model):
     m = load_entry(monkeypatch)
-    import joint_target_live_setup
+    from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
     from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs
     def forbidden(*a, **kw): raise AssertionError('hardware/model accessed')
     monkeypatch.setattr(m, 'ReadOnlyStation', forbidden)
@@ -487,7 +488,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         return {'moved':True,'final_state':state.copy()}
     monkeypatch.setattr(m,'home_to_start',fake_home)
     if model in ('target-pair','target-stack'):
-        import joint_target_live_setup
+        from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
         monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a,**kw:(
             dict(snapshot_id='seed',target_id=a[2],**({'visible_targets':[dict(target_id=t,mask_png=mask_png) for t in kw['remaining_target_ids']]} if motion_preview else {})),dict(live_target_seed=dict(target_id=a[2],remaining=kw.get('remaining_target_ids')),expected_sha256='target-model',target_conditioned=True,
                 return_action_chunk=True,segmentation_checkpoint='segmentation')))

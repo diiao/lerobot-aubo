@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import json
 from pathlib import Path
@@ -7,7 +8,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
-path = Path(__file__).resolve().parents[2] / 'examples/phone_to_auboi10/diagnose_joint_wrist_angle.py'
+path = REPO_ROOT / 'examples/phone_to_auboi10/diagnose_joint_wrist_angle.py'
 spec = importlib.util.spec_from_file_location('wrist_angle', path)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)

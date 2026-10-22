@@ -38,22 +38,7 @@ from lerobot.processor import (
 )
 from lerobot.processor.converters import create_transition, transition_to_batch
 from lerobot.utils.constants import ACTION, OBS_IMAGE, OBS_STATE
-
-
-class MockTokenizerProcessorStep(ProcessorStep):
-    """Mock tokenizer processor step for testing."""
-
-    def __init__(self, *args, **kwargs):
-        # Accept any arguments to mimic the real TokenizerProcessorStep interface
-        pass
-
-    def __call__(self, transition: EnvTransition) -> EnvTransition:
-        # Pass through transition unchanged
-        return transition
-
-    def transform_features(self, features):
-        # Pass through features unchanged
-        return features
+from tests.mocks.mock_tokenizer import MockTokenizerProcessorStep
 
 
 def create_default_config():

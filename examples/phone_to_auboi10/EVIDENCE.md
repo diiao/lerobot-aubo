@@ -1,6 +1,6 @@
 # 证据与历史索引
 
-更新：2026-10-21。操作方法与后续计划统一见[项目手册](README.md)；本文只维护结果摘要、原始证据路径和历史索引。
+更新：2026-10-22。操作方法与后续计划统一见[项目手册](README.md)；本文只维护结果摘要、原始证据路径和历史索引。
 部署记录是当时快照，不代表远端当前状态。历史段落中的“尚未／下一步／未提交”按该段实验时点理解；当前状态以本文总览和最新实机复核为准。
 
 2026-10-02文档与旧功能的删除范围、保留理由及验证见[清理记录](../../docs/AUBO_CLEANUP_2026-10-02.md)。
@@ -25,6 +25,7 @@
 - [相机与环境记录](#相机与环境记录)
 - [目录与退役代码清理](#目录与退役代码清理)
 - [按AUBO用途裁剪测试](#按aubo用途裁剪测试)
+- [2026-10-22 源码结构与测试整理](#2026-10-22-源码结构与测试整理)
 - [文档整理与历史原文](#文档整理与历史原文)
 - [更早历史与证据](#历史原文与证据)
 
@@ -1276,6 +1277,43 @@ IoU≥0.9时top为2/14/13，covered为1/14/14，边缘仍有误差。
 - 529个保留的已跟踪Python文件语法检查、删除测试模块的导入引用检查及`git diff --check`通过。未连接设备、下载模型、执行推理或真实训练。
 
 目录导航见[手册](README.md#测试目录入口)。完整删除清单、修改前文档副本、发现日志与JUnit位于`/tmp/aubo-tests-audit-tbecxft9/`；临时记录不是长期备份。源码和原有测试从`8bb390f6`按文件回溯，不整目录恢复而覆盖此前整理。重新启用已裁剪功能时，应同时恢复相应测试与参考资产。
+
+### 2026-10-22 源码结构与测试整理
+
+用户要求整理积累的测试、脚本和杂项，保持现有功能与行为；本次只做结构整理，不重新设计控制、不换模型、不改训练数据或实验产物。分支为`refactor/aubo-structure`，从`bf791c9a`建立，按三批独立提交：
+
+| 批次 | 提交 | 内容 |
+| --- | --- | --- |
+| 第一批 | `b33ff41a` | 从命令入口移出`InferencePipe`、`ReadOnlyStation`、图像编码、任务文字、目标种子审核和实时准备；采集新鲜帧与正常归位移入`capture/`；集中模型配置与起点常量 |
+| 第二批 | `60bc249f` | 任务模块按`capture/`、`perception/`、`policy/`、`runtime/`、`diagnostics/`分组；拆分复核准备与持续运行入口；更新静态导入、资源路径、测试和项目导航 |
+| 第三批 | 本批提交 | 测试按行为分组；共享假设备、模拟分词器和合成掩码移入专项辅助模块；提供`make test-aubo-offline`；删除已迁走且无调用的兼容文件 |
+
+路径映射（旧→新）：
+
+| 旧路径 | 新路径 |
+| --- | --- |
+| `src/lerobot/bamboo_sorting/aubo_joint_capture.py`、`aubo_joint_audit.py`、`joint_camera_config.py`、`c0_*.py`、`rgb_gate.py` | `src/lerobot/bamboo_sorting/capture/`下同名文件 |
+| `src/lerobot/bamboo_sorting/joint_target_separation.py`、`joint_target_association.py`、`joint_target_motion.py`、`placement_*.py`、`strip_segmentation_*.py` | `src/lerobot/bamboo_sorting/perception/`下同名文件 |
+| `src/lerobot/bamboo_sorting/joint_target.py`、`joint_target_policy.py`、`joint_training.py`、`smolvla_joint_adapter.py` | `src/lerobot/bamboo_sorting/policy/`下同名文件 |
+| `src/lerobot/bamboo_sorting/joint_trial.py`、`joint_smooth.py`、`joint_target_runtime.py`、`joint_target_preview.py`、`joint_video.py` | `src/lerobot/bamboo_sorting/runtime/`下同名文件 |
+| `examples/phone_to_auboi10/joint_target_live_setup.py` | `src/lerobot/bamboo_sorting/runtime/live_setup.py` |
+| `examples/phone_to_auboi10/record_c0_batch.py` | `src/lerobot/bamboo_sorting/capture/fresh_frames.py` |
+| `examples/phone_to_auboi10/aubo_start_poses.py` | `src/lerobot/bamboo_sorting/start_poses.py` |
+| `tests/bamboo_sorting/test_*.py` | `tests/bamboo_sorting/{capture,perception,policy,runtime,diagnostics}/`，复核准备流程测试保留在分组根目录 |
+
+删除清单与理由：
+
+| 文件 | 当前用途／调用者 | 替代位置 | 删除理由 |
+| --- | --- | --- | --- |
+| `examples/phone_to_auboi10/joint_target_live_setup.py` | 仅本地旧导入和测试；无外部或远端调用 | `runtime/live_setup.py` | 实现已迁走；调用者已直接导入新模块 |
+| `examples/phone_to_auboi10/record_c0_batch.py` | 仅旧C0批处理兼容；`record_joint.py`不再导入 | `capture/fresh_frames.py` | 退役CLI的薄壳；测试改为直接测共享实现 |
+| `examples/phone_to_auboi10/aubo_start_poses.py` | `record.py`、`move_to_start.py`的常量导入 | `start_poses.py` | 起点常量统一到任务包，两个入口已改导入 |
+
+未删除仍受支持的入口：`record.py`、`run_joint_live.py`、`run_joint_trial.py`、`run_joint_smooth.py`、`run_joint_target_shadow.py`、`run_joint_wrist_distribution.py`等。未删除或放宽测试；无重复覆盖文件被移除。
+
+软件验证：`make test-aubo-offline`（AUBO离线回归，假设备／合成数据，无下载、GPU、真实模型推理或现场动作）结果为**766项通过、11项跳过**，与`bf791c9a`基线一致；跳过原因仍为缺少`transformers`、`scipy`、CUDA或至少两块GPU。对`run_joint_trial.py`、`run_joint_live.py`、`run_joint_target_shadow.py`、`run_joint_smooth.py`的legacy／mixed／both-orders／target-pair／target-stack计划和`record_joint.py`计划做了重构前后逐字比较，除仓库路径归一化外一致。`git diff --check`通过。未连接机器人、相机或IO，未启动训练、真实推理或GPU服务。
+
+源码迁移不等于远端部署同步：GPU项目中的独立服务目录和文件未改动；下次同步时按上表核对导入路径和协议，不自动覆盖远端独立服务。trial01～trial04数据、模型、录像、人工标注和`artifacts/`均保持原位。
 
 ## 文档整理与历史原文
 

@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import pytest
 
 
 def load_entry(monkeypatch):
-    directory = Path(__file__).parents[2] / 'examples/phone_to_auboi10'
+    directory = REPO_ROOT / 'examples/phone_to_auboi10'
     monkeypatch.syspath_prepend(str(directory))
     spec = importlib.util.spec_from_file_location('release_gripper_test', directory / 'release_joint_gripper.py')
     module = importlib.util.module_from_spec(spec)

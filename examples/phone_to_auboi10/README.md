@@ -182,13 +182,13 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 
 | 文件／模块 | 当前用途 |
 | --- | --- |
-| `record_joint.py` + `capture/fresh_frames.py`、`capture/homing.py` | 当前关节采集的相机新鲜度检查与正常归位；旧`record.py`和`record_c0_batch.py`不再是当前采集依赖，`record_c0_batch.py`只保留兼容导入 |
+| `record_joint.py` + `capture/fresh_frames.py`、`capture/homing.py` | 当前关节采集的相机新鲜度检查与正常归位；旧`record.py`不再是当前采集依赖，`record_c0_batch.py`已移除 |
 | `capture/c0_batch_capture.py`、`capture/c0_gripper_*` | 关节采集的帧时间、夹爪命令与保存证据；不是当前8维末端动作方案 |
 | `capture/joint_camera_config.py → capture/c0_smoke_capture.py` | 当前相机配置与冻结映射；配置文件仍在 `configs/aubo_i10/` |
 | `run_joint_trial.py`、`runtime/inference.py`、`runtime/station.py` | 命令入口保留[归位入口](#2-归位)；`InferencePipe`和`ReadOnlyStation`在运行模块中供各入口复用 |
 | `run_joint_live.py`、`runtime/task_prompt.py` | 保留停稳后单步观察的兼容入口；任务文字读取在运行模块中供持续伺服入口复用 |
 | `joint_inference_stdio.py` | 远端模型数值推理协议；由运行链调用，不是本地机械臂控制入口 |
-| `start_poses.py`、`aubo_start_poses.py`、`move_to_start.py`、`release_joint_gripper.py`、`teleoperate.py` | 起点常量在任务包中统一维护，`aubo_start_poses.py`只重新导出；移动、单独松爪和手机遥操涉及现场动作，须按相应授权执行 |
+| `start_poses.py`、`move_to_start.py`、`release_joint_gripper.py`、`teleoperate.py` | 起点常量在任务包中统一维护；移动、单独松爪和手机遥操涉及现场动作，须按相应授权执行 |
 | `diag_preflight_cams.py`、`diag_cam_latency.py`、`read_pose.py` | 相机体检／延迟、机器人位姿读取；读位姿也需要设备连接 |
 
 ### 历史与专项工具
@@ -208,14 +208,21 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 
 | 修改范围 | 优先检查的测试 |
 | --- | --- |
-| AUBO采集、夹爪、目标输入、堆叠、分割、腕部复核 | `tests/bamboo_sorting/`中对应文件；其中`c0_*`仍覆盖当前共享时间戳、夹爪和相机契约 |
+| AUBO采集、相机、夹爪证据、采后检查 | `tests/bamboo_sorting/capture/`；`c0_*`仍覆盖当前共享时间戳、夹爪和相机契约 |
+| 目标关联、前景分离、静态分割、摆放复核 | `tests/bamboo_sorting/perception/` |
+| 目标图像、训练数据与SmolVLA适配 | `tests/bamboo_sorting/policy/`；`tests/bamboo_sorting/test_joint_target_review_preparation.py`覆盖复核准备流程 |
+| 伺服执行、目标影子、录像与归位入口 | `tests/bamboo_sorting/runtime/` |
+| 腕部角度与目标策略诊断 | `tests/bamboo_sorting/diagnostics/` |
+| 共享假设备与合成数据 | `tests/bamboo_sorting/capture_fakes.py`、`tests/bamboo_sorting/perception_fakes.py`、`tests/mocks/`、`tests/fixtures/` |
 | AUBO驱动与手机动作处理 | `tests/robots/test_aubo_*.py`、`tests/processor/test_aubo_*.py` |
 | SmolVLA损失、动作补齐与处理器兼容性 | `tests/policies/smolvla/`、`tests/processor/test_smolvla_processor.py`；`test_relative_xyz.py`含旧表示兼容检查，不代表当前采用相对TCP动作 |
 | 通用录制、数据集、视频与处理器 | `tests/scripts/`、`tests/datasets/`、`tests/processor/`、`tests/test_control_robot.py` |
 | 公共配置、优化器、工具与测试辅助 | `tests/configs/`、`tests/optim/`、`tests/utils/`、`tests/fixtures/`、`tests/mocks/`；`tests/motors/test_motors_bus.py`保留通用总线与假设备支持 |
 | 相机或模型集成 | `tests/cameras/test_opencv.py`、`tests/training/`、`tests/test_cli_peft.py`等需先检查具体用例的设备／下载／训练条件，不是默认现场检查命令 |
 
-本地共有81个`test_*.py`文件；不是所有保留测试都适合直接执行。只检查加载与用例发现可运行 `PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 .venv/bin/python -m pytest --collect-only -p no:cacheprovider -q tests`，它不执行测试函数，不等于测试通过。不要以裸跑全部`pytest tests`代替按改动选择验证。删除范围及回溯见[测试裁剪记录](EVIDENCE.md#按aubo用途裁剪测试)。
+AUBO离线回归统一用 `make test-aubo-offline`（等价于本手册记录的pytest范围）：只使用假设备与合成数据，禁止下载、GPU、真实模型推理和现场动作；测试缓存写入临时目录并在结束时删除。`make test-aubo-collect`只收集AUBO用例，不执行。GPU／下载／真实模型集成检查单独列出为 `make test-aubo-gpu-integration`，需要相应授权和环境，不属于默认回归。上游CI的`pytest tests`是框架整体检查，不是AUBO验收，也不应据此启动训练、推理或现场操作。
+
+本地共有82个`test_*.py`文件，其中AUBO测试29个；不是所有保留测试都适合直接执行。删除范围及回溯见[测试裁剪记录](EVIDENCE.md#按aubo用途裁剪测试)。
 
 ## 数据集目录
 

@@ -118,7 +118,7 @@ def resolve_targets(args, sequence, target_mode, parser):
         if not all((args.target_snapshot,args.target_selections,args.target_id)):
             parser.error('target models require --target-snapshot, --target-selections and --target-id')
         if not sequence and args.cycles not in (None,1):parser.error('target models run exactly one selected-object cycle')
-        from joint_target_live_setup import prepare_live_setup
+        from lerobot.bamboo_sorting.runtime.live_setup import prepare_live_setup
         setup_options={'paired_separation':True} if args.paired_target_separation else {}
         if args.multi_target_separation:
             setup_options={'multi_separation':True}

@@ -1,3 +1,4 @@
+from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from lerobot.bamboo_sorting.policy.joint_training import prepare_training_data, 
 
 
 def _entry():
-    path = Path(__file__).parents[2] / "examples/phone_to_auboi10/train_joint_smolvla.py"
+    path = REPO_ROOT / "examples/phone_to_auboi10/train_joint_smolvla.py"
     spec = importlib.util.spec_from_file_location("joint_training_entry_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -190,8 +191,8 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
     from types import SimpleNamespace
     import torch
     from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import make_joint_smolvla_config
-    from tests.processor.test_smolvla_processor import MockTokenizerProcessorStep
-    from tests.bamboo_sorting.test_joint_gripper_quality import _stats
+    from tests.bamboo_sorting.capture_fakes import stats as _stats
+    from tests.mocks.mock_tokenizer import MockTokenizerProcessorStep
 
     base, vlm = tmp_path / "base", tmp_path / "vlm"
     base.mkdir()
