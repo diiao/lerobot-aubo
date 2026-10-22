@@ -1,24 +1,17 @@
-"""AUBO i10 录制、推理和恢复示教共用的关节起点。
+"""兼容入口：起点常量现统一维护在任务包内。
 
-此文件不连接机器人；它只提供统一常量，避免多个可执行脚本中的位姿逐渐不一致。
+此文件不连接机器人；保留同名导出供既有脚本使用。
 """
 
-# 当前 30 条基线的正常录制/推理起点。
-NORMAL_START_DEG = [-65.29, -5.88, 113.77, 31.07, 90.88, -185.32]
+from lerobot.bamboo_sorting.start_poses import (
+    ACT90_RECOVERY_EXPECTED_TCP_XYZ_M,
+    ACT90_RECOVERY_START_DEG,
+    NORMAL_START_DEG,
+    RECOVERY_EXPECTED_TCP_XYZ_M,
+    RECOVERY_START_DEG,
+)
 
-# run05 trial02 第 472 帧的真实闭环失败状态，作为恢复示教的固定起点。
-RECOVERY_START_DEG = [-23.27, -5.91, 111.13, 28.57, 89.55, -162.21]
-RECOVERY_EXPECTED_TCP_XYZ_M = [0.5749, -0.4706, 0.1716]
-
-# 12D ACT live10 的 90° 单木条闭环失败状态。取最后 10 秒稳定悬停段的
-# 关节/TCP 中位数，避免把某一个带抖动的末帧硬编码为恢复起点。
-# 该位姿只用于采集失败恢复示教，不是推理脚本中的任务启发式。
-ACT90_RECOVERY_START_DEG = [
-    -27.5262,
-    -8.2700,
-    103.3084,
-    23.1320,
-    89.6794,
-    -164.6689,
+__all__ = [
+    'ACT90_RECOVERY_EXPECTED_TCP_XYZ_M', 'ACT90_RECOVERY_START_DEG',
+    'NORMAL_START_DEG', 'RECOVERY_EXPECTED_TCP_XYZ_M', 'RECOVERY_START_DEG',
 ]
-ACT90_RECOVERY_EXPECTED_TCP_XYZ_M = [0.58369, -0.53438, 0.22060]

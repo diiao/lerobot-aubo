@@ -459,10 +459,8 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     monkeypatch.setattr(teleop_phone, "Phone", lambda config: SimpleNamespace(
         connect=lambda: None, is_connected=True,
         disconnect=lambda: calls.append("phone_disconnect")))
-    monkeypatch.setitem(sys.modules, "record_c0_batch", SimpleNamespace(
-        read_fresh_c0_observation=lambda **kwargs: None,
-        _load_record_helpers=lambda: SimpleNamespace(
-            return_to_start=lambda robot: True)))
+    monkeypatch.setattr(entry, "read_fresh_c0_observation", lambda **kwargs: None)
+    monkeypatch.setattr(entry, "return_to_normal_start", lambda robot: True)
 
     def create(**kwargs):
         assert kwargs["features"]["observation.images.global_rgb"]["shape"] == (480, 640, 3)

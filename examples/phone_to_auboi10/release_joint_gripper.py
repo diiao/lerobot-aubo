@@ -7,7 +7,7 @@ must clear the gripper and confirm it is not holding anything before execution.
 import argparse
 import json
 
-from run_joint_trial import ReadOnlyStation
+from lerobot.bamboo_sorting.runtime.station import ReadOnlyStation
 
 
 def release_once(io):

@@ -8,312 +8,34 @@ suction is released before moving; already released outputs are left unchanged.
 No motion retries. Homing never loads a policy or opens cameras.
 """
 import argparse
-import base64
 from dataclasses import asdict
 import hashlib
 import json
 import math
 from pathlib import Path
-import selectors
-import shlex
-import subprocess
+import subprocess  # kept so existing callers can patch the entry's process module
 import sys
 import time
-import zlib
 
-from lerobot.bamboo_sorting.aubo_joint_contract import finite_vector, joint_contract_record
-from lerobot.bamboo_sorting.joint_smooth import validated_action_chunk
-from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing, decode_mask
-from lerobot.bamboo_sorting.joint_trial import TrialLimits, check_step, SingleStepSession, home_to_start, stationary_step_limits, short_loop_limits, wait_until_stationary
+from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
+from lerobot.bamboo_sorting.joint_trial import (
+    TrialLimits, SingleStepSession, home_to_start, stationary_step_limits, short_loop_limits,
+    wait_until_stationary,
+)
+from lerobot.bamboo_sorting.model_profiles import (
+    LEGACY_MODEL_SHA as MODEL_SHA,
+    LEGACY_REMOTE_PYTHON as REMOTE_PYTHON,
+    LEGACY_REMOTE_ROOT as REMOTE_ROOT,
+)
+from lerobot.bamboo_sorting.runtime.inference import InferencePipe
+from lerobot.bamboo_sorting.runtime.station import (
+    CAMERA_SET, RPC_TIMEOUT_MS, ReadOnlyStation, encode_images, write,
+)
 
-REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-legacy-v2-20260922'
-REMOTE_PYTHON='/home/rentao/program/lerobot-aubo-smolvla-c0-pilot-b3a9c8a/.venv/bin/python'
-MODEL_SHA='95a596e2a98dbe60623f801b2d12a6028132ad321a0bcb2ac7ae334ef5613aad'
-REPO=Path(__file__).resolve().parents[2]
-CAMERA_SET=REPO/'configs/aubo_i10/CameraSetV2.json'
-RPC_TIMEOUT_MS=300
-
-
-def write(path,value):path.write_text(json.dumps(value,indent=2,ensure_ascii=False,allow_nan=False)+'\n')
-
-
-def encode_images(images, codec):
-    """Keep RGB order explicit; legacy lossless encoding remains for comparison."""
-    import cv2
-    encoded = {}
-    for name, image in images.items():
-        if image.shape != (480, 640, 3) or str(image.dtype) != 'uint8':
-            raise ValueError('expected RGB uint8 [480,640,3]')
-        if codec == 'rgb_zlib':
-            payload = zlib.compress(image.tobytes(), 1)
-        elif codec == 'jpeg95':
-            ok, payload = cv2.imencode('.jpg', cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
-                                       [cv2.IMWRITE_JPEG_QUALITY, 95])
-            if not ok:
-                raise RuntimeError('JPEG encode failed')
-        else:
-            raise ValueError('unsupported image codec')
-        encoded[name] = base64.b64encode(payload).decode()
-    return encoded
-
-
-class InferencePipe:
-    def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None,
-                 remote_root=REMOTE_ROOT, checkpoint=None, expected_sha256=MODEL_SHA,
-                 inference_script=None,return_action_chunk=False,request_timeout_s=2.,
-                 target_conditioned=False, pythonpath=None, live_target_seed=None, segmentation_checkpoint=None):
-        if (live_target_seed is None) != (segmentation_checkpoint is None):
-            raise ValueError('live target seed and segmentation checkpoint must be provided together')
-        if live_target_seed is not None and not target_conditioned:
-            raise ValueError('live segmentation requires target-conditioned model')
-        if not math.isfinite(request_timeout_s) or request_timeout_s<=0:
-            raise ValueError('inference request timeout must be finite and positive')
-        self.request_timeout_s=request_timeout_s
-        self.log=(output/'inference_stderr.log').open('w')
-        self.expected_sha256=expected_sha256
-        self.return_action_chunk=return_action_chunk
-        self.target_conditioned=target_conditioned
-        self.live_target_seed=live_target_seed
-        self.contract=joint_contract_record()
-        if target_conditioned:
-            from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
-            self.contract=target_policy_contract_record()
-        deployment = 'joint_live_bf16_20260922' if bf16 else 'joint_live_matmul_20260922'
-        script = 'joint_inference_stdio.py'
-        if cuda_graph:
-            deployment, script = 'joint_live_graph_20260922', 'graph_inference_stdio.py'
-        if task is not None:
-            deployment, script = 'joint_live_manual_task_20260922', 'joint_inference_stdio.py'
-        script_path=inference_script or f'{remote_root}/artifacts/{deployment}/{script}'
-        checkpoint_path=checkpoint or f'{remote_root}/outputs/joint_legacy_v2_run01/final'
-        args=['env',f'PYTHONPATH={pythonpath or remote_root+"/src"}','HF_HUB_OFFLINE=1','TRANSFORMERS_OFFLINE=1',
-            'HF_HUB_DISABLE_TELEMETRY=1','WANDB_MODE=disabled',REMOTE_PYTHON,'-u',
-            str(script_path), '--checkpoint',str(checkpoint_path),
-            '--expected-sha256',self.expected_sha256]
-        if fast_matmul:
-            args.append('--fast-matmul')
-        if bf16:
-            args.append('--bf16')
-        if return_action_chunk:
-            args.append('--return-action-chunk')
-        if target_conditioned:
-            args.append('--target-conditioned')
-        if live_target_seed is not None:
-            args.extend(['--target-segmentation-checkpoint',str(segmentation_checkpoint)])
-        if task is not None:
-            args.extend(['--task',task])
-        self.process=subprocess.Popen(['ssh','-T','gpu',shlex.join(args)],stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,stderr=self.log,text=True,bufsize=1)
-        try:
-            ready=self.receive(120)
-            if ready.get('ready') is not True or ready.get('checkpoint_sha256')!=self.expected_sha256 or ready.get('contract')!=self.contract:
-                raise ValueError('inference identity mismatch')
-            if bool(ready.get('bf16',False)) != bf16:
-                raise ValueError('inference precision mismatch')
-            if task is not None and ready.get('task') != task:
-                raise ValueError('inference task mismatch')
-            if return_action_chunk and ready.get('action_chunk_available') is not True:
-                raise ValueError('inference worker does not provide full actions')
-            if bool(ready.get('target_live',False)) != (live_target_seed is not None):
-                raise ValueError('live target protocol mismatch')
-            if live_target_seed is not None and ready.get('segmentation_checkpoint') != str(segmentation_checkpoint):
-                raise ValueError('segmentation checkpoint mismatch')
-            if live_target_seed and live_target_seed.get('motion_tracking') and ready.get('target_motion_available') is not True:
-                raise ValueError('inference worker does not support target motion references')
-        except BaseException:
-            self.close()
-            raise
-
-    def receive(self,timeout):
-        with selectors.DefaultSelector() as selector:
-            selector.register(self.process.stdout,selectors.EVENT_READ)
-            if not selector.select(timeout):raise TimeoutError('inference pipe timeout')
-        line=self.process.stdout.readline(100000)
-        if not line:raise RuntimeError('inference exited; inspect inference_stderr.log')
-        result=json.loads(line)
-        if 'error' in result and result.get('error_code')!=TargetForegroundMissing.code:
-            raise RuntimeError(result['error'])
-        return result
-
-    def predict(self, index, state, images, *, codec='jpeg95', seed=None, target_input=None, target_motion=None):
-        start = time.perf_counter()
-        if self.target_conditioned:
-            keys=('global_rgb','grasp_rgb') if self.live_target_seed is not None else self.contract['image_keys']
-            if (set(images)!=set(keys) or not isinstance(target_input,dict)
-                    or target_input.get('phase') not in ('approach','transport')
-                    or not target_input.get('target_id') or not target_input.get('frame_id')):
-                raise ValueError('prepared target images and explicit target metadata required')
-        elif target_input is not None:
-            raise ValueError('target metadata requires a target-conditioned checkpoint')
-        packet={'id':index,'state':state,'codec':codec,'images':encode_images(images, codec)}
-        if self.target_conditioned:
-            packet.update(target_contract=self.contract,target_input=target_input)
-        if self.live_target_seed is not None:
-            packet['target_seed']=self.live_target_seed
-        if target_motion is not None:
-            if (not self.live_target_seed or not self.live_target_seed.get('motion_tracking')
-                    or target_input['phase'] != 'approach'
-                    or target_motion.get('frame_id') != target_input['frame_id']):
-                raise ValueError('unexpected or mismatched motion reference')
-            packet['target_motion']=target_motion
-        if seed is not None:
-            packet['seed'] = seed  # Offline paired comparison only; live requests omit it.
-        encoded_at = time.perf_counter()
-        wire = json.dumps(packet)+'\n'
-        self.process.stdin.write(wire);self.process.stdin.flush()
-        result=self.receive(self.request_timeout_s)
-        if 'error' in result:
-            evidence=result.get('target_evidence',{})
-            if (result.get('error_code')!=TargetForegroundMissing.code
-                    or result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256
-                    or not self.live_target_seed or self.live_target_seed.get('target_selection_mode')!='multi_foreground'
-                    or result.get('target_input')!=target_input or target_input.get('phase')!='approach'
-                    or evidence.get('target_id')!=target_input['target_id']
-                    or evidence.get('frame_id')!=target_input['frame_id']
-                    or evidence.get('phase')!='approach'
-                    or evidence.get('seed_snapshot_id')!=self.live_target_seed['snapshot_id']
-                    or evidence.get('target_selection_mode')!='multi_foreground'
-                    or evidence.get('source')!='same_frame_segmentation'
-                    or evidence.get('human_reviewed') is not False
-                    or evidence.get('association',{}).get('status')!='missing'
-                    or decode_mask(evidence.get('mask_png'),allow_empty=True).any()):
-                raise ValueError('invalid empty-target response identity or evidence')
-            raise TargetForegroundMissing(evidence)
-        if result.get('id')!=index or result.get('checkpoint_sha256')!=self.expected_sha256 or result.get('shape')!=[50,7]:
-            raise ValueError('invalid prediction identity or shape')
-        if self.live_target_seed is not None:
-            evidence=result.get('target_evidence',{})
-            if (result.get('target_input')!=target_input or evidence.get('frame_id')!=target_input['frame_id']
-                    or evidence.get('target_id')!=target_input['target_id'] or evidence.get('phase')!=target_input['phase']
-                    or evidence.get('seed_snapshot_id')!=self.live_target_seed['snapshot_id']
-                    or evidence.get('human_reviewed') is not False):
-                raise ValueError('live target evidence mismatch')
-            selection_mode=self.live_target_seed.get('target_selection_mode')
-            separated=selection_mode in ('paired_foreground', 'multi_foreground')
-            if separated and evidence.get('target_selection_mode')!=selection_mode:
-                raise ValueError('requested target separation was not used')
-            if target_input['phase']=='approach':
-                decode_mask(evidence.get('mask_png'))
-                if self.live_target_seed.get('motion_tracking'):
-                    motion=evidence.get('motion_reference',{})
-                    if (motion.get('frame_id')!=target_input['frame_id']
-                            or motion.get('source')!='rgb_optical_flow'
-                            or motion.get('human_reviewed') is not False
-                            or not motion.get('current_foreground_support')):
-                        raise ValueError('motion tracking evidence missing')
-                if (evidence.get('source')!='same_frame_segmentation'
-                        or evidence.get('association',{}).get('status')!=('separated' if separated else 'matched')):
-                    raise ValueError('fresh target association required')
-            elif evidence.get('source')!='raw_rgb_after_accepted_close' or evidence.get('mask_png') is not None:
-                raise ValueError('invalid transport evidence')
-        if self.return_action_chunk:
-            # Validate the full wire response once, before any consumer uses it.
-            result['action_chunk']=validated_action_chunk(result)
-        else:
-            finite_vector(result['raw_action'],7,'raw model action')
-            finite_vector(result['action'],7,'decoded model action')
-        result['transport'] = {'codec':codec, 'request_bytes':len(wire.encode()),
-            'encode_s':encoded_at-start, 'roundtrip_s':time.perf_counter()-start}
-        return result
-
-    def close(self):
-        # EOF ends only our stdio worker. Never pkill/kill a pre-existing task.
-        if self.process.stdin and not self.process.stdin.closed:self.process.stdin.close()
-        try:self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.terminate()
-            self.process.wait(timeout=5)
-        self.log.close()
-
-
-class ReadOnlyStation:
-    def __init__(self):
-        self.rpc=None;self.cameras={};self.previous={}
-
-    def connect(self, *, include_cameras=True):
-        import pyaubo_sdk
-        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
-        from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
-        from lerobot.bamboo_sorting.c0_smoke_capture import frozen_c0_smoke_camera_mapping
-        mapping=frozen_c0_smoke_camera_mapping()
-        for name,p in (mapping.items() if include_cameras else []):
-            cam=OpenCVCamera(OpenCVCameraConfig(index_or_path=p['device'],width=640,height=480,
-                fps=30 if name=='global_rgb' else 25,fourcc='MJPG',warmup_s=3))
-            self.cameras[name]=cam;cam.connect(warmup=True);cam.async_read_with_timestamp()
-        self.rpc=pyaubo_sdk.RpcClient();self.rpc.setRequestTimeout(RPC_TIMEOUT_MS)
-        self.rpc.connect('192.168.31.200',30004)
-        if not self.rpc.hasConnected():raise ConnectionError('AUBO not connected')
-        self.rpc.login('aubo','123456')
-        if not self.rpc.hasLogined():raise ConnectionError('AUBO login failed')
-        names=self.rpc.getRobotNames()
-        if len(names)!=1:raise ValueError('ambiguous robot identity')
-        self.iface=self.rpc.getRobotInterface(names[0])
-        self.state=self.iface.getRobotState()
-        self.config=self.iface.getRobotConfig()
-        self.algorithm=self.iface.getRobotAlgorithm()
-        # SDK exposes reads and writes on the same object; only getters below.
-        self.io_readback=self.iface.getIoControl()
-        self.lower=[math.degrees(v) for v in finite_vector(self.config.getJointMinPositions(),6,'lower')]
-        self.upper=[math.degrees(v) for v in finite_vector(self.config.getJointMaxPositions(),6,'upper')]
-
-    def current(self, *, require_stationary=True):
-        if not self.state.isPowerOn():
-            raise RuntimeError('robot is not in a safe powered state: isPowerOn=False (robot power is off)')
-        if not self.state.isWithinSafetyLimits():
-            raise RuntimeError('robot is not in a safe powered state: isWithinSafetyLimits=False')
-        if self.state.isCollisionOccurred():
-            raise RuntimeError('robot is not in a safe powered state: isCollisionOccurred=True')
-        safety=self.state.getSafetyModeType()
-        if getattr(safety,'name',str(safety).split('.')[-1])!='Normal':raise RuntimeError(f'safety mode {safety}')
-        ts=time.perf_counter()  # Timestamp the joint read, not earlier safety RPCs.
-        q=[math.degrees(v) for v in finite_vector(self.state.getJointPositions(),6,'SDK joints')]
-        if require_stationary:
-            speeds=finite_vector(self.state.getJointSpeeds(),6,'SDK speeds')
-            if max(abs(v) for v in speeds)>math.radians(.1):raise RuntimeError('robot moving: stationary trial required')
-        tcp=finite_vector(self.state.getTcpPose(),6,'SDK TCP')
-        pins=(self.io_readback.getStandardDigitalOutput(2),self.io_readback.getStandardDigitalOutput(3))
-        if pins==(True,False):suction=100.
-        elif pins==(False,True):suction=0.
-        else:raise ValueError(f'unknown suction output pair: {pins}')
-        return q+[suction],tcp[:3],ts
-
-    def observe(self, *, require_stationary=True, state_snapshot=None, max_camera_age_ms=100):
-        if state_snapshot is not None and require_stationary:
-            raise ValueError('state reuse only applies to moving observations')
-        images={};times=[]
-        for name in ('global_rgb','grasp_rgb'):
-            image,stamp=self.cameras[name].read_latest_with_timestamp(max_age_ms=max_camera_age_ms)
-            if stamp<=self.previous.get(name,-1):raise ValueError(f'repeated camera frame: {name}')
-            if image.shape!=(480,640,3) or str(image.dtype)!='uint8':raise ValueError('camera schema mismatch')
-            images[name]=image.copy();times.append(stamp);self.previous[name]=stamp
-        state,tcp,stamp=state_snapshot if state_snapshot is not None else self.current(require_stationary=require_stationary)
-        times.append(stamp)
-        return state,images,times
-
-    def gate(self,action,sensor_times, *, captured_at=None, observed_state=None, limits=TrialLimits(), full_episode=False):
-        state,tcp,stamp=self.current()
-        current_fk,ret=self.algorithm.forwardKinematics([math.radians(v) for v in state[:6]])
-        if ret!=0 or math.dist(finite_vector(current_fk,6,'current FK')[:3],tcp)>.001:
-            raise ValueError('FK/current TCP mismatch; tool frame not verified')
-        target_fk,ret=self.algorithm.forwardKinematics([math.radians(v) for v in action[:6]])
-        if ret!=0:raise ValueError('target FK failed')
-        target_fk=finite_vector(target_fk,6,'target FK')
-        return check_step(action,current=state,lower=self.lower,upper=self.upper,current_tcp=tcp,
-            target_tcp=target_fk[:3],sensor_times=sensor_times,state_time=stamp,now=time.perf_counter(),
-            captured_at=captured_at,observed_state=observed_state,limits=limits,full_episode=full_episode)
-
-    def close(self):
-        errors=[]
-        for cam in self.cameras.values():
-            try:
-                if cam.is_connected:cam.disconnect()
-            except Exception as exc:errors.append(str(exc))
-        if self.rpc:
-            try:
-                if self.rpc.hasLogined():self.rpc.logout()
-                self.rpc.disconnect()
-            except Exception as exc:errors.append(str(exc))
-        if errors:raise RuntimeError('cleanup: '+'; '.join(errors))
+__all__ = [
+    'CAMERA_SET', 'InferencePipe', 'MODEL_SHA', 'REMOTE_PYTHON', 'REMOTE_ROOT',
+    'RPC_TIMEOUT_MS', 'ReadOnlyStation', 'encode_images', 'main', 'write',
+]
 
 
 def main(argv=None):

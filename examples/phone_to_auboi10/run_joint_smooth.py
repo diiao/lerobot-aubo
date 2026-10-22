@@ -12,8 +12,6 @@ import sys
 import time
 import traceback
 
-from run_joint_live import read_task
-from run_joint_trial import CAMERA_SET,MODEL_SHA,RPC_TIMEOUT_MS,InferencePipe,ReadOnlyStation,write
 from lerobot.bamboo_sorting.aubo_joint_contract import finite_vector,require_joint_target
 from lerobot.bamboo_sorting.joint_trial import START_DEG,SingleStepSession,wait_until_stationary,home_to_start
 from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
@@ -21,16 +19,17 @@ from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing
 from lerobot.bamboo_sorting.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
     MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace,
     select_approach_action,select_transport_action)
+from lerobot.bamboo_sorting.model_profiles import (
+    BOTH_ORDERS_APPROACH_SCRIPT, BOTH_ORDERS_CHECKPOINT, BOTH_ORDERS_INFERENCE_SCRIPT,
+    BOTH_ORDERS_MODEL_SHA, BOTH_ORDERS_REMOTE_ROOT, LEGACY_MODEL_SHA as MODEL_SHA,
+    MIXED_CHECKPOINT, MIXED_INFERENCE_SCRIPT, MIXED_MODEL_SHA, MIXED_REMOTE_ROOT,
+)
+from lerobot.bamboo_sorting.runtime.inference import InferencePipe
+from lerobot.bamboo_sorting.runtime.station import CAMERA_SET, RPC_TIMEOUT_MS, ReadOnlyStation, write
+from lerobot.bamboo_sorting.runtime.task_prompt import read_task
 
-MIXED_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-mixed-20260927'
-MIXED_MODEL_SHA='79eb23606f6aa4e77484dd4bbf16a8cd273bb6a17ccfc9668ef44a4e2ed22ac7'
-MIXED_CHECKPOINT=f'{MIXED_REMOTE_ROOT}/outputs/joint_mixed_single60_double50_run01/final'
-MIXED_INFERENCE_SCRIPT=f'{MIXED_REMOTE_ROOT}/artifacts/aubo_joint_two_strip_top45_pilot_20260927/joint_inference_stdio.py'
-BOTH_ORDERS_REMOTE_ROOT='/home/rentao/program/lerobot-aubo-smolvla-joint-both-orders-20260928'
-BOTH_ORDERS_MODEL_SHA='c24b61b8d902d395c88890a3243879507d75333d5deb0bc99c13572ecddbfc3b'
-BOTH_ORDERS_CHECKPOINT=f'{BOTH_ORDERS_REMOTE_ROOT}/outputs/joint_mixed_single60_top45_50_top90_50_30k_run01/final'
-BOTH_ORDERS_INFERENCE_SCRIPT=f'{BOTH_ORDERS_REMOTE_ROOT}/artifacts/aubo_joint_both_orders_20260928/joint_inference_stdio.py'
-BOTH_ORDERS_APPROACH_SCRIPT=f'{BOTH_ORDERS_REMOTE_ROOT}/artifacts/joint_age_aligned_approach_20260928/joint_inference_stdio.py'
+__all__ = ['BOTH_ORDERS_MODEL_SHA', 'CAMERA_SET', 'DT', 'InferencePipe', 'MIXED_MODEL_SHA',
+           'MODEL_SHA', 'ReadOnlyStation', 'main']
 
 
 MAX_TARGET_REOBSERVATIONS = 3  # Per target, including separate intermittent misses.

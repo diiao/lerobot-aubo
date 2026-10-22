@@ -9,8 +9,7 @@ import time
 from dataclasses import dataclass, replace
 
 from .aubo_joint_contract import finite_vector, require_joint_target
-
-START_DEG = (-65.29, -5.88, 113.77, 31.07, 90.88, -185.32)
+from .start_poses import START_DEG
 
 
 @dataclass(frozen=True)

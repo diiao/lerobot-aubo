@@ -15,18 +15,14 @@ import signal
 import sys
 import time
 
-from run_joint_trial import CAMERA_SET, MODEL_SHA, InferencePipe, ReadOnlyStation, write
-from lerobot.bamboo_sorting.joint_trial import START_DEG, SingleStepSession, stationary_step_limits, wait_until_stationary
 from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK
+from lerobot.bamboo_sorting.joint_trial import START_DEG, SingleStepSession, stationary_step_limits, wait_until_stationary
+from lerobot.bamboo_sorting.model_profiles import LEGACY_MODEL_SHA as MODEL_SHA
+from lerobot.bamboo_sorting.runtime.inference import InferencePipe
+from lerobot.bamboo_sorting.runtime.station import CAMERA_SET, ReadOnlyStation, write
+from lerobot.bamboo_sorting.runtime.task_prompt import read_task
 
-
-def read_task():
-    print(f'请输入本轮任务指令（输入 q 退出）：\n{JOINT_TASK}',flush=True)
-    while True:
-        task=input('任务指令：').strip()
-        if task.lower()=='q':return None
-        if task==JOINT_TASK:return task
-        print('当前模型仅训练了上面这句任务，请完整输入或粘贴；输入 q 退出。',flush=True)
+__all__ = ['InferencePipe', 'ReadOnlyStation', 'main', 'read_task']
 
 
 def main(argv=None):

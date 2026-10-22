@@ -13,14 +13,18 @@ from pathlib import Path
 import time
 import uuid
 
-from run_joint_trial import CAMERA_SET, InferencePipe, ReadOnlyStation, write
+from lerobot.bamboo_sorting.model_profiles import (
+    TARGET_PAIR_CHECKPOINT as CHECKPOINT,
+    TARGET_PAIR_INFERENCE_SCRIPT as INFERENCE_SCRIPT,
+    TARGET_PAIR_MODEL_SHA as MODEL_SHA,
+    TARGET_PAIR_PYTHONPATH as PYTHONPATH,
+    TARGET_PAIR_REMOTE_ROOT as REMOTE_ROOT,
+)
+from lerobot.bamboo_sorting.perception.target_seed import reviewed_masks
+from lerobot.bamboo_sorting.runtime.inference import InferencePipe
+from lerobot.bamboo_sorting.runtime.station import CAMERA_SET, ReadOnlyStation, write
 
-
-REMOTE_ROOT='/home/rentao/program/lerobot-aubo-joint-target-pair'
-MODEL_SHA='93fd4a6835a98e4d7a0b04bc6aafd51b7d07508e57dccd19e698472968ca6e0a'
-CHECKPOINT=REMOTE_ROOT+'/outputs/joint_target_pair_smolvla/final'
-INFERENCE_SCRIPT=REMOTE_ROOT+'/artifacts/joint_target_shadow_service/joint_inference_stdio.py'
-PYTHONPATH=REMOTE_ROOT+'/src:/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/deps'
+__all__ = ['InferencePipe', 'ReadOnlyStation', 'main', 'reviewed_masks']
 
 
 def render_review(output, snapshot):
@@ -58,39 +62,6 @@ def capture(args):
         print(f'静止观察已保存，没有发送运动或夹爪命令。\n打开：google-chrome --new-window "{(args.output/"review.html").resolve().as_uri()}"')
     finally:
         station.close()
-
-
-def reviewed_masks(snapshot, labels, *, allow_multiple=False):
-    import cv2
-    import numpy as np
-    if (labels.get('schema')!='joint_target_shadow_selection' or labels.get('snapshot_id')!=snapshot['snapshot_id']
-            or labels.get('human_reviewed') is not True):
-        raise ValueError('explicit user review bound to this snapshot required')
-    targets=labels.get('targets',[])
-    if allow_multiple:
-        from lerobot.bamboo_sorting.joint_target_separation import visible_seed_masks
-        return list(visible_seed_masks(targets).items())
-    if len(targets)!=2 or len({t.get('target_id') for t in targets})!=2:
-        raise ValueError('two distinct targets required')
-    masks=[]
-    for target in targets:
-        if not isinstance(target.get('target_id'),str) or not target['target_id'].strip():
-            raise ValueError('nonempty target identity required')
-        mask=np.zeros((480,640),np.uint8)
-        polygons=target.get('polygons',[])
-        if not polygons:
-            raise ValueError('visible polygons required; do not fill occluded regions')
-        for polygon in polygons:
-            points=np.asarray(polygon,dtype=float)
-            if (points.ndim!=2 or points.shape[1]!=2 or len(points)<3 or not np.isfinite(points).all()
-                    or np.any(points<0) or np.any(points[:,0]>639) or np.any(points[:,1]>479)):
-                raise ValueError('polygon vertices must lie inside captured RGB')
-            cv2.fillPoly(mask,[np.rint(points).astype(np.int32)],1)
-        if not mask.any():raise ValueError('empty visible target mask')
-        masks.append(mask.astype(bool))
-    if np.any(masks[0]&masks[1]):
-        raise ValueError('visible target masks overlap; select only the visible region of each object')
-    return [(target['target_id'],mask) for target,mask in zip(targets,masks)]
 
 
 def predict(args):

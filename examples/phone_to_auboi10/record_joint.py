@@ -17,6 +17,8 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     joint_command, joint_contract_record, joint_dataset_features,
 )
 from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, write_joint_json
+from lerobot.bamboo_sorting.capture.fresh_frames import read_fresh_c0_observation
+from lerobot.bamboo_sorting.capture.homing import return_to_normal_start
 from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_PICK_STEP, confirmed_target_outcome
 from lerobot.bamboo_sorting.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
@@ -120,15 +122,11 @@ def main(argv=None):
     from lerobot.teleoperators.phone.teleop_phone import Phone
     from lerobot.utils.control_utils import init_keyboard_listener
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from record_c0_batch import read_fresh_c0_observation, _load_record_helpers
-    helpers = _load_record_helpers()
-
     def return_to_joint_start(robot):
         if not robot.disable_servo_mode():
             return False
-        # Reuse the complete legacy homing routine, including J5=90.88 degrees.
-        return helpers.return_to_start(robot)
+        # Preserve the normal-mode homing speed, steps and J5=90.88 degrees.
+        return return_to_normal_start(robot)
 
     class FreshJointRobot(AuboI10JointCaptureRobot):
         def __init__(self, config):
