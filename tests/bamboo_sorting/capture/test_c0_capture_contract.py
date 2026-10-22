@@ -55,8 +55,13 @@ def test_timestamp_rejects_legacy_or_depth_streams(stream_name: str) -> None:
         )
 
 
-@pytest.mark.parametrize("field", ["sync_timestamp_s", "host_receive_monotonic_s"])
-@pytest.mark.parametrize("bad_value", [True, -0.1, float("nan"), float("inf")])
+# Both fields use the same numeric validator: cover each error class once,
+# plus a representative rejection on the other field.
+@pytest.mark.parametrize("field,bad_value", [
+    ("sync_timestamp_s", True), ("sync_timestamp_s", -0.1),
+    ("sync_timestamp_s", float("nan")), ("sync_timestamp_s", float("inf")),
+    ("host_receive_monotonic_s", -0.1),
+])
 def test_timestamp_rejects_invalid_common_times(field: str, bad_value: object) -> None:
     values = {
         "stream_name": "grasp_rgb",

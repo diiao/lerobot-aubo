@@ -89,8 +89,13 @@ def test_valid_event_serializes_with_fixed_no_physical_claim_fields() -> None:
     json.dumps(record, allow_nan=False)
 
 
-@pytest.mark.parametrize("field", ["event_index", "frame_index", "do_write_attempt_count"])
-@pytest.mark.parametrize("bad_value", [True, -1, 1.5, "3"])
+# All three fields share the integer validator. Keep every error class and
+# verify that each field reaches validation without repeating their product.
+@pytest.mark.parametrize("field,bad_value", [
+    ("event_index", True), ("event_index", -1),
+    ("event_index", 1.5), ("event_index", "3"),
+    ("frame_index", -1), ("do_write_attempt_count", -1),
+])
 def test_event_rejects_invalid_indices(field: str, bad_value: object) -> None:
     with pytest.raises(ValueError, match="non-negative integer"):
         _event(**{field: bad_value})
@@ -102,16 +107,12 @@ def test_event_rejects_invalid_sync_timestamp(bad_value: object) -> None:
         _event(sync_timestamp_s=bad_value)
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "action_gripper_pos",
-        "requested_state_after",
-        "commanded_state_before",
-        "commanded_state_after",
-    ],
-)
-@pytest.mark.parametrize("bad_value", [50.0, True, "100"])
+# The binary-value validator is shared; retain all fields and all bad types.
+@pytest.mark.parametrize("field,bad_value", [
+    ("action_gripper_pos", 50.0), ("action_gripper_pos", True), ("action_gripper_pos", "100"),
+    ("requested_state_after", 50.0), ("commanded_state_before", 50.0),
+    ("commanded_state_after", 50.0),
+])
 def test_event_rejects_non_binary_gripper_values(field: str, bad_value: object) -> None:
     with pytest.raises(ValueError, match=field):
         _event(**{field: bad_value})

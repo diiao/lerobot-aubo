@@ -222,6 +222,14 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 
 AUBO离线回归统一用 `make test-aubo-offline`（等价于本手册记录的pytest范围）：只使用假设备与合成数据，禁止下载、GPU、真实模型推理和现场动作；命令显式设置`CUDA_VISIBLE_DEVICES=`，即使主机有GPU，直接指定`cuda`的处理器用例也会跳过。测试缓存写入临时目录并在结束时删除。`make test-aubo-collect`只收集AUBO用例，不执行。GPU／下载／真实模型集成检查单独列出为 `make test-aubo-gpu-integration`，需要相应授权和环境，不属于默认回归。上游CI的`pytest tests`是框架整体检查，不是AUBO验收，也不应据此启动训练、推理或现场操作。
 
+日常小改动按上表选择受影响的测试；涉及多个模块的重构及交付前再跑完整离线回归。例如只修改持续运行流程时，可复用同一命令的隔离与缓存设置：
+
+```bash
+make test-aubo-offline AUBO_TEST_PATHS=tests/bamboo_sorting/runtime
+```
+
+若同时修改夹爪驱动、模型输入或采集逻辑，应把对应测试路径一并纳入。参数化测试会用多组输入执行同一个测试函数，因此执行项数不等于测试代码份数；代表性组合精简的依据与结果见[测试裁剪记录](EVIDENCE.md#按aubo用途裁剪测试)。
+
 本地共有82个`test_*.py`文件，其中AUBO测试29个；不是所有保留测试都适合直接执行。删除范围及回溯见[测试裁剪记录](EVIDENCE.md#按aubo用途裁剪测试)。
 
 ## 数据集目录

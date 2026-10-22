@@ -148,10 +148,12 @@ def test_plan_never_connects(monkeypatch):
     assert module.main([])==0
 
 
-@pytest.mark.parametrize('requested,available,bad_chunk',[
-    (False,False,False),(True,False,False),(True,True,False),(True,True,True),
+# Timeout forwarding is independent of chunk negotiation and validation.
+# Exercise both timeout values on successful requests, and each failure once.
+@pytest.mark.parametrize('requested,available,bad_chunk,request_timeout',[
+    (False,False,False,2.),(True,False,False,2.),
+    (True,True,False,2.),(True,True,False,5.),(True,True,True,2.),
 ])
-@pytest.mark.parametrize('request_timeout',[2.,5.])
 def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,requested,available,bad_chunk,request_timeout):
     import io
     module=load_entry();launch=[]
@@ -335,24 +337,29 @@ def test_home_entry_no_policy_or_cameras(tmp_path,monkeypatch):
     assert list(tmp_path.iterdir())==[]
 
 
-@pytest.mark.parametrize('pins,release_ok,servo_owned,expected_release,expected_home,release_option',[
-    ((False,False),True,False,True,True,'--release-if-unset'),
-    ((False,False),False,False,True,False,'--release-if-unset'),
-    ((False,True),True,False,False,True,'--release-if-unset'),
-    ((True,False),True,False,False,False,'--release-if-unset'),
-    ((True,True),True,False,False,False,'--release-if-unset'),
-    ((False,False),True,True,False,False,'--release-if-unset'),
-    ((True,False),True,False,True,True,'--release-before-home'),
-    ((True,False),False,False,True,False,'--release-before-home'),
-    ((False,False),True,False,True,True,'--release-before-home'),
-    ((True,False),True,True,False,False,'--release-before-home'),
-    ((False,True),True,False,False,True,None),
-    ((True,False),True,False,True,True,None),
-    ((False,False),True,False,True,True,None),
-    ((True,True),True,False,True,True,None),
-    ((True,False),False,False,True,False,None),
+@pytest.mark.parametrize('pins,release_ok,servo_owned,expected_release,expected_home,release_option,write_logs',[
+    # Keep every controller/CLI scenario with its evidence checks enabled.
+    ((False,False),True,False,True,True,'--release-if-unset',True),
+    ((False,False),False,False,True,False,'--release-if-unset',True),
+    ((False,True),True,False,False,True,'--release-if-unset',True),
+    ((True,False),True,False,False,False,'--release-if-unset',True),
+    ((True,True),True,False,False,False,'--release-if-unset',True),
+    ((False,False),True,True,False,False,'--release-if-unset',True),
+    ((True,False),True,False,True,True,'--release-before-home',True),
+    ((True,False),False,False,True,False,'--release-before-home',True),
+    ((False,False),True,False,True,True,'--release-before-home',True),
+    ((True,False),True,True,False,False,'--release-before-home',True),
+    ((False,True),True,False,False,True,None,True),
+    ((True,False),True,False,True,True,None,True),
+    ((False,False),True,False,True,True,None,True),
+    ((True,True),True,False,True,True,None,True),
+    ((True,False),False,False,True,False,None,True),
+    # No-output mode: successful release, failed release, and rejection before IO.
+    # Plain homing without release/output is covered by test_home_entry_no_policy_or_cameras.
+    ((False,False),True,False,True,True,'--release-if-unset',False),
+    ((False,False),False,False,True,False,'--release-if-unset',False),
+    ((False,False),True,True,False,False,'--release-if-unset',False),
 ])
-@pytest.mark.parametrize('write_logs',[False,True])
 def test_home_release_if_unset_before_motion(tmp_path,monkeypatch,pins,release_ok,
                                            servo_owned,expected_release,expected_home,release_option,write_logs):
     import json
