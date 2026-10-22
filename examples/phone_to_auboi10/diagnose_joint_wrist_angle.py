@@ -1,7 +1,26 @@
 #!/usr/bin/env python
 """Measure saved wrist RGB in explicit ROIs; no model, hardware or raw edits.
 
-Business logic lives in lerobot.bamboo_sorting.diagnostics.joint_wrist_angle."""
+Manifest: {"schema":"joint_wrist_angle_samples", "samples":[{"id":"...",
+"image":"relative.png", "gap_line":[[x,y],[x,y]], "roi_polygon":[[x,y],...],
+"group":"expert|model", "episode_id":"...", "horizon_s":0.5,
+"delta_j6_deg":1.2}]}.
+
+Use --stage prepare --sources sources.json to extract time-aligned samples.
+Sources: {"defaults":{"gap_line":[[x,y],[x,y]]},
+"demonstrations":[{"root":"dataset", "evidence_root":"capture_evidence"}],
+"runs":[{"root":"saved_trial", "action_fps":25}],
+"horizons_s":[0.5,1.0], "before_close_s":[3,0], "sample_interval_s":0.2}.
+Paths are relative to sources.json. Optional training_sources points to the
+existing train/validation source manifest (uses its annotated episode subset).
+Each source can override defaults and before_close_s; demonstrations can supply
+episode_windows mapping episode index strings to [start,end] seconds before close.
+Preclose windows are candidates, not automatically identified descent segments.
+Measure first, review the overlays, then regress only explicitly accepted rows.
+Angles are image projections, offsets are pixels, never J6 corrections.
+
+Business logic lives in lerobot.bamboo_sorting.diagnostics.joint_wrist_angle.
+"""
 import argparse
 import json
 from pathlib import Path

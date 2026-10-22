@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 """Offline wrist distributions and independent two-point measurement review.
 
+prepare consumes measurements.json, retains invalid frames, and creates a
+20-frame manual-axis page. plots renders standalone PNG/PDF figures using
+matplotlib. errors imports the user's exported points; it never fits a response
+slope. No hardware, model, or raw-data writes.
+
 Business logic lives in lerobot.bamboo_sorting.diagnostics.joint_wrist_distribution."""
 import argparse
 import json
