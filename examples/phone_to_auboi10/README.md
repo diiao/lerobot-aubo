@@ -160,19 +160,21 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 
 命令入口在 `examples/phone_to_auboi10/`，任务实现集中在 `src/lerobot/bamboo_sorting/`；机器人驱动在 `src/lerobot/robots/aubo_i10/`。先按下表定位，不按文件名猜测当前方案。
 
+任务包按职责分为 `capture/`（采集、相机、时间戳、夹爪证据、采后检查）、`perception/`（分割、目标身份关联、前景分离、运动跟随）、`policy/`（目标图像、训练数据、动作模型适配）、`runtime/`（设备连接、推理通信、执行调度、预览录像）和 `diagnostics/`（腕部角度等离线诊断）。公共契约与路径常量保留在根级 `aubo_joint_contract.py`、`joint_gripper_quality.py`、`joint_stack_metadata.py`、`mask_codec.py`、`model_profiles.py`、`paths.py`、`start_poses.py`；命令入口只保留参数、调用和退出状态。
+
 ### 当前任务入口
 
 | 要做的事 | 入口 | 主要实现／操作说明 |
 | --- | --- | --- |
-| 三根堆叠目标示教 | [record_joint.py](record_joint.py) 的 `--stack-demonstrations` | `aubo_joint_capture.py`、`joint_stack_metadata.py`；[堆叠流程](#三根堆叠目标示教方案) |
-| 采后检查、种子和逐帧轮廓复核 | [prepare_joint_target_review.py](prepare_joint_target_review.py)、[joint_target_review.html](joint_target_review.html) | `capture-check → prepare → import-predictions → import-seeds → separate → import-review → verify`；分割推理另行授权 |
-| 审计原始关节数据 | [audit_joint_dataset.py](audit_joint_dataset.py) | `aubo_joint_audit.py`、`joint_gripper_quality.py`；成功候选筛选不代替物理结果确认 |
-| 多实例分离与目标输入 | [joint_target_separation.py](../../src/lerobot/bamboo_sorting/joint_target_separation.py)、[joint_target_policy.py](../../src/lerobot/bamboo_sorting/joint_target_policy.py) | `MultiStripSeparation`由离线与实时共用；[接口约定](#目标条件接口约定) |
-| 动作训练／离线评价 | [train_joint_smolvla.py](train_joint_smolvla.py)、[diagnose_joint_target_policy.py](diagnose_joint_target_policy.py) | `joint_training.py`、`smolvla_joint_adapter.py`；[训练阶段](#阶段与默认值)，已有诊断不重复运行 |
-| 目标圈选与现场运行 | [run_joint_target_shadow.py](run_joint_target_shadow.py)、[joint_target_shadow_review.html](joint_target_shadow_review.html)、[run_joint_smooth.py](run_joint_smooth.py) | `joint_target_live_setup.py`、`joint_target_runtime.py`、`joint_smooth.py`；[运行说明](#目标条件模型单次真机试验)，`target-stack`已完成trial04一轮三根成功反馈及现场空目标恢复，见[实机复核](EVIDENCE.md#第四轮三根成功与现场空目标恢复) |
-| 静态分割采集／人工修边 | [capture_placement_sequence.py](capture_placement_sequence.py)、[review_placement_sequence.py](review_placement_sequence.py) | `placement_sequence.py`、`placement_review.py`／`.html`；[采集与复核](#静态分割采集与人工复核) |
-| 分割数据／训练／预测评价 | [export_strip_segmentation.py](export_strip_segmentation.py)、[train_strip_segmentation.py](train_strip_segmentation.py)、[predict_strip_images.py](predict_strip_images.py)、[evaluate_strip_segmentation.py](evaluate_strip_segmentation.py)、[review_strip_predictions.py](review_strip_predictions.py) | `strip_segmentation_data.py`、`strip_segmentation_training.py`；[分割流程](#静态分割数据训练与独立评价) |
-| 腕部20帧人工结果导入 | [review_joint_wrist_distribution.py](review_joint_wrist_distribution.py) 的 `--stage errors` | [人工复核流程](#斜条j6欠转的腕部角度诊断)；`diagnose_joint_wrist_angle.py`保留已完成测量的复现入口 |
+| 三根堆叠目标示教 | [record_joint.py](record_joint.py) 的 `--stack-demonstrations` | `capture/aubo_joint_capture.py`、`joint_stack_metadata.py`；[堆叠流程](#三根堆叠目标示教方案) |
+| 采后检查、种子和逐帧轮廓复核 | [prepare_joint_target_review.py](prepare_joint_target_review.py)、[joint_target_review.html](joint_target_review.html) | `capture/target_review.py`、`perception/target_review.py`、`policy/target_verification.py`；`capture-check → prepare → import-predictions → import-seeds → separate → import-review → verify`；分割推理另行授权 |
+| 审计原始关节数据 | [audit_joint_dataset.py](audit_joint_dataset.py) | `capture/aubo_joint_audit.py`、`joint_gripper_quality.py`；成功候选筛选不代替物理结果确认 |
+| 多实例分离与目标输入 | [joint_target_separation.py](../../src/lerobot/bamboo_sorting/perception/joint_target_separation.py)、[joint_target_policy.py](../../src/lerobot/bamboo_sorting/policy/joint_target_policy.py) | `MultiStripSeparation`由离线与实时共用；[接口约定](#目标条件接口约定) |
+| 动作训练／离线评价 | [train_joint_smolvla.py](train_joint_smolvla.py)、[diagnose_joint_target_policy.py](diagnose_joint_target_policy.py) | `policy/joint_training.py`、`policy/smolvla_joint_adapter.py`；[训练阶段](#阶段与默认值)，已有诊断不重复运行 |
+| 目标圈选与现场运行 | [run_joint_target_shadow.py](run_joint_target_shadow.py)、[joint_target_shadow_review.html](joint_target_shadow_review.html)、[run_joint_smooth.py](run_joint_smooth.py) | `runtime/live_setup.py`、`runtime/joint_target_runtime.py`、`runtime/joint_smooth.py`；[运行说明](#目标条件模型单次真机试验)，`target-stack`已完成trial04一轮三根成功反馈及现场空目标恢复，见[实机复核](EVIDENCE.md#第四轮三根成功与现场空目标恢复) |
+| 静态分割采集／人工修边 | [capture_placement_sequence.py](capture_placement_sequence.py)、[review_placement_sequence.py](review_placement_sequence.py) | `perception/placement_sequence.py`、`perception/placement_review.py`／`.html`；[采集与复核](#静态分割采集与人工复核) |
+| 分割数据／训练／预测评价 | [export_strip_segmentation.py](export_strip_segmentation.py)、[train_strip_segmentation.py](train_strip_segmentation.py)、[predict_strip_images.py](predict_strip_images.py)、[evaluate_strip_segmentation.py](evaluate_strip_segmentation.py)、[review_strip_predictions.py](review_strip_predictions.py) | `perception/strip_segmentation_data.py`、`perception/strip_segmentation_training.py`；[分割流程](#静态分割数据训练与独立评价) |
+| 腕部20帧人工结果导入 | [review_joint_wrist_distribution.py](review_joint_wrist_distribution.py) 的 `--stage errors` | `diagnostics/joint_wrist_distribution.py`、`diagnostics/joint_wrist_angle.py`；[人工复核流程](#斜条j6欠转的腕部角度诊断)；`diagnose_joint_wrist_angle.py`保留已完成测量的复现入口 |
 
 ### 共享依赖与现场辅助
 
@@ -180,13 +182,13 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 
 | 文件／模块 | 当前用途 |
 | --- | --- |
-| `record_c0_batch.py → record.py` | `record_joint.py`复用相机新鲜度检查和手机归位辅助；旧C0批次CLI已退役 |
-| `c0_batch_capture.py`、`c0_gripper_*` | 关节采集的帧时间、夹爪命令与保存证据；不是当前8维末端动作方案 |
-| `joint_camera_config.py → c0_smoke_capture.py` | 当前相机配置与冻结映射；配置文件仍在 `configs/aubo_i10/` |
-| `run_joint_trial.py` | `run_joint_smooth.py`、目标影子入口等复用的 `InferencePipe`、`ReadOnlyStation`，以及[归位入口](#2-归位) |
-| `run_joint_live.py` | 保留停稳后单步观察的兼容入口；持续伺服入口还复用其任务文字读取函数 |
+| `record_joint.py` + `capture/fresh_frames.py`、`capture/homing.py` | 当前关节采集的相机新鲜度检查与正常归位；旧`record.py`和`record_c0_batch.py`不再是当前采集依赖，`record_c0_batch.py`只保留兼容导入 |
+| `capture/c0_batch_capture.py`、`capture/c0_gripper_*` | 关节采集的帧时间、夹爪命令与保存证据；不是当前8维末端动作方案 |
+| `capture/joint_camera_config.py → capture/c0_smoke_capture.py` | 当前相机配置与冻结映射；配置文件仍在 `configs/aubo_i10/` |
+| `run_joint_trial.py`、`runtime/inference.py`、`runtime/station.py` | 命令入口保留[归位入口](#2-归位)；`InferencePipe`和`ReadOnlyStation`在运行模块中供各入口复用 |
+| `run_joint_live.py`、`runtime/task_prompt.py` | 保留停稳后单步观察的兼容入口；任务文字读取在运行模块中供持续伺服入口复用 |
 | `joint_inference_stdio.py` | 远端模型数值推理协议；由运行链调用，不是本地机械臂控制入口 |
-| `aubo_start_poses.py`、`move_to_start.py`、`release_joint_gripper.py`、`teleoperate.py` | 起点定义、移动、单独松爪和手机遥操；涉及现场动作，须按相应授权执行 |
+| `start_poses.py`、`aubo_start_poses.py`、`move_to_start.py`、`release_joint_gripper.py`、`teleoperate.py` | 起点常量在任务包中统一维护，`aubo_start_poses.py`只重新导出；移动、单独松爪和手机遥操涉及现场动作，须按相应授权执行 |
 | `diag_preflight_cams.py`、`diag_cam_latency.py`、`read_pose.py` | 相机体检／延迟、机器人位姿读取；读位姿也需要设备连接 |
 
 ### 历史与专项工具
@@ -194,7 +196,7 @@ PYTHONPATH=src .venv/bin/python examples/phone_to_auboi10/record_joint.py \
 | 文件 | 状态与适用范围 |
 | --- | --- |
 | `review_joint_target.py` | 保存录像的关键帧与已有诊断结果展示；不能生成已接受训练标签 |
-| `associate_joint_target.py` | 保存分割结果的离线关联诊断；底层 `joint_target_association.py` 仍被实时路径使用，不能一起移除 |
+| `associate_joint_target.py` | 保存分割结果的离线关联诊断；底层 `perception/joint_target_association.py` 仍被实时路径使用，不能一起移除 |
 
 旧ACT／C0聚合审计、双图层序评价、光流诊断和一次性现场探测入口已退役；删除范围、目录保留理由及源码回溯见[EVIDENCE](EVIDENCE.md#目录与退役代码清理)。历史记录中的旧命令不再是当前可用入口。
 
@@ -758,7 +760,7 @@ TRIAL_ROOT='artifacts/live/stack/stack_target_<日期>_<新试验号>'
 软件接口通过检查不代表模型已学会目标；闭合命令只是输入阶段边界，不证明实际抓住，真实结果仍需人工记录。
 （历史计划）同场景A／B曾是当时的必做检验；2026-10-15起A／B实验结束，当前主线见[三根堆叠目标示教方案](#三根堆叠目标示教方案)。沿用现有描边表达进行实验，不把其他论文的视觉提示收益直接视为本实现的结论；没有第三张图不等于分割与传输没有延迟。
 
-已实现 [joint_target.py](../../src/lerobot/bamboo_sorting/joint_target.py)：
+已实现 [joint_target.py](../../src/lerobot/bamboo_sorting/policy/joint_target.py)：
 显式选择实例 → 当前帧可见掩码 → `prepare_target_images` → `target_global_rgb`＋`grasp_rgb`。
 实例PNG的像素ID只用于查找选中实例，不能当类别或跨帧身份。
 `target_id`固定表示一次抓放的对象，`frame_id`约束轮廓对应的当前全局帧；这两个字段由调用者提供，接口检查一致性本身不证明跟踪正确。
@@ -768,7 +770,7 @@ TRIAL_ROOT='artifacts/live/stack/stack_target_<日期>_<新试验号>'
 
 关键帧复核原型仍保留`AuboI10JointTargetOutline`；实际训练／数值推理使用独立契约
 `AuboI10JointTargetApproach`，图像键为`target_global_rgb`、`grasp_rgb`。
-[joint_target_policy.py](../../src/lerobot/bamboo_sorting/joint_target_policy.py)提供共享阶段规则、
+[joint_target_policy.py](../../src/lerobot/bamboo_sorting/policy/joint_target_policy.py)提供共享阶段规则、
 `JointTargetDataset`数据视图、`TargetInputSession`单轮输入准备和`SmolVLAJointTargetOfflineAdapter`数值推理适配。
 数据视图保留原始视频、状态、动作及50步动作序列的尾部填充；新旧适配器拒绝对方的检查点契约。
 

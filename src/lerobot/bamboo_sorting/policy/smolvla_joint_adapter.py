@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_IMAGE_KEYS, JOINT_TASK, joint_command, joint_contract_record
-from .joint_gripper_quality import require_joint_normalization_stats
+from ..aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_IMAGE_KEYS, JOINT_TASK, joint_command, joint_contract_record
+from ..joint_gripper_quality import require_joint_normalization_stats
 
 
 def make_joint_smolvla_processors(config, dataset_stats, *, target_conditioned=False):

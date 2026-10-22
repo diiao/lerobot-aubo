@@ -96,7 +96,7 @@ def outline(rgb, mask):
 def prepare(args):
     import cv2
     from PIL import Image, ImageDraw
-    from lerobot.bamboo_sorting.joint_training import load_prepared_dataset
+    from lerobot.bamboo_sorting.policy.joint_training import load_prepared_dataset
     args.output.mkdir(parents=True, exist_ok=False)
     predictions = np.load(args.predictions, allow_pickle=False)
     events = event_windows(predictions)
@@ -179,7 +179,7 @@ def infer(args):
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
     from lerobot.processor import PolicyProcessorPipeline
     from lerobot.processor.converters import batch_to_transition,transition_to_batch,policy_action_to_transition,transition_to_policy_action
-    from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
     from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK
     if read(args.checkpoint/'aubo_joint_contract.json')!=target_policy_contract_record():
         raise ValueError('target checkpoint contract mismatch')

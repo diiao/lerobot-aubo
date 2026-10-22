@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
-from lerobot.bamboo_sorting.joint_target import prepare_target_images
+from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
+from lerobot.bamboo_sorting.policy.joint_target import prepare_target_images
 
 
 def inputs():
@@ -38,7 +38,7 @@ def test_lost_target_never_reuses_seed_or_recovers_implicitly():
 
 @pytest.mark.parametrize('width',[2,5])
 def test_partial_visibility_and_full_area_restoration_use_current_pixels(width):
-    from lerobot.bamboo_sorting.joint_target_association import TargetAssociation
+    from lerobot.bamboo_sorting.perception.joint_target_association import TargetAssociation
     mask,seed,frame=inputs()
     partial=np.zeros_like(mask);partial[225:275,409:409+width]=True
     # 5% and 12.5% of the initial area, followed by 20x/8x recovery.
@@ -58,7 +58,7 @@ def test_partial_visibility_and_full_area_restoration_use_current_pixels(width):
 
 @pytest.mark.parametrize('case',['low_overlap','low_score','ambiguous'])
 def test_live_selects_best_candidate_without_overlap_score_or_ambiguity_rejection(case):
-    from lerobot.bamboo_sorting.joint_target_association import TargetAssociation
+    from lerobot.bamboo_sorting.perception.joint_target_association import TargetAssociation
     mask,seed,frame=inputs();instances=np.zeros((480,640),np.uint16)
     if case=='low_overlap':instances[230:270,409:411]=1  # 4% IoU, below 0.05.
     elif case=='low_score':instances[225:275,444:446]=1  # Aligned IoU=0.05, low location score.
@@ -82,7 +82,7 @@ def test_live_selects_best_candidate_without_overlap_score_or_ambiguity_rejectio
 
 @pytest.mark.parametrize('case',['distant','rotated','large_area'])
 def test_live_drops_geometry_gates_while_offline_keeps_them(case):
-    from lerobot.bamboo_sorting.joint_target_association import TargetAssociation
+    from lerobot.bamboo_sorting.perception.joint_target_association import TargetAssociation
     mask,seed,frame=inputs();instances=np.zeros((480,640),np.uint16)
     if case=='distant':instances[200:300,500:520]=1
     elif case=='rotated':instances[240:260,360:460]=1
@@ -160,7 +160,7 @@ def test_paired_mode_does_not_rename_only_competitor_as_selected_target():
 
 
 def test_multi_empty_evidence_and_next_fresh_frame_preserve_indices_and_seeds():
-    from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import TargetForegroundMissing
     mask,other,seed,frame=paired_inputs()
     seed['target_selection_mode']='multi_foreground'
     seed['visible_targets']=seed.pop('paired_targets')

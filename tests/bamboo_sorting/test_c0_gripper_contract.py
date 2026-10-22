@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from lerobot.bamboo_sorting.c0_gripper_contract import C0_GRIPPER_EVENT_SCHEMA_VERSION, C0GripperEventV1
+from lerobot.bamboo_sorting.capture.c0_gripper_contract import C0_GRIPPER_EVENT_SCHEMA_VERSION, C0GripperEventV1
 
 EPISODE_ID = "c0-gripper-episode-00"
 
@@ -469,7 +469,7 @@ def test_importing_gripper_modules_touches_no_hardware_network_threads_or_files(
     result = subprocess.run(
         [
             sys.executable, "-B", "-c", _IMPORT_PROBE,
-            f"lerobot.bamboo_sorting.{module_name}", str(Path(__file__).resolve().parents[2] / "src"),
+            f"lerobot.bamboo_sorting.capture.{module_name}", str(Path(__file__).resolve().parents[2] / "src"),
         ],
         capture_output=True,
         text=True,

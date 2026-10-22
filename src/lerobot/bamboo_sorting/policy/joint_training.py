@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from .aubo_joint_audit import audit_joint_dataset
-from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, joint_contract_record
-from .joint_gripper_quality import require_joint_normalization_stats
+from ..capture.aubo_joint_audit import audit_joint_dataset
+from ..aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, joint_contract_record
+from ..joint_gripper_quality import require_joint_normalization_stats
 
 
 def write_json(path, value):

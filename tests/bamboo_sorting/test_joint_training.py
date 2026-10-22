@@ -6,7 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from lerobot.bamboo_sorting.joint_training import prepare_training_data, prediction_metrics
+from lerobot.bamboo_sorting.policy.joint_training import prepare_training_data, prediction_metrics
 
 
 def _entry():
@@ -71,7 +71,7 @@ def test_train_statistics_exclude_failed_and_validation_episodes(tmp_path, monke
                 "capture_complete": True, "episodes": [
                     {"episode_index": 0, "split": split, "scene_id": split + "-scene", "frames": 2},
                     {"episode_index": 1, "split": split, "scene_id": "failed-scene", "frames": 1}]}
-    monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.audit_joint_dataset", report)
+    monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.audit_joint_dataset", report)
     result = prepare_training_data(train, tmp_path / "te", val, tmp_path / "ve")
     assert result["train"]["episodes"] == [0]
     assert result["train_only_stats"]["action"]["mean"] == [1, 1, 1, 1, 1, 1, 50]
@@ -79,7 +79,7 @@ def test_train_statistics_exclude_failed_and_validation_episodes(tmp_path, monke
         record = report(root, evidence)
         record["episodes"][0]["scene_id"] = "same-scene"
         return record
-    monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.audit_joint_dataset", overlap)
+    monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.audit_joint_dataset", overlap)
     with pytest.raises(ValueError, match="scene leakage"):
         prepare_training_data(train, tmp_path / "te", val, tmp_path / "ve")
 
@@ -93,7 +93,7 @@ def test_failed_step_still_groups_entire_pile_for_split_leakage(tmp_path, monkey
             episodes.append(dict(episode_index=1, scene_id='p-001', split=split, frames=2, pick_step=2))
         return dict(source_dataset_root=str(root), gripper_quality_passed=True,
                     supervised_candidate_episodes=[0], capture_complete=True, episodes=episodes)
-    monkeypatch.setattr('lerobot.bamboo_sorting.joint_training.audit_joint_dataset', audit)
+    monkeypatch.setattr('lerobot.bamboo_sorting.policy.joint_training.audit_joint_dataset', audit)
     with pytest.raises(ValueError, match='scene leakage'):
         prepare_training_data(tmp_path/'train', tmp_path/'te', tmp_path/'validation', tmp_path/'ve')
 
@@ -112,7 +112,7 @@ def test_metrics_expose_copy_state_failure_despite_high_accuracy():
 
 
 def test_original_trainer_reports_native_image_preprocessing_requirement(tmp_path, monkeypatch):
-    monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.audit_joint_dataset", lambda *a, **kw: {
+    monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.audit_joint_dataset", lambda *a, **kw: {
         "image_shapes": {"global_rgb": [1080, 1920, 3], "grasp_rgb": [480, 640, 3]}})
     with pytest.raises(ValueError, match="configure native-resolution model preprocessing"):
         prepare_training_data(tmp_path / "train", tmp_path / "train-evidence",
@@ -121,7 +121,7 @@ def test_original_trainer_reports_native_image_preprocessing_requirement(tmp_pat
 
 def test_manifest_pools_selected_frames_and_rejects_duplicate_sources(tmp_path, monkeypatch):
     import json
-    from lerobot.bamboo_sorting.joint_training import prepare_training_manifest, read_data_manifest
+    from lerobot.bamboo_sorting.policy.joint_training import prepare_training_manifest, read_data_manifest
     arrays = [np.array([[0] * 7, [2] * 6 + [100]], dtype=float),
               np.array([[10] * 7, [20] * 7, [30] * 7, [40] * 6 + [100]], dtype=float)]
     def prepare(root, evidence, validation, ve, **kwargs):
@@ -134,7 +134,7 @@ def test_manifest_pools_selected_frames_and_rejects_duplicate_sources(tmp_path, 
                 "validation": {"root": validation, "frames": 3 if validation_name == "val" else 2,
                     "scenes": ["1" if validation_name == "val-overlap" else validation_name],
                     "capture_complete": True}, "train_only_stats": stats}
-    monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_data", prepare)
+    monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.prepare_training_data", prepare)
     value = {"schema_version": "AuboJointTrainingSourcesV1", "train": [
         {"root": "train0", "evidence_root": "ev0"}, {"root": "train1", "evidence_root": "ev1"}],
         "validation": {"root": "val", "evidence_root": "ve"}}
@@ -165,7 +165,7 @@ def test_manifest_pools_selected_frames_and_rejects_duplicate_sources(tmp_path, 
 
 def test_concat_preserves_source_local_action_chunks(monkeypatch):
     import torch
-    from lerobot.bamboo_sorting.joint_training import load_prepared_dataset
+    from lerobot.bamboo_sorting.policy.joint_training import load_prepared_dataset
     class Source(torch.utils.data.Dataset):
         def __init__(self, _, *, root, episodes, delta_timestamps, video_backend):
             self.value = int(root)
@@ -189,7 +189,7 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
     import sys
     from types import SimpleNamespace
     import torch
-    from lerobot.bamboo_sorting.smolvla_joint_adapter import make_joint_smolvla_config
+    from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import make_joint_smolvla_config
     from tests.processor.test_smolvla_processor import MockTokenizerProcessorStep
     from tests.bamboo_sorting.test_joint_gripper_quality import _stats
 
@@ -269,7 +269,7 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
             {**prepared["train"], "root": str(tmp_path / "train2")}], "frames": 6}
         prepared["validation"] = {"sources": [prepared["validation"],
             {**prepared["validation"], "root": str(tmp_path / "validation2")}], "frames": 6}
-    monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_data", lambda *args, **kwargs: prepared)
+    monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.prepare_training_data", lambda *args, **kwargs: prepared)
     data_args = ["--train-root", str(tmp_path / "train"), "--train-evidence", str(tmp_path / "te"),
                  "--validation-root", str(tmp_path / "validation"), "--validation-evidence", str(tmp_path / "ve")]
     if target_conditioned:
@@ -277,7 +277,7 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
         manifest.write_text(json.dumps({"schema_version": "AuboJointTrainingSourcesV1",
             "train": [{"root": "train", "evidence_root": "te"}],
             "validation": {"root": "validation", "evidence_root": "ve"}}))
-        monkeypatch.setattr("lerobot.bamboo_sorting.joint_training.prepare_training_manifest",
+        monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.prepare_training_manifest",
                             lambda *args, **kwargs: prepared)
         data_args = ["--target-conditioned", "--data-manifest", str(manifest)]
     output = tmp_path / "output"
@@ -286,7 +286,7 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
         "--base-path", str(base), "--vlm-path", str(vlm), "--output", str(output), *data_args]) == 0
     assert json.loads((output / "reload_check.json").read_text())["identical_prediction"]
     from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
-    from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
     assert json.loads((output / "final/aubo_joint_contract.json").read_text()) == (
         target_policy_contract_record() if target_conditioned else joint_contract_record())
     assert len((output / "training.jsonl").read_text().splitlines()) == 2

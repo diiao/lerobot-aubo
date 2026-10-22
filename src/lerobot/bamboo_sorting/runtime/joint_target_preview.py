@@ -10,8 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
 
-from .joint_target import outline_target_images
-from .joint_target_runtime import decode_mask
+from ..policy.joint_target import outline_target_images
+from ..mask_codec import decode_mask
 
 PAGE = '''<!doctype html><meta charset="utf-8"><title>AUBO 目标预测预览</title>
 <style>body{background:#15191e;color:#eee;font:18px sans-serif;margin:24px}img{max-width:100%;border:1px solid #555}.old{color:#ffb45a}small{color:#bbb}</style>

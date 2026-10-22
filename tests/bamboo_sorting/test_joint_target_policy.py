@@ -8,11 +8,11 @@ import pytest
 import torch
 
 from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_FIELDS, JOINT_TASK, joint_contract_record
-from lerobot.bamboo_sorting.joint_target_policy import (
+from lerobot.bamboo_sorting.policy.joint_target_policy import (
     JointTargetDataset, SmolVLAJointTargetOfflineAdapter, TargetInputSession,
     prepare_target_source, target_policy_contract_record,
 )
-from lerobot.bamboo_sorting.smolvla_joint_adapter import (
+from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import (
     SmolVLAJointOfflineAdapter, make_joint_smolvla_config,
 )
 
@@ -184,7 +184,7 @@ def test_target_wire_images_require_new_key_and_preserve_pixels():
 
 
 def test_manifest_cannot_silently_drop_target_annotations(tmp_path):
-    from lerobot.bamboo_sorting.joint_training import prepare_training_manifest
+    from lerobot.bamboo_sorting.policy.joint_training import prepare_training_manifest
     manifest = tmp_path / 'sources.json'
     spec = {'schema_version': 'AuboJointTrainingSourcesV1',
             'train': [{'root': 'train', 'evidence_root': 'train-evidence', 'target_annotations': 'labels.json'}],

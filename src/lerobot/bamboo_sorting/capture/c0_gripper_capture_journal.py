@@ -54,13 +54,13 @@ import math
 from collections.abc import Mapping
 from typing import Any, Final
 
-from lerobot.bamboo_sorting.c0_gripper_contract import (
+from lerobot.bamboo_sorting.capture.c0_gripper_contract import (
     C0_GRIPPER_EVENT_SCHEMA_VERSION,
     GRIPPER_COMMANDED_ON,
     GRIPPER_RELEASED,
     C0GripperEventV1,
 )
-from lerobot.bamboo_sorting.c0_gripper_controller_sidecar import (
+from lerobot.bamboo_sorting.capture.c0_gripper_controller_sidecar import (
     AUBO_GRIPPER_TRACE_REQUIRED_FIELDS,
     C0_GRIPPER_CONTROLLER_ATTEMPT_SCHEMA_VERSION,
     C0GripperControllerAttemptV1,

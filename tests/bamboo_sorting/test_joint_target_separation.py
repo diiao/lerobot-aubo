@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.joint_target_separation import PairedStripSeparation
-from lerobot.bamboo_sorting.joint_target_separation import MultiStripSeparation, visible_seed_masks
+from lerobot.bamboo_sorting.perception.joint_target_separation import PairedStripSeparation
+from lerobot.bamboo_sorting.perception.joint_target_separation import MultiStripSeparation, visible_seed_masks
 
 
 def seeds():

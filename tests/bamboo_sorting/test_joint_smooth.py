@@ -3,8 +3,8 @@ import math
 import numpy as np
 from pathlib import Path
 import pytest
-from lerobot.bamboo_sorting.joint_smooth import *
-from lerobot.bamboo_sorting.joint_trial import START_DEG
+from lerobot.bamboo_sorting.runtime.joint_smooth import *
+from lerobot.bamboo_sorting.runtime.joint_trial import START_DEG
 
 
 def fk(q):return [.2+q[0]*.01,-.5,.3]
@@ -177,7 +177,7 @@ def test_target_plan_requires_seed_and_one_cycle_without_hardware(monkeypatch,ca
 def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatch,capsys,tmp_path):
     m=load_entry(monkeypatch)
     import joint_target_live_setup
-    from lerobot.bamboo_sorting.joint_target_runtime import decode_mask
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import decode_mask
     def forbidden(*args,**kwargs):raise AssertionError('hardware/model accessed')
     monkeypatch.setattr(m,'ReadOnlyStation',forbidden);monkeypatch.setattr(m,'InferencePipe',forbidden)
     (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',snapshot_id='s',execution_eligible=False)))
@@ -217,7 +217,7 @@ def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatc
 def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch, capsys, tmp_path, count, model):
     m = load_entry(monkeypatch)
     import joint_target_live_setup
-    from lerobot.bamboo_sorting.joint_target_runtime import FreshTargetInputs
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs
     def forbidden(*a, **kw): raise AssertionError('hardware/model accessed')
     monkeypatch.setattr(m, 'ReadOnlyStation', forbidden)
     monkeypatch.setattr(m, 'InferencePipe', forbidden)
@@ -445,8 +445,9 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     motion_calls=[];preview_packets=[]
     if motion_preview:
         import cv2
-        from lerobot.bamboo_sorting import joint_target_motion,joint_target_preview
-        from lerobot.bamboo_sorting.joint_target_runtime import encode_mask
+        from lerobot.bamboo_sorting.perception import joint_target_motion
+        from lerobot.bamboo_sorting.runtime import joint_target_preview
+        from lerobot.bamboo_sorting.runtime.joint_target_runtime import encode_mask
         mask=np.zeros((480,640),bool);mask[100:200,200:210]=True
         mask_png=encode_mask(mask)
         (tmp_path/'snapshot').mkdir()
@@ -583,7 +584,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             if recovery_case and self.target_id=='B':
                 b_requests.append(index)
                 if len(b_requests)==2 or (len(b_requests)>2 and inference_error=='empty_persistent'):
-                    from lerobot.bamboo_sorting.joint_target_runtime import encode_mask
+                    from lerobot.bamboo_sorting.runtime.joint_target_runtime import encode_mask
                     assert state[-1]==0
                     empty_requests.append(index);events.append(('empty',index))
                     raise m.TargetForegroundMissing(dict(**kw['target_input'],
@@ -865,7 +866,7 @@ def test_j6_goal_jump_is_smoothed_and_servo_tracking_still_checked():
 
 
 def test_servo_disable_waits_for_controller_without_resending():
-    from lerobot.bamboo_sorting.joint_trial import SingleStepSession
+    from lerobot.bamboo_sorting.runtime.joint_trial import SingleStepSession
     class Motion:
         def __init__(self):self.reads=0
         def isServoModeEnabled(self):self.reads+=1;return self.reads<25
@@ -932,7 +933,7 @@ def test_unusable_braking_candidate_rejected_without_mutating_trajectory():
 
 def test_failure_inputs_saved_losslessly_and_existing_evidence_not_overwritten(tmp_path,monkeypatch):
     import cv2
-    from lerobot.bamboo_sorting.joint_target_runtime import encode_mask
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import encode_mask
     m=load_entry(monkeypatch)
     images={k:np.random.default_rng(i).integers(0,256,(480,640,3),dtype=np.uint8)
             for i,k in enumerate(('global_rgb','grasp_rgb'))}

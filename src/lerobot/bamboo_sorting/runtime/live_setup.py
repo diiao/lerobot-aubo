@@ -19,7 +19,7 @@ from ..model_profiles import (
     TARGET_STACK_SERVICE_ROOT,
 )
 from ..perception.target_seed import reviewed_masks
-from ..joint_target_runtime import encode_mask
+from ..mask_codec import encode_mask
 
 LIVE_ROOT = TARGET_PAIR_LIVE_ROOT
 STACK_REMOTE_ROOT = TARGET_STACK_REMOTE_ROOT

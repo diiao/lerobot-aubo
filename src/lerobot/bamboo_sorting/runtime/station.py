@@ -10,7 +10,7 @@ import time
 import zlib
 
 from ..aubo_joint_contract import finite_vector
-from ..joint_trial import TrialLimits, check_step
+from .joint_trial import TrialLimits, check_step
 from ..paths import CONFIG_ROOT
 
 CAMERA_SET = CONFIG_ROOT / 'CameraSetV2.json'
@@ -51,7 +51,7 @@ class ReadOnlyStation:
         import pyaubo_sdk
         from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
         from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
-        from ..c0_smoke_capture import frozen_c0_smoke_camera_mapping
+        from ..capture.c0_smoke_capture import frozen_c0_smoke_camera_mapping
         mapping = frozen_c0_smoke_camera_mapping()
         for name, p in (mapping.items() if include_cameras else []):
             cam = OpenCVCamera(OpenCVCameraConfig(index_or_path=p['device'], width=640, height=480,

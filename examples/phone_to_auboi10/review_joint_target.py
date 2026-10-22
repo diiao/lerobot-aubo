@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from lerobot.bamboo_sorting.joint_target import TARGET_IMAGE_KEY, prepare_target_images, target_contract_record
+from lerobot.bamboo_sorting.policy.joint_target import TARGET_IMAGE_KEY, prepare_target_images, target_contract_record
 
 
 def association_section(root):

@@ -64,8 +64,8 @@ def test_paired_pipe_rejects_old_service_fallback(monkeypatch,tmp_path,actual_mo
     if actual_mode == 'paired_foreground':
         actual_mode = requested_mode
     import run_joint_trial as trial
-    from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
-    from lerobot.bamboo_sorting.joint_target_runtime import encode_mask
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import encode_mask
     class Process:
         def __init__(self,*a,**kw):self.stdin=io.StringIO()
         def wait(self,timeout):pass
@@ -96,7 +96,7 @@ def test_paired_pipe_rejects_old_service_fallback(monkeypatch,tmp_path,actual_mo
 def test_target_pipe_negotiates_and_sends_contract(monkeypatch,tmp_path,overlap,status):
     m=load_shadow(monkeypatch)
     import run_joint_trial as trial
-    from lerobot.bamboo_sorting.joint_target_policy import target_policy_contract_record
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
     contract=target_policy_contract_record();launch=[]
     class Process:
         def __init__(self,command,**kw):launch.extend(command);self.stdin=io.StringIO()
@@ -109,7 +109,7 @@ def test_target_pipe_negotiates_and_sends_contract(monkeypatch,tmp_path,overlap,
     metadata=dict(frame_id='f',target_id='a',phase='approach')
     options={}
     if overlap is not None:
-        from lerobot.bamboo_sorting.joint_target_runtime import encode_mask
+        from lerobot.bamboo_sorting.runtime.joint_target_runtime import encode_mask
         mask=np.zeros((480,640),bool);mask[200:300,400:420]=True
         options=dict(live_target_seed={'snapshot_id':'snapshot'},segmentation_checkpoint='segmenter')
         ready.update(target_live=True,segmentation_checkpoint='segmenter')

@@ -19,8 +19,8 @@ import json
 
 import pytest
 
-from lerobot.bamboo_sorting.c0_gripper_contract import C0_GRIPPER_EVENT_SCHEMA_VERSION
-from lerobot.bamboo_sorting.c0_gripper_controller_sidecar import (
+from lerobot.bamboo_sorting.capture.c0_gripper_contract import C0_GRIPPER_EVENT_SCHEMA_VERSION
+from lerobot.bamboo_sorting.capture.c0_gripper_controller_sidecar import (
     C0_GRIPPER_CONTROLLER_ATTEMPT_SCHEMA_VERSION,
     C0GripperControllerAttemptV1,
     build_c0_gripper_event_from_aubo_trace,

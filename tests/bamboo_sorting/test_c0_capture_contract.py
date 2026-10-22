@@ -20,7 +20,7 @@ import sys
 
 import pytest
 
-from lerobot.bamboo_sorting.c0_capture_contract import C0_SENSOR_TIMESTAMP_SCHEMA_VERSION, C0SensorTimestampV1
+from lerobot.bamboo_sorting.capture.c0_capture_contract import C0_SENSOR_TIMESTAMP_SCHEMA_VERSION, C0SensorTimestampV1
 
 
 def test_valid_sensor_timestamp_modes() -> None:
@@ -116,7 +116,7 @@ import os
 import sys
 import threading
 
-import lerobot.bamboo_sorting.c0_capture_contract  # noqa: F401
+import lerobot.bamboo_sorting.capture.c0_capture_contract  # noqa: F401
 
 forbidden_modules = [name for name in sys.modules if name.split(".")[0] in {"cv2", "pyaubo_sdk"}]
 extra_threads = [

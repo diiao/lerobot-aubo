@@ -9,9 +9,10 @@ import time
 import cv2
 import numpy as np
 
-from .joint_target import outline_target_images
-from .joint_target_association import TargetAssociation
-from .joint_target_policy import target_policy_contract_record
+from ..mask_codec import decode_mask, encode_mask
+from ..perception.joint_target_association import TargetAssociation
+from ..policy.joint_target import outline_target_images
+from ..policy.joint_target_policy import target_policy_contract_record
 
 
 class TargetForegroundMissing(ValueError):
@@ -23,24 +24,6 @@ class TargetForegroundMissing(ValueError):
         super().__init__('target association failed: selected target has no current foreground: '
                          + evidence['target_id'])
         self.evidence = evidence
-
-
-def encode_mask(mask, *, allow_empty=False):
-    if mask.dtype != np.bool_ or mask.shape != (480, 640) or (not allow_empty and not mask.any()):
-        raise ValueError('nonempty bool mask required')
-    ok, encoded = cv2.imencode('.png', mask.astype(np.uint8))
-    if not ok:
-        raise ValueError('mask encoding failed')
-    return base64.b64encode(encoded).decode('ascii')
-
-
-def decode_mask(encoded, *, allow_empty=False):
-    if not isinstance(encoded, str) or len(encoded) > 100000:
-        raise ValueError('invalid seed mask payload')
-    mask = cv2.imdecode(np.frombuffer(base64.b64decode(encoded, validate=True), np.uint8), cv2.IMREAD_UNCHANGED)
-    if mask is None or mask.shape != (480, 640) or not np.isin(mask, [0, 1]).all() or (not allow_empty and not mask.any()):
-        raise ValueError('nonempty binary 480x640 mask required')
-    return mask.astype(bool)
 
 
 class FrozenStripSegmenter:
@@ -90,7 +73,7 @@ class FreshTargetInputs:
             raise ValueError('unknown target selection mode')
         self.separator = None
         if self.selection_mode == 'paired_foreground':
-            from .joint_target_separation import PairedStripSeparation
+            from ..perception.joint_target_separation import PairedStripSeparation
             targets = seed.get('paired_targets', [])
             if (len(targets) != 2 or len({t.get('target_id') for t in targets}) != 2
                     or self.target_id not in {t.get('target_id') for t in targets}):
@@ -101,7 +84,7 @@ class FreshTargetInputs:
                 raise ValueError('paired masks must match selected and excluded reviewed seeds')
             self.separator = PairedStripSeparation({t:masks[t] for t in sorted(masks)})
         if self.selection_mode == 'multi_foreground':
-            from .joint_target_separation import MultiStripSeparation
+            from ..perception.joint_target_separation import MultiStripSeparation
             targets = seed.get('visible_targets', [])
             masks = {t['target_id']: decode_mask(t['mask_png']) for t in targets}
             other = np.zeros((480, 640), bool)
@@ -152,7 +135,7 @@ class FreshTargetInputs:
             # References come from RGB motion, never previous segmentation drafts.
             # The human seed remains unchanged, and only CURRENT foreground can
             # become the policy outline.
-            from .joint_target_separation import MultiStripSeparation
+            from ..perception.joint_target_separation import MultiStripSeparation
             self.separator = MultiStripSeparation(motion_masks)
             self.separator.last_frame = self.index-1
             evidence['motion_reference'] = {k:motion_reference[k] for k in

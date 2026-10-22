@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lerobot.bamboo_sorting.joint_trial import START_DEG, SingleStepSession, TrialLimits, check_step, home_to_start, stationary_step_limits
+from lerobot.bamboo_sorting.runtime.joint_trial import START_DEG, SingleStepSession, TrialLimits, check_step, home_to_start, stationary_step_limits
 
 
 def inputs():
@@ -422,7 +422,7 @@ def test_static_step_duration_preserves_velocity_limits_and_start_envelope():
 
 
 def test_wait_until_stationary_and_timeout():
-    from lerobot.bamboo_sorting.joint_trial import wait_until_stationary
+    from lerobot.bamboo_sorting.runtime.joint_trial import wait_until_stationary
     now=[0.];reads=[]
     def read():reads.append(len(reads));return reads[-1]
     def sleep(dt):now[0]+=dt
@@ -434,7 +434,7 @@ def test_wait_until_stationary_and_timeout():
 
 @pytest.mark.parametrize('reject_at,expected_sends',[(None,3),(1,1)])
 def test_short_loop_new_observations_and_stop_on_rejection(tmp_path,monkeypatch,reject_at,expected_sends):
-    from lerobot.bamboo_sorting.joint_trial import short_loop_limits
+    from lerobot.bamboo_sorting.runtime.joint_trial import short_loop_limits
     import hashlib,json,time
     from dataclasses import asdict
     import numpy as np
@@ -484,7 +484,7 @@ def test_short_loop_new_observations_and_stop_on_rejection(tmp_path,monkeypatch,
 
 def test_short_loop_separate_envelope_preserves_step_limits():
     from dataclasses import asdict
-    from lerobot.bamboo_sorting.joint_trial import short_loop_limits
+    from lerobot.bamboo_sorting.runtime.joint_trial import short_loop_limits
     short=short_loop_limits();single=stationary_step_limits()
     expected=asdict(single);expected['start_tolerance_deg']=1.5
     assert asdict(short)==expected
@@ -617,7 +617,7 @@ def test_empty_target_pipe_requires_matching_typed_evidence(monkeypatch,corrupti
     import io
     from types import SimpleNamespace
     import numpy as np
-    from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing,encode_mask
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import TargetForegroundMissing,encode_mask
     m=load_entry()
     pipe=m.InferencePipe.__new__(m.InferencePipe)
     pipe.target_conditioned=True;pipe.contract={};pipe.expected_sha256='model';pipe.request_timeout_s=5

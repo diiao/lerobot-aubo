@@ -46,7 +46,7 @@ def parse_args(argv=None):
             parser.error("a NEW --output directory is required; never overwrite/resume implicitly")
         output = args.output.resolve()
         if args.data_manifest is not None:
-            from lerobot.bamboo_sorting.joint_training import read_data_manifest
+            from lerobot.bamboo_sorting.policy.joint_training import read_data_manifest
             sources = read_data_manifest(args.data_manifest)
             validations = sources["validation"]
             validations = validations if isinstance(validations, list) else [validations]
@@ -70,7 +70,7 @@ def main(argv=None):
     print(json.dumps(plan, indent=2, ensure_ascii=False))
     if args.stage == "plan":
         return 0
-    from lerobot.bamboo_sorting.joint_training import prepare_training_data, prepare_training_manifest, write_json
+    from lerobot.bamboo_sorting.policy.joint_training import prepare_training_data, prepare_training_manifest, write_json
     prepared = None
     if args.stage != "smoke":
         prepared = prepare_training_manifest(args.data_manifest, target_conditioned=args.target_conditioned) if args.data_manifest else prepare_training_data(args.train_root, args.train_evidence,
@@ -102,11 +102,11 @@ def run_model(args, prepared):
     import torch
     from torch.utils.data import DataLoader
     from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_IMAGE_KEYS, JOINT_TASK, joint_contract_record
-    from lerobot.bamboo_sorting.joint_training import prediction_metrics, write_json
-    from lerobot.bamboo_sorting.smolvla_joint_adapter import make_joint_smolvla_config, make_joint_smolvla_processors
-    from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+    from lerobot.bamboo_sorting.policy.joint_training import prediction_metrics, write_json
+    from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import make_joint_smolvla_config, make_joint_smolvla_processors
+    from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
     if args.target_conditioned:
-        from lerobot.bamboo_sorting.joint_target_policy import (
+        from lerobot.bamboo_sorting.policy.joint_target_policy import (
             SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
         )
         contract_record = target_policy_contract_record
@@ -145,7 +145,7 @@ def run_model(args, prepared):
         return model, pre, post
 
     def dataset(which):
-        from lerobot.bamboo_sorting.joint_training import load_prepared_dataset
+        from lerobot.bamboo_sorting.policy.joint_training import load_prepared_dataset
         return load_prepared_dataset(prepared[which], video_backend=args.video_backend)
 
     def loader(ds, shuffle=False):

@@ -18,9 +18,9 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command,
     joint_command, joint_contract_record, joint_dataset_features, require_joint_dataset,
 )
-from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, JointFrameObserver
-from lerobot.bamboo_sorting.aubo_joint_audit import audit_joint_dataset
-from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter, make_joint_smolvla_config
+from lerobot.bamboo_sorting.capture.aubo_joint_capture import JointCaptureSession, JointFrameObserver
+from lerobot.bamboo_sorting.capture.aubo_joint_audit import audit_joint_dataset
+from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter, make_joint_smolvla_config
 from lerobot.robots.aubo_i10.joint_capture import AuboI10JointCaptureRobot, PhoneToJointAction
 from lerobot.scripts.lerobot_record import record_loop
 from tests.scripts.test_lerobot_record_observer import FakeTeleop, _no_transition_trace
@@ -323,7 +323,7 @@ def test_save_finalize_and_readonly_audit(tmp_path, image_shapes):
     (root / "meta/info.json").write_text(json.dumps(info))
     (root / "meta/aubo_joint_contract.json").write_text(json.dumps(joint_contract_record()))
     if image_shapes:
-        from lerobot.bamboo_sorting.joint_camera_config import load_joint_camera_configuration
+        from lerobot.bamboo_sorting.capture.joint_camera_config import load_joint_camera_configuration
         (root / "meta/camera_configuration.json").write_text(json.dumps(load_joint_camera_configuration("wide-global")))
     pq.write_table(pa.table({"task_index": [0], "__index_level_0__": [JOINT_TASK]}), root / "meta/tasks.parquet")
     data = {"observation.state": [original[0]["observation.state"].tolist()],

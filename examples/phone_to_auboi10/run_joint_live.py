@@ -16,7 +16,7 @@ import sys
 import time
 
 from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK
-from lerobot.bamboo_sorting.joint_trial import START_DEG, SingleStepSession, stationary_step_limits, wait_until_stationary
+from lerobot.bamboo_sorting.runtime.joint_trial import START_DEG, SingleStepSession, stationary_step_limits, wait_until_stationary
 from lerobot.bamboo_sorting.model_profiles import LEGACY_MODEL_SHA as MODEL_SHA
 from lerobot.bamboo_sorting.runtime.inference import InferencePipe
 from lerobot.bamboo_sorting.runtime.station import CAMERA_SET, ReadOnlyStation, write

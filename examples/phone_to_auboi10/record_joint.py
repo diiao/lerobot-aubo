@@ -16,11 +16,11 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     JOINT_FIELDS, JOINT_FPS, JOINT_IMAGE_KEYS, JOINT_TASK,
     joint_command, joint_contract_record, joint_dataset_features,
 )
-from lerobot.bamboo_sorting.aubo_joint_capture import JointCaptureSession, write_joint_json
+from lerobot.bamboo_sorting.capture.aubo_joint_capture import JointCaptureSession, write_joint_json
 from lerobot.bamboo_sorting.capture.fresh_frames import read_fresh_c0_observation
 from lerobot.bamboo_sorting.capture.homing import return_to_normal_start
 from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_PICK_STEP, confirmed_target_outcome
-from lerobot.bamboo_sorting.joint_camera_config import (
+from lerobot.bamboo_sorting.capture.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
 )
 

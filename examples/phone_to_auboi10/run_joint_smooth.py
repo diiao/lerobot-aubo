@@ -12,11 +12,12 @@ import sys
 import time
 import traceback
 
-from lerobot.bamboo_sorting.aubo_joint_contract import finite_vector,require_joint_target
-from lerobot.bamboo_sorting.joint_trial import START_DEG,SingleStepSession,wait_until_stationary,home_to_start
-from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
-from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing
-from lerobot.bamboo_sorting.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
+from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_FIELDS,finite_vector,require_joint_target
+from lerobot.bamboo_sorting.policy.joint_target_policy import TargetInputSession,is_transport
+from lerobot.bamboo_sorting.runtime.joint_trial import START_DEG,SingleStepSession,wait_until_stationary,home_to_start
+from lerobot.bamboo_sorting.runtime.joint_video import TrialVideoRecorder
+from lerobot.bamboo_sorting.runtime.joint_target_runtime import TargetForegroundMissing
+from lerobot.bamboo_sorting.runtime.joint_smooth import (DT,MAX_SPEED,MAX_ACCEL,MAX_TRACKING_ERROR_DEG,
     MAX_TCP_SPEED,MAX_WITHOUT_PREDICTION,MAX_PREDICTION_AGE,MAX_CAMERA_SKEW,SmoothTrajectory,validate_prediction,workspace,
     select_approach_action,select_transport_action)
 from lerobot.bamboo_sorting.model_profiles import (
@@ -51,7 +52,8 @@ def save_target_failure(output, index, state, images, sensor_times, metadata, ex
     return str(folder.relative_to(output))
 
 
-def main(argv=None):
+
+def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
     p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders','target-pair','target-stack'),default='legacy-single')
@@ -95,14 +97,28 @@ def main(argv=None):
         p.error('--paired-target-separation requires --model target-pair')
     if args.transport_age_aligned and not target_mode:
         p.error('--transport-age-aligned requires a target model')
-    target_session=None;target_seed=None
+    if args.cycles is not None and args.cycles<1:p.error('--cycles must be a positive integer')
+    if args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds<=0):
+        p.error('--max-seconds must be finite and positive')
+    inference_timeout_s=args.inference_timeout_s if args.inference_timeout_s is not None else (5. if args.latency_tolerant else 2.)
+    if not math.isfinite(inference_timeout_s) or inference_timeout_s<=0:
+        p.error('--inference-timeout-s must be finite and positive')
+    if args.latency_tolerant and not (args.model=='mixed-both-orders' or target_mode):
+        p.error('--latency-tolerant requires mixed-both-orders or a target model')
+    approach=args.approach_age_aligned or target_mode
+    if approach and not (args.model=='mixed-both-orders' or target_mode):p.error('--approach-age-aligned requires mixed-both-orders or a target model')
+    mixed=args.model in ('mixed-double','mixed-both-orders') or target_mode
+    return args,sequence,target_mode,approach,mixed,inference_timeout_s,p
+
+
+def resolve_targets(args, sequence, target_mode, parser):
+    """Load reviewed seeds and model options; no hardware or model access."""
+    target_session=None;target_seed=None;target_options=None;target_setups=None
     if target_mode:
         if not all((args.target_snapshot,args.target_selections,args.target_id)):
-            p.error('target models require --target-snapshot, --target-selections and --target-id')
-        if not sequence and args.cycles not in (None,1):p.error('target models run exactly one selected-object cycle')
+            parser.error('target models require --target-snapshot, --target-selections and --target-id')
+        if not sequence and args.cycles not in (None,1):parser.error('target models run exactly one selected-object cycle')
         from joint_target_live_setup import prepare_live_setup
-        from lerobot.bamboo_sorting.joint_target_policy import TargetInputSession, is_transport
-        from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_FIELDS
         setup_options={'paired_separation':True} if args.paired_target_separation else {}
         if args.multi_target_separation:
             setup_options={'multi_separation':True}
@@ -118,18 +134,12 @@ def main(argv=None):
             target_seed,target_options=prepare_live_setup(args.target_snapshot,args.target_selections,args.target_id,**setup_options)
         target_session=TargetInputSession(args.target_id)
     elif any((args.target_snapshot,args.target_selections,args.target_id)):
-        p.error('target selection requires a target model')
-    if args.cycles is not None and args.cycles<1:p.error('--cycles must be a positive integer')
-    if args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds<=0):
-        p.error('--max-seconds must be finite and positive')
-    inference_timeout_s=args.inference_timeout_s if args.inference_timeout_s is not None else (5. if args.latency_tolerant else 2.)
-    if not math.isfinite(inference_timeout_s) or inference_timeout_s<=0:
-        p.error('--inference-timeout-s must be finite and positive')
-    if args.latency_tolerant and not (args.model=='mixed-both-orders' or target_mode):
-        p.error('--latency-tolerant requires mixed-both-orders or a target model')
-    approach=args.approach_age_aligned or target_mode
-    if approach and not (args.model=='mixed-both-orders' or target_mode):p.error('--approach-age-aligned requires mixed-both-orders or a target model')
-    mixed=args.model in ('mixed-double','mixed-both-orders') or target_mode
+        parser.error('target selection requires a target model')
+    return target_session,target_seed,target_options,target_setups
+
+
+def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeout_s, target_options):
+    """Derive timing/limit settings and remote worker options from the mode."""
     expected_cycles=len(sequence) if sequence else (args.cycles if args.cycles is not None else (2 if mixed and not target_mode else 1))
     max_seconds=args.max_seconds if args.max_seconds is not None else (360 if mixed and not target_mode else 120)
     servo_command_time=.08 if mixed else DT
@@ -159,23 +169,35 @@ def main(argv=None):
         pipe_options=target_options
         model_sha=target_options['expected_sha256']
     pipe_options['request_timeout_s']=inference_timeout_s
+    return dict(expected_cycles=expected_cycles,max_seconds=max_seconds,servo_command_time=servo_command_time,
+        max_camera_age_ms=max_camera_age_ms,max_prediction_age=max_prediction_age,
+        max_without_prediction=max_without_prediction,max_camera_skew=max_camera_skew,
+        max_control_gap=max_control_gap,max_state_age=max_state_age,mixed=mixed,
+        model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
+        approach=approach)
+
+
+def build_plan(args, sequence, target_mode, target_seed, target_options, config):
+    """Describe the requested run without connecting hardware or a model."""
+    expected_cycles=config['expected_cycles'];max_seconds=config['max_seconds']
     plan={'mode':'asynchronous_inference_continuous_servo','model':args.model,
           'action_selection':('observation_age_open_and_transport' if args.transport_age_aligned else
-                              'observation_age_while_open_first_step_while_closed' if approach else 'first_step'),
+                              'observation_age_while_open_first_step_while_closed' if config['approach'] else 'first_step'),
           'transport_age_aligned':args.transport_age_aligned,
-          'pending_suction_policy':'continue_inference_while_open' if approach else 'accept_fresh_inflight_before_io',
-          'checkpoint_sha256':model_sha,'requested_suction_cycles':expected_cycles,
+          'pending_suction_policy':'continue_inference_while_open' if config['approach'] else 'accept_fresh_inflight_before_io',
+          'checkpoint_sha256':config['model_sha'],'requested_suction_cycles':expected_cycles,
           'camera_set_sha256':hashlib.sha256(CAMERA_SET.read_bytes()).hexdigest(),'control_hz':1/DT,
           'joint_speed_deg_s':MAX_SPEED,'joint_acceleration_deg_s2':MAX_ACCEL,'tcp_speed_m_s':MAX_TCP_SPEED,
           'max_prediction_delta_deg':None,'max_prediction_delta_m':None,
           'max_servo_tracking_error_deg':MAX_TRACKING_ERROR_DEG,
           'latency_tolerant':args.latency_tolerant,
-          'max_prediction_age_s':max_prediction_age,'watchdog_s':max_without_prediction,
-          'max_camera_skew_s':max_camera_skew,
-          'max_camera_age_ms':max_camera_age_ms,
-          'rpc_timeout_ms':RPC_TIMEOUT_MS,'inference_timeout_s':inference_timeout_s,'max_control_gap_s':max_control_gap,
-          'max_state_age_s':max_state_age,'stale_state_refreshes_per_step':1 if mixed else 0,
-          'servo_command_time_s':servo_command_time,
+          'max_prediction_age_s':config['max_prediction_age'],'watchdog_s':config['max_without_prediction'],
+          'max_camera_skew_s':config['max_camera_skew'],
+          'max_camera_age_ms':config['max_camera_age_ms'],
+          'rpc_timeout_ms':RPC_TIMEOUT_MS,'inference_timeout_s':config['inference_timeout_s'],
+          'max_control_gap_s':config['max_control_gap'],
+          'max_state_age_s':config['max_state_age'],'stale_state_refreshes_per_step':1 if config['mixed'] else 0,
+          'servo_command_time_s':config['servo_command_time'],
           'suction_writes':True,'max_seconds':max_seconds,'automatic_home':False,'automatic_release':False,
           'startup_release_if_unset':'operator_confirmed',
           'servo_disable_confirmation_timeout_s':1.0,'video_recording':{'enabled':True,'fps':25,'directory':'videos'}}
@@ -198,8 +220,27 @@ def main(argv=None):
         plan.update(empty_target_reobservations_per_target=MAX_TARGET_REOBSERVATIONS,
             empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
+    return plan
+
+
+def main(argv=None):
+    args,sequence,target_mode,approach,mixed,inference_timeout_s,parser=parse_args(argv)
+    target_session,target_seed,target_options,target_setups=resolve_targets(args,sequence,target_mode,parser)
+    config=resolve_config(args,sequence,target_mode,approach,mixed,inference_timeout_s,target_options)
+    plan=build_plan(args,sequence,target_mode,target_seed,target_options,config)
     if not args.execute:print(json.dumps(plan,indent=2));return 0
-    if not sys.stdin.isatty():p.error('interactive terminal required')
+    if not sys.stdin.isatty():parser.error('interactive terminal required')
+    return execute_run(args,sequence,target_mode,target_seed,target_options,target_setups,target_session,plan,config)
+
+
+def execute_run(args,sequence,target_mode,target_seed,target_options,target_setups,target_session,plan,config):
+    """Single-target execution, sequence scheduling, target switching and cleanup."""
+    expected_cycles=config['expected_cycles'];max_seconds=config['max_seconds']
+    servo_command_time=config['servo_command_time'];max_camera_age_ms=config['max_camera_age_ms']
+    max_prediction_age=config['max_prediction_age'];max_without_prediction=config['max_without_prediction']
+    max_camera_skew=config['max_camera_skew'];max_control_gap=config['max_control_gap']
+    max_state_age=config['max_state_age'];mixed=config['mixed'];pipe_options=config['pipe_options']
+    inference_timeout_s=config['inference_timeout_s'];approach=config['approach']
     try:task=read_task()
     except (EOFError,KeyboardInterrupt):return 0
     if task is None:return 0
@@ -217,14 +258,14 @@ def main(argv=None):
     def log(f,value):f.write(json.dumps(value,allow_nan=False)+'\n')
     try:
         if args.target_preview:
-            from lerobot.bamboo_sorting.joint_target_preview import LiveTargetPreview
+            from lerobot.bamboo_sorting.runtime.joint_target_preview import LiveTargetPreview
             preview=LiveTargetPreview()
             print(f'目标预测预览（浏览器打开）：{preview.url}',flush=True)
             write(output/'preview.json',dict(url=preview.url,read_only=True))
         if args.track_target_motion:
             import cv2
-            from lerobot.bamboo_sorting.joint_target_motion import TargetMotionReferences
-            from lerobot.bamboo_sorting.joint_target_runtime import decode_mask
+            from lerobot.bamboo_sorting.perception.joint_target_motion import TargetMotionReferences
+            from lerobot.bamboo_sorting.runtime.joint_target_runtime import decode_mask
             initial_rgb=cv2.cvtColor(cv2.imread(str(args.target_snapshot/'global_rgb.png')),cv2.COLOR_BGR2RGB)
             motion_tracker=TargetMotionReferences(initial_rgb,
                 {t['target_id']:decode_mask(t['mask_png']) for t in target_seed['visible_targets']})

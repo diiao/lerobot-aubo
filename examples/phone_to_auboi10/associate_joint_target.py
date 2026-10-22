@@ -9,7 +9,7 @@ import subprocess
 import cv2
 import numpy as np
 
-from lerobot.bamboo_sorting.joint_target_association import TargetAssociation, TargetReconfirmation
+from lerobot.bamboo_sorting.perception.joint_target_association import TargetAssociation, TargetReconfirmation
 
 
 def associate_clip(review_root, plan_name="association_plan.json"):

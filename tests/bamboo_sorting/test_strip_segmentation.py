@@ -6,9 +6,9 @@ import cv2
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.placement_review import build_review, polygon_mask
-from lerobot.bamboo_sorting.placement_sequence import PlacementSequence
-from lerobot.bamboo_sorting.strip_segmentation_data import (
+from lerobot.bamboo_sorting.perception.placement_review import build_review, polygon_mask
+from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequence
+from lerobot.bamboo_sorting.perception.strip_segmentation_data import (
     audit_dataset, export_reviewed_piles, read_json, write_json,
 )
 
@@ -102,7 +102,7 @@ def test_truncated_stage_is_explicitly_excluded(selection, tmp_path):
 def test_adapter_empty_foreground_and_rgb(selection, tmp_path):
     pytest.importorskip("transformers")
     from transformers import Mask2FormerImageProcessor
-    from lerobot.bamboo_sorting.strip_segmentation_training import StripDataset, collate_samples
+    from lerobot.bamboo_sorting.perception.strip_segmentation_training import StripDataset, collate_samples
 
     export_reviewed_piles(selection, tmp_path / "data")
     dataset = StripDataset(tmp_path / "data", "train")
@@ -116,7 +116,7 @@ def test_adapter_empty_foreground_and_rgb(selection, tmp_path):
 
 def test_matching_penalizes_class_errors_duplicates_and_empty():
     pytest.importorskip("scipy")
-    from lerobot.bamboo_sorting.strip_segmentation_training import match_instances
+    from lerobot.bamboo_sorting.perception.strip_segmentation_training import match_instances
 
     a = np.zeros((8, 8), bool)
     a[1:3, 1:5] = True
@@ -132,7 +132,7 @@ def test_independent_test_export_frozen_evaluation_and_review(selection, tmp_pat
     pytest.importorskip("transformers")
     pytest.importorskip("scipy")
     from transformers import Mask2FormerConfig, Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor, SwinConfig
-    from lerobot.bamboo_sorting.strip_segmentation_data import CLASSES
+    from lerobot.bamboo_sorting.perception.strip_segmentation_data import CLASSES
 
     # A separate synthetic test group, never relabel an actual training group.
     spec = read_json(selection)
@@ -203,7 +203,7 @@ def test_synthetic_model_forward_backward_and_training_entry(selection, tmp_path
     pytest.importorskip("transformers")
     pytest.importorskip("scipy")
     from transformers import Mask2FormerConfig, Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor, SwinConfig
-    from lerobot.bamboo_sorting.strip_segmentation_training import StripDataset, collate_samples, forward_loss
+    from lerobot.bamboo_sorting.perception.strip_segmentation_training import StripDataset, collate_samples, forward_loss
 
     torch.set_num_threads(2)
     torch.manual_seed(4)

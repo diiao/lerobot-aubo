@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.joint_target import (
+from lerobot.bamboo_sorting.policy.joint_target import (
     TARGET_FRAME_SCHEMA, TARGET_IMAGE_KEY, prepare_target_images,
     selected_instance_mask, target_contract_record,
 )
@@ -70,7 +70,7 @@ def test_instance_ids_are_not_class_ids_and_selection_changes_pixels():
 
 
 def test_legacy_adapter_rejects_target_contract_before_loading_a_model():
-    from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+    from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
     with pytest.raises(ValueError, match="contract is required"):
         SmolVLAJointOfflineAdapter(None, None, None, contract=target_contract_record())
 
@@ -142,7 +142,7 @@ def test_review_page_uses_requested_saved_frame_and_preserves_sources(tmp_path, 
 def test_segmentation_png_ids_and_oracle_overlap_are_not_class_selection():
     from pathlib import Path
     import runpy
-    from lerobot.bamboo_sorting.joint_target import compare_target_instances
+    from lerobot.bamboo_sorting.policy.joint_target import compare_target_instances
 
     script = Path(__file__).resolve().parents[2] / "examples/phone_to_auboi10/predict_strip_images.py"
     pack = runpy.run_path(str(script))["instance_png"]

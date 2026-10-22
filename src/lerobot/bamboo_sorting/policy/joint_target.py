@@ -9,7 +9,7 @@ import copy
 import cv2
 import numpy as np
 
-from .aubo_joint_contract import joint_contract_record
+from ..aubo_joint_contract import joint_contract_record
 
 TARGET_FRAME_SCHEMA = "aubo_joint_target_frame"
 TARGET_IMAGE_KEY = "target_global_rgb"

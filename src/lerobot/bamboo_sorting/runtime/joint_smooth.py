@@ -1,6 +1,6 @@
 """Bounded online joint trajectory, independent of model and hardware imports."""
 import math
-from .aubo_joint_contract import finite_vector, require_joint_target
+from ..aubo_joint_contract import finite_vector, require_joint_target
 
 DT=.04
 MAX_SPEED=5.

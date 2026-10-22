@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.placement_sequence import PlacementSequence, difference_candidate
+from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequence, difference_candidate
 
 
 @pytest.fixture

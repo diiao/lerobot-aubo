@@ -8,8 +8,8 @@ import math
 import time
 from dataclasses import dataclass, replace
 
-from .aubo_joint_contract import finite_vector, require_joint_target
-from .start_poses import START_DEG
+from ..aubo_joint_contract import finite_vector, require_joint_target
+from ..start_poses import START_DEG
 
 
 @dataclass(frozen=True)

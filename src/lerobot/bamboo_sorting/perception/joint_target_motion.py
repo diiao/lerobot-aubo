@@ -7,7 +7,7 @@ still requires foreground pixels from the current segmentation.
 import cv2
 import numpy as np
 
-from .joint_target_runtime import encode_mask
+from ..mask_codec import encode_mask
 
 
 class TargetMotionReferences:

@@ -18,7 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from lerobot.bamboo_sorting.joint_camera_config import (
+from lerobot.bamboo_sorting.capture.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
 )
 

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.joint_target_association import TargetAssociation, TargetReconfirmation
+from lerobot.bamboo_sorting.perception.joint_target_association import TargetAssociation, TargetReconfirmation
 
 
 def frame(*rectangles):

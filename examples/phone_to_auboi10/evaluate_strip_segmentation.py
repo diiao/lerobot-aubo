@@ -7,7 +7,7 @@ import json
 import time
 from pathlib import Path
 
-from lerobot.bamboo_sorting.strip_segmentation_data import CLASSES, audit_dataset, read_json, write_json
+from lerobot.bamboo_sorting.perception.strip_segmentation_data import CLASSES, audit_dataset, read_json, write_json
 
 
 def main(argv=None):
@@ -47,7 +47,7 @@ def main(argv=None):
     from torch.utils.data import DataLoader
     from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 
-    from lerobot.bamboo_sorting.strip_segmentation_training import StripDataset, collate_samples, evaluate
+    from lerobot.bamboo_sorting.perception.strip_segmentation_training import StripDataset, collate_samples, evaluate
 
     torch.manual_seed(42)
     np.random.seed(42)

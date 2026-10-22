@@ -3,9 +3,9 @@ import cv2
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.joint_target_motion import TargetMotionReferences
-from lerobot.bamboo_sorting.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
-from lerobot.bamboo_sorting.joint_target_preview import render_packet
+from lerobot.bamboo_sorting.perception.joint_target_motion import TargetMotionReferences
+from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
+from lerobot.bamboo_sorting.runtime.joint_target_preview import render_packet
 
 
 def textured():

@@ -7,7 +7,7 @@ must not fill occluded regions.
 import cv2
 import numpy as np
 
-from ..joint_target_separation import visible_seed_masks
+from .joint_target_separation import visible_seed_masks
 
 
 def reviewed_masks(snapshot, labels, *, allow_multiple=False):

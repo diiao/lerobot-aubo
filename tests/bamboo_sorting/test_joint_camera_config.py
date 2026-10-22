@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lerobot.bamboo_sorting import joint_camera_config as config
+from lerobot.bamboo_sorting.capture import joint_camera_config as config
 
 
 def entry(name):

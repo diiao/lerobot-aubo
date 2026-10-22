@@ -5,10 +5,10 @@ import math
 import sys
 from pathlib import Path
 
-from lerobot.bamboo_sorting.joint_camera_config import (
+from lerobot.bamboo_sorting.capture.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
 )
-from lerobot.bamboo_sorting.placement_sequence import PlacementSequence, validate_roi, write_json
+from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequence, validate_roi, write_json
 
 
 def control_properties():

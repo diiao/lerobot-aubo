@@ -5,8 +5,8 @@ import cv2
 import numpy as np
 import pytest
 
-from lerobot.bamboo_sorting.placement_review import build_review, polygon_mask, save_review
-from lerobot.bamboo_sorting.placement_sequence import PlacementSequence
+from lerobot.bamboo_sorting.perception.placement_review import build_review, polygon_mask, save_review
+from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequence
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def test_save_review_updates_one_directory_and_index(example):
 
 
 def test_failed_review_update_preserves_previous_result(example, monkeypatch):
-    from lerobot.bamboo_sorting import placement_review
+    from lerobot.bamboo_sorting.perception import placement_review
 
     source, annotations = example
     save_review(source, annotations)

@@ -6,12 +6,12 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from .joint_gripper_quality import gripper_episode_quality, require_joint_normalization_stats
-from .joint_stack_metadata import (
+from ..joint_gripper_quality import gripper_episode_quality, require_joint_normalization_stats
+from ..joint_stack_metadata import (
     stack_metadata, validate_stack_sequence, validate_target_outcome, successful_target_outcome, stack_summary,
 )
 
-from .aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, joint_image_shapes, require_joint_dataset
+from ..aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_FIELDS, JOINT_NAMES, JOINT_TASK, expand_joint_command, joint_contract_record, joint_image_shapes, require_joint_dataset
 
 
 def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None):

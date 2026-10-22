@@ -107,7 +107,7 @@ def test_saved_issue_cannot_be_bypassed_by_omitting_issue_from_review(tmp_path):
 
 def test_multi_seed_import_separation_review_and_runtime_share_pixels(tmp_path):
  from tests.bamboo_sorting.test_joint_target_separation import crossing_seeds, instance_map
- from lerobot.bamboo_sorting.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
+ from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
  masks=crossing_seeds();instances,segments=instance_map(masks)
  for segment in segments:segment['pixels']=int((instances==segment['mask_id']).sum())
  s=setup(tmp_path,2);ep=s['episodes'][0];ep.update(target_id='s-002',pick_step=1,available_target_count=2)

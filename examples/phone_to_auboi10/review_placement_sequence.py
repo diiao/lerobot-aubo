@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from lerobot.bamboo_sorting.placement_review import save_review
+from lerobot.bamboo_sorting.perception.placement_review import save_review
 
 
 def main(argv=None):

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from lerobot.bamboo_sorting.rgb_gate import (
+from lerobot.bamboo_sorting.capture.rgb_gate import (
     CAMERA_SET_SCHEMA_VERSION,
     CAMERA_SET_V2_SCHEMA_VERSION,
     FIXED_RGB_STREAMS,

@@ -8,14 +8,14 @@ import json
 import math
 from pathlib import Path
 
-from .aubo_joint_contract import JOINT_IMAGE_KEYS
+from ..aubo_joint_contract import JOINT_IMAGE_KEYS
+from ..paths import CONFIG_ROOT
 from .c0_smoke_capture import frozen_c0_smoke_camera_mapping
 
 
-REPO = Path(__file__).resolve().parents[3]
 CAMERA_SET_PATHS = {
-    "original-global": REPO / "configs/aubo_i10/CameraSetV2.json",
-    "wide-global": REPO / "configs/aubo_i10/camera_set_wide_global.json",
+    "original-global": CONFIG_ROOT / "CameraSetV2.json",
+    "wide-global": CONFIG_ROOT / "camera_set_wide_global.json",
 }
 DEFAULT_CAPTURE_CAMERA_SET = "original-global"
 

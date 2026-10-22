@@ -24,7 +24,7 @@ import math
 
 import pytest
 
-from lerobot.bamboo_sorting.c0_gripper_capture_journal import (
+from lerobot.bamboo_sorting.capture.c0_gripper_capture_journal import (
     C0_GRIPPER_PENDING_CAPTURE_JOURNAL_SCHEMA_VERSION,
     C0GripperPendingCaptureJournalV1,
     C0PendingCaptureError,

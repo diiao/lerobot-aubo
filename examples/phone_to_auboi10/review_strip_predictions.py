@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from lerobot.bamboo_sorting.strip_segmentation_data import CLASSES, child, read_json, read_mask
+from lerobot.bamboo_sorting.perception.strip_segmentation_data import CLASSES, child, read_json, read_mask
 
 
 def require(condition, message):

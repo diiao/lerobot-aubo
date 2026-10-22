@@ -29,6 +29,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from ..paths import REPO_ROOT
+
 CAMERA_SET_V1_SCHEMA_VERSION: Final = "CameraSetV1"
 
 CAMERA_SET_V2_SCHEMA_VERSION: Final = "CameraSetV2"
@@ -205,7 +207,7 @@ def load_camera_set_v1(path: Path | None = None) -> tuple[CameraSetV1Record, str
     """Load the immutable CameraSetV1 record and return it with its SHA-256."""
 
     if path is None:
-        path = Path(__file__).resolve().parents[3] / DEFAULT_CAMERA_SET_V1_PATH
+        path = REPO_ROOT / DEFAULT_CAMERA_SET_V1_PATH
     else:
         path = Path(path)
     return _load_camera_set(
@@ -219,7 +221,7 @@ def load_camera_set_v2(path: Path | None = None) -> tuple[CameraSetV1Record, str
     """Load the corrected immutable CameraSetV2 record and return its SHA-256."""
 
     if path is None:
-        path = Path(__file__).resolve().parents[3] / DEFAULT_CAMERA_SET_V2_PATH
+        path = REPO_ROOT / DEFAULT_CAMERA_SET_V2_PATH
     else:
         path = Path(path)
     record, digest = _load_camera_set(

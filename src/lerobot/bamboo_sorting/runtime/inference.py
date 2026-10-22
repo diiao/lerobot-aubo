@@ -12,8 +12,9 @@ import subprocess
 import time
 
 from ..aubo_joint_contract import finite_vector, joint_contract_record
-from ..joint_smooth import validated_action_chunk
-from ..joint_target_runtime import TargetForegroundMissing, decode_mask
+from .joint_smooth import validated_action_chunk
+from .joint_target_runtime import TargetForegroundMissing
+from ..mask_codec import decode_mask
 from ..model_profiles import LEGACY_MODEL_SHA, LEGACY_REMOTE_PYTHON, LEGACY_REMOTE_ROOT
 
 from .station import encode_images
@@ -38,7 +39,7 @@ class InferencePipe:
         self.live_target_seed = live_target_seed
         self.contract = joint_contract_record()
         if target_conditioned:
-            from ..joint_target_policy import target_policy_contract_record
+            from ..policy.joint_target_policy import target_policy_contract_record
             self.contract = target_policy_contract_record()
         deployment = 'joint_live_bf16_20260922' if bf16 else 'joint_live_matmul_20260922'
         script = 'joint_inference_stdio.py'

@@ -3,7 +3,7 @@
 import argparse
 import json
 
-from lerobot.bamboo_sorting.aubo_joint_audit import audit_joint_dataset
+from lerobot.bamboo_sorting.capture.aubo_joint_audit import audit_joint_dataset
 
 
 def main(argv=None):

@@ -21,13 +21,13 @@ from pathlib import Path
 
 import pytest
 
-from lerobot.bamboo_sorting.c0_smoke_capture import (
+from lerobot.bamboo_sorting.capture.c0_smoke_capture import (
     C0_SMOKE_CAMERA_DEVICES,
     C0_SMOKE_IMAGE_KEYS,
     C0_SMOKE_LEGACY_ACT_KEYS,
     frozen_c0_smoke_camera_mapping,
 )
-from lerobot.bamboo_sorting.rgb_gate import FROZEN_CAMERA_SET_V2_SHA256
+from lerobot.bamboo_sorting.capture.rgb_gate import FROZEN_CAMERA_SET_V2_SHA256
 
 
 def test_camera_keys_and_frozen_device_mapping() -> None:

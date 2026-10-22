@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 import pytest
-from lerobot.bamboo_sorting.joint_video import TrialVideoRecorder
+from lerobot.bamboo_sorting.runtime.joint_video import TrialVideoRecorder
 
 
 @pytest.mark.skipif(shutil.which('ffmpeg') is None,reason='ffmpeg unavailable')

@@ -11,10 +11,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .aubo_joint_contract import GRIPPER_INDEX, joint_command
+from ..aubo_joint_contract import GRIPPER_INDEX, joint_command
 from .joint_target import TARGET_IMAGE_KEY, prepare_target_images, target_contract_record
 from .smolvla_joint_adapter import SmolVLAJointOfflineAdapter
-from .joint_stack_metadata import stack_metadata, successful_target_outcome
+from ..joint_stack_metadata import stack_metadata, successful_target_outcome
 
 
 def target_policy_contract_record():

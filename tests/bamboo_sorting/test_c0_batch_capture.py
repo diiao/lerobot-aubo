@@ -24,12 +24,12 @@ from pathlib import Path
 
 import pytest
 
-from lerobot.bamboo_sorting.c0_batch_capture import (
+from lerobot.bamboo_sorting.capture.c0_batch_capture import (
     C0BatchCaptureError,
     C0FormalFrameObserverV1,
     C0SensorTimestampJournalV1,
 )
-from lerobot.bamboo_sorting.c0_gripper_capture_journal import C0GripperPendingCaptureJournalV1
+from lerobot.bamboo_sorting.capture.c0_gripper_capture_journal import C0GripperPendingCaptureJournalV1
 from lerobot.utils import control_utils
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

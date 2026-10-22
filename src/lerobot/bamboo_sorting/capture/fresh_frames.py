@@ -10,8 +10,8 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ..c0_batch_capture import C0BatchCaptureError
-from ..c0_smoke_capture import C0_SMOKE_IMAGE_KEYS
+from .c0_batch_capture import C0BatchCaptureError
+from .c0_smoke_capture import C0_SMOKE_IMAGE_KEYS
 
 
 def read_fresh_c0_observation(

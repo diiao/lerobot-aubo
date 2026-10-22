@@ -18,7 +18,7 @@ import sys
 import time
 
 from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
-from lerobot.bamboo_sorting.joint_trial import (
+from lerobot.bamboo_sorting.runtime.joint_trial import (
     TrialLimits, SingleStepSession, home_to_start, stationary_step_limits, short_loop_limits,
     wait_until_stationary,
 )

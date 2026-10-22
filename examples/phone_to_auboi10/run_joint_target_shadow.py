@@ -68,7 +68,7 @@ def predict(args):
     import cv2
     import numpy as np
     from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK, JOINT_FIELDS, finite_vector, joint_command
-    from lerobot.bamboo_sorting.joint_target_policy import TargetInputSession
+    from lerobot.bamboo_sorting.policy.joint_target_policy import TargetInputSession
     snapshot=json.loads((args.snapshot/'snapshot.json').read_text())
     if snapshot.get('schema')!='joint_target_shadow_snapshot' or snapshot.get('execution_eligible') is not False:
         raise ValueError('non-executable stationary snapshot required')

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from lerobot.bamboo_sorting.strip_segmentation_data import export_reviewed_piles
+from lerobot.bamboo_sorting.perception.strip_segmentation_data import export_reviewed_piles
 
 
 def main():

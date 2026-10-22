@@ -9,7 +9,7 @@ import torch
 from lerobot.bamboo_sorting.joint_gripper_quality import (
     gripper_episode_quality, require_joint_normalization_stats,
 )
-from lerobot.bamboo_sorting.smolvla_joint_adapter import (
+from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import (
     SmolVLAJointOfflineAdapter, make_joint_smolvla_config, make_joint_smolvla_processors,
 )
 from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK, joint_contract_record
@@ -112,8 +112,8 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     """Real record loop, normalization stats and video files; fake hardware only."""
     import av
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    from lerobot.bamboo_sorting.aubo_joint_audit import audit_joint_dataset
-    from lerobot.bamboo_sorting.aubo_joint_capture import write_joint_json
+    from lerobot.bamboo_sorting.capture.aubo_joint_audit import audit_joint_dataset
+    from lerobot.bamboo_sorting.capture.aubo_joint_capture import write_joint_json
     from lerobot.bamboo_sorting.aubo_joint_contract import joint_dataset_features
     from lerobot.robots.aubo_i10.joint_capture import PhoneToJointAction
     from lerobot.robots.aubo_i10.robot_processor import AuboGripperVelocityToPosition

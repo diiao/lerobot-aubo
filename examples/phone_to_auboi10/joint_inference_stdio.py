@@ -70,10 +70,10 @@ def main():
         task = JOINT_TASK if args.task is None else args.task
         if task != JOINT_TASK:
             raise ValueError('checkpoint supports only the recorded training task')
-        from lerobot.bamboo_sorting.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
-        from lerobot.bamboo_sorting.joint_target_runtime import TargetForegroundMissing
+        from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
+        from lerobot.bamboo_sorting.runtime.joint_target_runtime import TargetForegroundMissing
         if args.target_conditioned:
-            from lerobot.bamboo_sorting.joint_target_policy import (
+            from lerobot.bamboo_sorting.policy.joint_target_policy import (
                 SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
             )
             contract_record, adapter_class = target_policy_contract_record, SmolVLAJointTargetOfflineAdapter
@@ -107,7 +107,7 @@ def main():
         live_inputs = None
         segmenter = None
         if args.target_segmentation_checkpoint:
-            from lerobot.bamboo_sorting.joint_target_runtime import FrozenStripSegmenter, FreshTargetInputs
+            from lerobot.bamboo_sorting.runtime.joint_target_runtime import FrozenStripSegmenter, FreshTargetInputs
             segmenter = FrozenStripSegmenter(str(args.target_segmentation_checkpoint))
     print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':contract_record(),
                       'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk,
