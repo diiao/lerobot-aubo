@@ -5,7 +5,6 @@ No model or hardware access. The command entry keeps the argparse surface.
 
 import html
 import json
-from pathlib import Path
 
 import av
 import pyarrow.parquet as pq
