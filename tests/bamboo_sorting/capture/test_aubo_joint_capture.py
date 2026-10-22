@@ -1,11 +1,8 @@
 """Offline tests: real record-loop/data boundary, mocked SDK, no devices."""
-from tests.bamboo_sorting.paths import REPO_ROOT
 
 import copy
-import importlib.util
 import json
 import math
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
