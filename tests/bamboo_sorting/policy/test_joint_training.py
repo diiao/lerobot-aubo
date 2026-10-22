@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 from pathlib import Path
 
@@ -8,6 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from lerobot.bamboo_sorting.policy.joint_training import prepare_training_data, prediction_metrics
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def _entry():

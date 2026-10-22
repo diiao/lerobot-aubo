@@ -1,5 +1,4 @@
 """Offline annotation and single-camera lifetime checks; no physical devices."""
-from tests.bamboo_sorting.paths import REPO_ROOT
 
 import builtins
 import importlib.util
@@ -11,6 +10,7 @@ import numpy as np
 import pytest
 
 from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequence, difference_candidate
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 @pytest.fixture

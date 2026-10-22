@@ -9,8 +9,8 @@ import numpy as np
 from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_NAMES
 from lerobot.bamboo_sorting.capture.aubo_joint_capture import JointCaptureSession
 from lerobot.robots.aubo_i10.joint_capture import AuboI10JointCaptureRobot
-from tests.bamboo_sorting.paths import EXAMPLES
 from tests.mocks.record_fakes import no_transition_trace
+from tests.bamboo_sorting.paths import EXAMPLES
 
 
 def entry():

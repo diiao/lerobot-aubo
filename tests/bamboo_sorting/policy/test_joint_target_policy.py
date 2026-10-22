@@ -1,5 +1,4 @@
 """Causal phase switching and training/runtime parity without models or devices."""
-from tests.bamboo_sorting.paths import REPO_ROOT
 import json
 from unittest.mock import Mock
 
@@ -16,6 +15,7 @@ from lerobot.bamboo_sorting.policy.joint_target_policy import (
 from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import (
     SmolVLAJointOfflineAdapter, make_joint_smolvla_config,
 )
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def sample(index):

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 """Suction event validation and import isolation for current capture."""
-from tests.bamboo_sorting.paths import REPO_ROOT
 
 import json
 import subprocess
@@ -23,6 +22,8 @@ from pathlib import Path
 import pytest
 
 from lerobot.bamboo_sorting.capture.c0_gripper_contract import C0_GRIPPER_EVENT_SCHEMA_VERSION, C0GripperEventV1
+from tests.bamboo_sorting.paths import REPO_ROOT
+
 
 EPISODE_ID = "c0-gripper-episode-00"
 

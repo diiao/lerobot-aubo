@@ -1,5 +1,4 @@
 """Camera selection and diagnostics with no physical devices."""
-from tests.bamboo_sorting.paths import REPO_ROOT
 
 import builtins
 import importlib.util
@@ -10,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from lerobot.bamboo_sorting.capture import joint_camera_config as config
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def entry(name):

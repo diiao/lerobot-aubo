@@ -31,8 +31,8 @@ from lerobot.bamboo_sorting.capture.c0_batch_capture import (
 )
 from lerobot.bamboo_sorting.capture.c0_gripper_capture_journal import C0GripperPendingCaptureJournalV1
 from lerobot.utils import control_utils
-
 from tests.bamboo_sorting.paths import REPO_ROOT
+
 
 FRESH_MODULE = "lerobot.bamboo_sorting.capture.fresh_frames"
 

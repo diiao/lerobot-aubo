@@ -27,8 +27,8 @@ from lerobot.bamboo_sorting.capture.c0_smoke_capture import (
     C0_SMOKE_LEGACY_ACT_KEYS,
     frozen_c0_smoke_camera_mapping,
 )
-from tests.bamboo_sorting.paths import REPO_ROOT
 from lerobot.bamboo_sorting.capture.rgb_gate import FROZEN_CAMERA_SET_V2_SHA256
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def test_camera_keys_and_frozen_device_mapping() -> None:

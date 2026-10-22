@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import math
 from pathlib import Path
@@ -6,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from lerobot.bamboo_sorting.runtime.joint_trial import START_DEG, SingleStepSession, TrialLimits, check_step, home_to_start, stationary_step_limits
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def inputs():

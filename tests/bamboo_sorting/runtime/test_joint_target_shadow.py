@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import io
 import json
@@ -7,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def load_shadow(monkeypatch):

@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import json
 from pathlib import Path
@@ -6,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 spec = importlib.util.spec_from_file_location(

@@ -1,8 +1,8 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 from pathlib import Path
 
 import pytest
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def load_entry(monkeypatch):

@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import numpy as np
 import pytest
 
@@ -6,6 +5,7 @@ from lerobot.bamboo_sorting.policy.joint_target import (
     TARGET_FRAME_SCHEMA, TARGET_IMAGE_KEY, prepare_target_images,
     selected_instance_mask, target_contract_record,
 )
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def inputs():

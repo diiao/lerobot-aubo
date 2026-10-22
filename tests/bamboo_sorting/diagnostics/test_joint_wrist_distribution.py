@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import importlib.util
 import json
 from pathlib import Path
@@ -6,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from PIL import Image
+from tests.bamboo_sorting.paths import REPO_ROOT
+
 
 path=REPO_ROOT/'examples/phone_to_auboi10/review_joint_wrist_distribution.py'
 spec=importlib.util.spec_from_file_location('wrist_distribution',path)

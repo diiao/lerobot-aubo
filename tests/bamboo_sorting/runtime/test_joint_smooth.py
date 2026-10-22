@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import json
 import math
 import numpy as np
@@ -6,6 +5,7 @@ from pathlib import Path
 import pytest
 from lerobot.bamboo_sorting.runtime.joint_smooth import *
 from lerobot.bamboo_sorting.runtime.joint_trial import START_DEG
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 def fk(q):return [.2+q[0]*.01,-.5,.3]

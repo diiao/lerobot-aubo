@@ -1,4 +1,3 @@
-from tests.bamboo_sorting.paths import REPO_ROOT
 import copy
 import importlib.util
 from pathlib import Path
@@ -12,6 +11,7 @@ from lerobot.bamboo_sorting.perception.placement_sequence import PlacementSequen
 from lerobot.bamboo_sorting.perception.strip_segmentation_data import (
     audit_dataset, export_reviewed_piles, read_json, write_json,
 )
+from tests.bamboo_sorting.paths import REPO_ROOT
 
 
 @pytest.fixture
