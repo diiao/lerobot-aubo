@@ -1287,6 +1287,7 @@ IoU≥0.9时top为2/14/13，covered为1/14/14，边缘仍有误差。
 | 第一批 | `b33ff41a` | 从命令入口移出`InferencePipe`、`ReadOnlyStation`、图像编码、任务文字、目标种子审核和实时准备；采集新鲜帧与正常归位移入`capture/`；集中模型配置与起点常量 |
 | 第二批 | `60bc249f` | 任务模块按`capture/`、`perception/`、`policy/`、`runtime/`、`diagnostics/`分组；拆分复核准备与持续运行入口；更新静态导入、资源路径、测试和项目导航 |
 | 第三批 | `af96a5e0` | 测试按行为分组；共享假设备、模拟分词器和合成掩码移入专项辅助模块；提供`make test-aubo-offline`；删除已迁走且无调用的兼容文件 |
+| 审核补强 | `aa607a44` | 离线目标显式隐藏CUDA；持续执行实现移入`runtime/continuous.py`并按连接、单目标循环、目标切换、收尾拆分；更新三个复用实验复核工具；历史脚本标注冻结源码版本 |
 
 路径映射（旧→新）：
 
@@ -1315,7 +1316,7 @@ IoU≥0.9时top为2/14/13，covered为1/14/14，边缘仍有误差。
 - `artifacts/live/stack/stack_target_20261018_trial03/motion_preview_check/replay_motion.py`
 - `artifacts/live/stack/stack_target_20261018_trial03/motion_preview_check/replay_checked.py`
 
-其余历史脚本保持原样，不按当前源码维护。`artifacts/training/`、`artifacts/live/stack/stack_target_20261018_trial02/`、`..._trial03/`、`..._trial04/`、`artifacts/capture/stack/`、`artifacts/diagnostics/`、`artifacts/maintenance/artifact_organization/`下已放置`SOURCE_VERSION.txt`，注明其对应重构前源码`bf791c9a42b7232d73aca6eeace8b23b28e8afdd`；原始数据、录像、日志和结果文件未修改。上述三工具以外的冻结脚本未在当前源码上运行，也不把它们的导入成功当作回归通过。
+其余历史脚本保持原样，不按当前源码维护。`artifacts/training/`、`artifacts/live/stack/stack_target_20261018_trial02/`、`..._trial03/`、`..._trial04/`、`artifacts/capture/stack/`、`artifacts/diagnostics/`、`artifacts/maintenance/artifact_organization/`下已放置`SOURCE_VERSION.txt`，注明其对应重构前源码`bf791c9a42b7232d73aca6eeace8b23b28e8afdd`；原始数据、录像、日志和结果文件未修改。上述三工具以外的冻结脚本未在当前源码上运行，也不把它们的导入成功当作回归通过。这些脚本与`SOURCE_VERSION.txt`位于被Git忽略的`artifacts/`中，改动保留在本机工作区，不随源码提交；如迁移或备份，需按`artifacts/`的既有规则单独处理。
 
 未删除仍受支持的入口：`record.py`、`run_joint_live.py`、`run_joint_trial.py`、`run_joint_smooth.py`、`run_joint_target_shadow.py`、`run_joint_wrist_distribution.py`等。未删除或放宽测试；无重复覆盖文件被移除。
 
