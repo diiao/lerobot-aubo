@@ -78,9 +78,12 @@ class PlacementSequence:
     """One physical placement group; retain original frames and every derived stage."""
 
     def __init__(self, output, *, placement_id, split, configuration, threshold=25, min_area=80,
-                 roi=None, min_chroma_change=0.):
+                 roi=None, min_chroma_change=0., capture_order="add"):
         if not placement_id.strip():
             raise ValueError("placement_id must not be empty")
+        if capture_order not in ("add", "remove"):
+            raise ValueError("capture_order must be add or remove")
+        self.capture_order = capture_order
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=False)
         self.threshold, self.min_area = threshold, min_area
@@ -91,6 +94,7 @@ class PlacementSequence:
         self.layer_order_unresolved = bool(min_chroma_change)
         self.manifest = {
             "schema": "bamboo_placement_candidates", "placement_id": placement_id, "split": split,
+            "capture_order": capture_order,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "configuration": configuration,
             "parameters": {"threshold": threshold, "min_area": min_area,
@@ -100,12 +104,33 @@ class PlacementSequence:
                             "new_strip_is_placed_from_above", "camera_and_lighting_are_fixed"],
             "frames": [], "finished": False,
         }
+        if capture_order == "remove":
+            self.manifest["capture_frames"] = []
+            self.manifest["assumptions"] = [
+                "last_capture_is_empty", "one_top_strip_removed_per_step", "remaining_strips_do_not_move",
+                "camera_and_lighting_are_fixed", "annotation_frames_reverse_capture_order",
+            ]
         self.save()
 
     def save(self):
         write_json(self.output / "sequence.json", self.manifest)
 
     def append(self, rgb, *, source=None):
+        if self.capture_order == "add":
+            return self._append_addition(rgb, source=source)
+        if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] != 3:
+            raise ValueError("frame must be uint8 RGB")
+        validate_roi(self.roi, rgb.shape)
+        index = len(self.manifest["capture_frames"])
+        record = {"index": index, "image": f"capture_{index:03d}.png", "source": source,
+                  "saved_at_utc": datetime.now(timezone.utc).isoformat()}
+        # Persist every shot immediately, including an interrupted removal run.
+        write_image(self.output / record["image"], cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        self.manifest["capture_frames"].append(record)
+        self.save()
+        return record
+
+    def _append_addition(self, rgb, *, source=None):
         if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] != 3:
             raise ValueError("frame must be uint8 RGB")
         x0, y0, x1, y1 = validate_roi(self.roi, rgb.shape)
@@ -170,6 +195,21 @@ class PlacementSequence:
         return record
 
     def finish(self, reason):
+        if reason == "completed" and self.capture_order == "remove":
+            # Only a complete run ends at the empty baseline. Preserve physical
+            # capture order separately; review/export keep their addition order.
+            try:
+                for capture in reversed(self.manifest["capture_frames"]):
+                    bgr = cv2.imread(str(self.output / capture["image"]))
+                    if bgr is None:
+                        raise ValueError(f"cannot decode {capture['image']}")
+                    self._append_addition(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), source=capture)
+            except Exception as exc:
+                self.manifest["error"] = f"{type(exc).__name__}: {exc}"
+                self.manifest["finished"] = False
+                self.manifest["stop_reason"] = "error"
+                self.save()
+                raise
         self.manifest["finished"] = reason == "completed"
         self.manifest["stop_reason"] = reason
         self.save()

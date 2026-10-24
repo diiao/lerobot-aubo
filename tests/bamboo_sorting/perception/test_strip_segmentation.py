@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import json
 from pathlib import Path
 
 import cv2
@@ -98,6 +99,35 @@ def test_truncated_stage_is_explicitly_excluded(selection, tmp_path):
     assert report["splits"]["train"]["images"] == 3
     assert report["excluded_frames"] == [{"placement_id": "pile_a", "frame_index": 3,
                                            "reason": "full_frame_mask_ineligible"}]
+
+
+def test_named_manifest_reuses_images_without_changing_default(selection, tmp_path, monkeypatch, capsys):
+    from lerobot.bamboo_sorting.perception.strip_segmentation_training import StripDataset
+
+    root = tmp_path / "data"
+    export_reviewed_piles(selection, root)
+    original = (root / "dataset.json").read_bytes()
+    subset = read_json(root / "dataset.json")
+    subset["samples"] = [s for s in subset["samples"] if s["split"] != "train" or s["frame_index"] < 2]
+    write_json(root / "subset.json", subset)
+    assert audit_dataset(root)["splits"]["train"]["images"] == 4
+    assert audit_dataset(root, manifest_name="subset.json")["splits"]["train"]["images"] == 2
+    assert len(StripDataset(root, "train")) == 4
+    selected = StripDataset(root, "train", manifest_name="subset.json")
+    assert [s["frame_index"] for s in selected.samples] == [0, 1]
+    assert len(StripDataset(root, "validation", manifest_name="subset.json")) == 4
+
+    path = REPO_ROOT / "examples/phone_to_auboi10/train_strip_segmentation.py"
+    spec = importlib.util.spec_from_file_location("strip_named_manifest_cli", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def no_training(*args, **kwargs):
+        raise AssertionError("preflight must not load a model or train")
+    monkeypatch.setattr(module, "run", no_training)
+    assert module.main(["--dataset", str(root), "--manifest-name", "subset.json"]) == 0
+    assert json.loads(capsys.readouterr().out)["splits"]["train"]["images"] == 2
+    assert (root / "dataset.json").read_bytes() == original
 
 
 def test_adapter_empty_foreground_and_rgb(selection, tmp_path):

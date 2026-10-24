@@ -5,13 +5,15 @@ import importlib.metadata
 import json
 from pathlib import Path
 
-from lerobot.bamboo_sorting.perception.strip_segmentation_data import CLASSES, audit_dataset, read_json, write_json
+from lerobot.bamboo_sorting.perception.strip_segmentation_data import CLASSES, audit_dataset, child, read_json, write_json
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("preflight", "train"), default="preflight")
     parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--manifest-name", default="dataset.json",
+                        help="Manifest relative to --dataset; reuse image files while preserving the old manifest")
     parser.add_argument("--base-path", type=Path, help="Local Mask2Former pretrained directory; no implicit download")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
@@ -24,7 +26,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if min(args.epochs, args.batch_size, args.eval_every) < 1 or min(args.lr, args.backbone_lr) <= 0:
         parser.error("epochs, batch size, eval interval and learning rates must be positive")
-    audit = audit_dataset(args.dataset)
+    audit = audit_dataset(args.dataset, manifest_name=args.manifest_name)
     print(json.dumps(audit, indent=2, ensure_ascii=False), flush=True)
     if args.stage == "preflight":
         return 0
@@ -75,10 +77,12 @@ def run(args, audit):
         raise ValueError(f"unexpected pretrained loading differences: {loading}")
     model.to(args.device)
     collate = functools.partial(collate_samples, processor=processor)
-    train_loader = DataLoader(StripDataset(args.dataset, "train"), batch_size=args.batch_size, shuffle=True,
+    train_loader = DataLoader(StripDataset(args.dataset, "train", manifest_name=args.manifest_name),
+                              batch_size=args.batch_size, shuffle=True,
                               collate_fn=collate, num_workers=0,
                               generator=torch.Generator().manual_seed(args.seed))
-    val_loader = DataLoader(StripDataset(args.dataset, "validation"), batch_size=args.batch_size,
+    val_loader = DataLoader(StripDataset(args.dataset, "validation", manifest_name=args.manifest_name),
+                            batch_size=args.batch_size,
                             shuffle=False, collate_fn=collate, num_workers=0)
     backbone, other = [], []
     for name, parameter in model.named_parameters():
@@ -95,7 +99,7 @@ def run(args, audit):
     write_json(args.output / "plan.json", plan)
     write_json(args.output / "data_audit.json", audit)
     write_json(args.output / "loading_info.json", loading)
-    dataset_info = read_json(args.dataset / "dataset.json")
+    dataset_info = read_json(child(args.dataset, args.manifest_name))
     first_sample = dataset_info["samples"][0]
     contract = {"classes": CLASSES, "image_size": [first_sample["width"], first_sample["height"]], "resize": False,
                 "strip_dimensions_mm": dataset_info["strip_dimensions_mm"],

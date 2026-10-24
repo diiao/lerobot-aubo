@@ -163,10 +163,10 @@ def export_reviewed_piles(selection_path, output, *, test_only=False):
             shutil.rmtree(staging)
 
 
-def audit_dataset(root, *, test_only=False):
+def audit_dataset(root, *, test_only=False, manifest_name="dataset.json"):
     """Validate portable files, explicit empty targets and group split isolation."""
     root = Path(root)
-    data = read_json(root / "dataset.json")
+    data = read_json(child(root, manifest_name))
     if data["schema"] != SCHEMA or data["classes"] != CLASSES:
         raise ValueError("unsupported dataset or category mapping")
     seen, groups, counts = set(), {}, {}

@@ -43,10 +43,13 @@ def forbid_devices(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", guarded)
 
 
-def test_plan_uses_only_old_global_without_writing_or_devices(entry, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("capture_order", ["add", "remove"])
+def test_plan_uses_only_old_global_without_writing_or_devices(entry, tmp_path, monkeypatch, capsys, capture_order):
     forbid_devices(monkeypatch)
-    assert entry.main(["--output", str(tmp_path / "absent"), "--placement-id", "pile-a"]) == 0
+    assert entry.main(["--output", str(tmp_path / "absent"), "--placement-id", "pile-a",
+                       "--capture-order", capture_order]) == 0
     plan = json.loads(capsys.readouterr().out)
+    assert plan["capture_order"] == capture_order
     mapping = plan["camera_configuration"]["camera_mapping"]
     assert list(mapping) == ["global_rgb"]
     assert "GENERAL_WEBCAM" in mapping["global_rgb"]["device"]
@@ -79,6 +82,55 @@ def test_offline_crossing_retains_sources_visibility_and_group(entry, frames, tm
         entry.main(args)
 
 
+def test_four_strip_removal_preserves_capture_order_and_review_visibility(entry, frames, tmp_path, monkeypatch):
+    from lerobot.bamboo_sorting.perception.placement_review import build_review
+
+    # A crossed pair plus two independent strips, physically removed in reverse.
+    for x0 in (10, 80):
+        frame = frames[-1].copy()
+        frame[60:65, x0:x0 + 30] = [170, 100, 60]
+        frames.append(frame)
+    paths = []
+    for index, rgb in enumerate(reversed(frames)):
+        path = tmp_path / f"source_{index}.png"
+        assert cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        paths.append(str(path))
+    forbid_devices(monkeypatch)
+    output = tmp_path / "removal"
+    assert entry.main(["--output", str(output), "--placement-id", "pile-remove", "--split", "train",
+                       "--capture-order", "remove", "--input-images", *paths]) == 0
+    manifest = json.loads((output / "sequence.json").read_text())
+    assert manifest["finished"] and not manifest["training_ready"]
+    assert manifest["frames"][0]["role"] == "empty_baseline"
+    for index, rgb in enumerate(frames):
+        canonical = cv2.imread(str(output / f"frame_{index:03d}.png"))
+        capture = cv2.imread(str(output / f"capture_{4 - index:03d}.png"))
+        assert np.array_equal(cv2.cvtColor(canonical, cv2.COLOR_BGR2RGB), rgb)
+        assert np.array_equal(canonical, capture)
+        assert manifest["frames"][index]["source"] == manifest["capture_frames"][4 - index]
+    points = [
+        [[10, 30], [109, 30], [109, 39], [10, 39]],
+        [[50, 10], [59, 10], [59, 69], [50, 69]],
+        [[10, 60], [39, 60], [39, 64], [10, 64]],
+        [[80, 60], [109, 60], [109, 64], [80, 64]],
+    ]
+    annotations = {"placement_id": "pile-remove", "image_size": [120, 80],
+                   "placement_from_above_confirmed": True, "older_strips_stationary_confirmed": True,
+                   "placement_confirmation_source": "synthetic top-first removal, reversed for annotation",
+                   "objects": [{"id": f"strip_{i:03d}", "frame_index": i, "polygon": polygon,
+                                "reviewed": True, "truncated": False} for i, polygon in enumerate(points, 1)]}
+    review = tmp_path / "review"
+    build_review(output, annotations, review)
+    labels = json.loads((review / "frame_004_labels.json").read_text())
+    assert labels["full_frame_mask_eligible"] and not labels["training_ready"]
+    assert labels["top_ids_candidate"] == ["strip_002", "strip_003", "strip_004"]
+    expected = np.zeros((80, 120), bool)
+    expected[30:40, 10:110] = True
+    expected[30:40, 50:60] = False
+    visible = cv2.imread(str(review / "frame_004_strip_001_visible.png"), cv2.IMREAD_GRAYSCALE)
+    assert np.array_equal(visible > 0, expected)
+
+
 def test_difference_flags_missing_multiple_and_global_changes(frames):
     empty, first, _ = frames
     mask, report = difference_candidate(empty, empty)
@@ -95,13 +147,16 @@ def test_difference_flags_missing_multiple_and_global_changes(frames):
 
 
 @pytest.mark.parametrize("failure", [False, True])
-def test_live_opens_only_global_and_restores_controls_on_exit(entry, frames, tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("capture_order", ["add", "remove"])
+def test_live_opens_only_global_and_restores_controls_on_exit(entry, frames, tmp_path, monkeypatch, failure,
+                                                            capture_order):
     import lerobot.cameras.opencv
 
     events = []
     initial = {cv2.CAP_PROP_AUTO_EXPOSURE: .75, cv2.CAP_PROP_EXPOSURE: 100.,
                cv2.CAP_PROP_AUTO_WB: 1., cv2.CAP_PROP_WB_TEMPERATURE: 4500.}
     values = initial.copy()
+    captured = list(reversed(frames)) if capture_order == "remove" else frames
 
     class Capture:
         def get(self, key):
@@ -130,7 +185,7 @@ def test_live_opens_only_global_and_restores_controls_on_exit(entry, frames, tmp
 
         def read(self):
             self.reads += 1
-            return frames[0 if self.reads <= 11 else 1].copy()
+            return captured[0 if self.reads <= 11 else 1].copy()
 
         def disconnect(self):
             events.append(("closed", True))
@@ -139,13 +194,18 @@ def test_live_opens_only_global_and_restores_controls_on_exit(entry, frames, tmp
     monkeypatch.setattr(lerobot.cameras.opencv, "OpenCVCamera", Camera)
     monkeypatch.setattr(entry.sys.stdin, "isatty", lambda: True)
     replies = iter(["", "", "q"])
-    monkeypatch.setattr(builtins, "input", lambda _: next(replies))
+    prompts = []
+    def reply(prompt):
+        prompts.append(prompt)
+        return next(replies)
+    monkeypatch.setattr(builtins, "input", reply)
     if failure:
         def fail(*args, **kwargs):
             raise OSError("disk write failed")
         monkeypatch.setattr(PlacementSequence, "append", fail)
     output = tmp_path / "capture"
-    args = ["--record", "--output", str(output), "--placement-id", "pile-live", "--strips", "3"]
+    args = ["--record", "--output", str(output), "--placement-id", "pile-live", "--strips", "3",
+            "--capture-order", capture_order]
     if failure:
         with pytest.raises(OSError, match="disk write"):
             entry.main(args)
@@ -160,7 +220,14 @@ def test_live_opens_only_global_and_restores_controls_on_exit(entry, frames, tmp
     assert all(manifest["camera_controls"]["restore_succeeded"].values())
     assert manifest["stop_reason"] == ("error" if failure else "operator_stopped")
     assert not manifest["finished"]
-    assert len(manifest["frames"]) == (0 if failure else 2)
+    records = manifest["capture_frames" if capture_order == "remove" else "frames"]
+    assert len(records) == (0 if failure else 2)
+    if capture_order == "remove":
+        assert "摆好全部 3 根" in prompts[0]
+        assert manifest["frames"] == []  # No empty baseline yet; do not invent labels.
+        if not failure:
+            assert "应剩 2 根" in prompts[1] and "应剩 1 根" in prompts[2]
+            assert all((output / record["image"]).is_file() for record in records)
 
 
 def test_unsupported_controls_are_not_reported_as_locked(entry):

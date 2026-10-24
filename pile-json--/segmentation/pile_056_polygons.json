@@ -1,0 +1,304 @@
+{
+  "placement_id": "pile_056",
+  "image_size": [
+    640,
+    480
+  ],
+  "annotation_source": "assistant_rgb_polygon_draft",
+  "placement_from_above_confirmed": true,
+  "older_strips_stationary_confirmed": true,
+  "placement_confirmation_source": "User confirmed in chat on 2026-10-23: 全部符合. For pile_056 only, each capture removed one strip; remaining strips did not move or visibly tilt, and the camera and support stayed fixed. Placement-from-above refers to equivalent reversed image order, not physical capture order.",
+  "strip_dimensions_mm": {
+    "length": 400,
+    "width": 25,
+    "thickness": 8
+  },
+  "draft_method": {
+    "kind": "difference_color_rectangle_with_visual_corner_corrections",
+    "parameters": {
+      "threshold": 25,
+      "min_area": 80,
+      "roi_xyxy": [
+        280,
+        160,
+        640,
+        480
+      ],
+      "min_chroma_change": 8
+    },
+    "color_filter_rgb": {
+      "r_minus_g_min": 3,
+      "g_minus_b_min": 15,
+      "r_min": 110
+    },
+    "color_filter_scope": "Draft construction for pile_056 only; not a model or runtime threshold.",
+    "procedure": "Fit an initial minimum-area rectangle to the saved difference candidate; within it retain current RGB pixels passing the color filter, take the largest connected component and fit a minimum-area rectangle. All contours remain unreviewed. Visually align the four polygon corners to original RGB long edges and endpoints; preserve the initial and color-filtered rectangles."
+  },
+  "note": "Training candidate, not independent test data. Assistant drafts require human review; field-condition confirmation is not contour approval. No model inference was used. Source RGB and capture candidates are unchanged.",
+  "objects": [
+    {
+      "id": "strip_001",
+      "frame_index": 1,
+      "polygon": [
+        [
+          441,
+          371
+        ],
+        [
+          467,
+          226
+        ],
+        [
+          480,
+          228
+        ],
+        [
+          455,
+          373
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true,
+      "capture_index": 3,
+      "draft_warnings": [
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          436.7799987792969,
+          372.4100036621094
+        ],
+        [
+          462.55999755859375,
+          223.16000366210938
+        ],
+        [
+          482.3900146484375,
+          226.58999633789062
+        ],
+        [
+          456.6099853515625,
+          375.8299865722656
+        ]
+      ],
+      "color_filtered_rectangle": [
+        [
+          438.67999267578125,
+          371.3800048828125
+        ],
+        [
+          466.1400146484375,
+          224.89999389648438
+        ],
+        [
+          482.45001220703125,
+          227.9600067138672
+        ],
+        [
+          454.9800109863281,
+          374.42999267578125
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Visual alignment to original RGB long edges and endpoints; rectangular fit included nearby background. Not human-reviewed."
+    },
+    {
+      "id": "strip_002",
+      "frame_index": 2,
+      "polygon": [
+        [
+          510,
+          378
+        ],
+        [
+          526,
+          230.28333282470703
+        ],
+        [
+          539,
+          232
+        ],
+        [
+          525,
+          380
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true,
+      "capture_index": 2,
+      "draft_warnings": [
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          504.92999267578125,
+          380.260009765625
+        ],
+        [
+          523.7100219726562,
+          228.35000610351562
+        ],
+        [
+          544.7999877929688,
+          230.9499969482422
+        ],
+        [
+          526.030029296875,
+          382.8699951171875
+        ]
+      ],
+      "color_filtered_rectangle": [
+        [
+          506.75,
+          378.9700012207031
+        ],
+        [
+          525.6199951171875,
+          228.0800018310547
+        ],
+        [
+          545.4299926757812,
+          230.5500030517578
+        ],
+        [
+          526.5700073242188,
+          381.45001220703125
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Visual alignment to original RGB long edges and endpoints; rectangular fit included nearby background. Not human-reviewed."
+    },
+    {
+      "id": "strip_003",
+      "frame_index": 3,
+      "polygon": [
+        [
+          403,
+          368
+        ],
+        [
+          438,
+          226.28333282470703
+        ],
+        [
+          451,
+          225
+        ],
+        [
+          417,
+          370
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true,
+      "capture_index": 1,
+      "draft_warnings": [
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          399.57000732421875,
+          368.010009765625
+        ],
+        [
+          434.45001220703125,
+          220.10000610351562
+        ],
+        [
+          454.3500061035156,
+          224.7899932861328
+        ],
+        [
+          419.4800109863281,
+          372.7099914550781
+        ]
+      ],
+      "color_filtered_rectangle": [
+        [
+          399.8800048828125,
+          368.5
+        ],
+        [
+          434.45001220703125,
+          221.5800018310547
+        ],
+        [
+          452.010009765625,
+          225.7100067138672
+        ],
+        [
+          417.44000244140625,
+          372.6300048828125
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Visual alignment to original RGB long edges and endpoints; rectangular fit included nearby background. Not human-reviewed."
+    },
+    {
+      "id": "strip_004",
+      "frame_index": 4,
+      "polygon": [
+        [
+          480,
+          377
+        ],
+        [
+          491.5,
+          228.78333282470703
+        ],
+        [
+          504,
+          231
+        ],
+        [
+          494.5,
+          377.28333282470703
+        ]
+      ],
+      "truncated": false,
+      "reviewed": true,
+      "capture_index": 0,
+      "draft_warnings": [
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          475.739990234375,
+          379.489990234375
+        ],
+        [
+          486.489990234375,
+          227.25999450683594
+        ],
+        [
+          506.6300048828125,
+          228.67999267578125
+        ],
+        [
+          495.8900146484375,
+          380.9100036621094
+        ]
+      ],
+      "color_filtered_rectangle": [
+        [
+          478.29998779296875,
+          378.510009765625
+        ],
+        [
+          489.1099853515625,
+          229.27999877929688
+        ],
+        [
+          504.8999938964844,
+          230.42999267578125
+        ],
+        [
+          494.0799865722656,
+          379.6600036621094
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Visual alignment to original RGB long edges and endpoints; rectangular fit included nearby background. Not human-reviewed."
+    }
+  ]
+}

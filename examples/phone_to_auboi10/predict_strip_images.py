@@ -1,4 +1,4 @@
-"""Frozen Mask2Former image diagnostic. Default validates/prints plan without inference.
+"""Frozen Mask2Former image prediction. Default validates/prints plan without inference.
 
 This accepts raw RGB samples, not a train/test dataset or target labels. It is
 standalone so remote deployment does not replace existing training sources.
@@ -7,19 +7,28 @@ standalone so remote deployment does not replace existing training sources.
 import argparse
 import json
 from pathlib import Path
+import re
 import time
 
 import numpy as np
 from PIL import Image
 
 CLASSES = [{"id": 0, "name": "top_strip"}, {"id": 1, "name": "covered_strip"}]
+TEST_PURPOSE = "static_placement_independent_test"
 
 
 def validate_samples(manifest_path):
     path = Path(manifest_path).resolve()
     spec = json.loads(path.read_text())
-    if spec.get("purpose") != "target_video_development_diagnostic" or spec.get("image_size") != [640, 480]:
-        raise ValueError("expected 640x480 target-video diagnostic")
+    purposes = {"target_video_development_diagnostic", "static_placement_development_diagnostic", TEST_PURPOSE}
+    if spec.get("purpose") not in purposes or spec.get("image_size") != [640, 480]:
+        raise ValueError("expected 640x480 video diagnostic or static-placement prediction")
+    if spec["purpose"] == TEST_PURPOSE:
+        if (spec.get("independent_test") is not True or spec.get("human_ground_truth_review_complete") is not True
+                or any(row.get("split") != "test" for row in spec["samples"])):
+            raise ValueError("independent test requires reviewed ground truth and test-only samples")
+    elif spec.get("independent_test", False) is not False:
+        raise ValueError("development diagnostics cannot be labeled as independent tests")
     ids = [row["id"] for row in spec["samples"]]
     if not ids or len(ids) != len(set(ids)):
         raise ValueError("unique sample IDs required")
@@ -50,11 +59,32 @@ def instance_png(segmentation, segments_info):
     return png, segments
 
 
+def validate_output(output, model_path, manifest_path, prefix, sample_ids):
+    if prefix:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*_", prefix):
+            raise ValueError("output prefix must be a simple filename prefix ending in underscore")
+        if not output.is_dir():
+            raise ValueError("prefixed output requires an existing directory")
+        names = ["plan.json", "loading_info.json", "predictions.json", *(name + ".png" for name in sample_ids)]
+        for name in names:
+            if (output / (prefix + name)).exists():
+                raise FileExistsError(output / (prefix + name))
+    elif output.exists():
+        raise FileExistsError(output)
+    for source in (model_path.parent, manifest_path.parent):
+        if source.resolve().is_relative_to(output.resolve()):
+            raise ValueError("output must not contain model or inputs")
+    if output.resolve().is_relative_to(model_path.parent.resolve()):
+        raise ValueError("output must be outside the training run")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output-prefix", default="",
+                        help="Write uniquely prefixed files in an existing output directory; never overwrite")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
@@ -65,15 +95,11 @@ def main(argv=None):
         raise ValueError("completed frozen best checkpoint required")
     if contract["classes"] != CLASSES or contract["image_size"] != [640, 480] or contract["resize"] is not False:
         raise ValueError("checkpoint contract mismatch")
-    if args.output.exists():
-        raise FileExistsError(args.output)
-    for source in (args.model_path.parent, args.manifest.parent):
-        if source.resolve().is_relative_to(args.output.resolve()):
-            raise ValueError("output must not contain model or inputs")
-    if args.output.resolve().is_relative_to(args.model_path.parent.resolve()):
-        raise ValueError("output must be outside the training run")
-    plan = {"source_run": spec["source_run"], "samples": len(spec["samples"]),
+    validate_output(args.output, args.model_path, args.manifest, args.output_prefix,
+                    [row["id"] for row in spec["samples"]])
+    plan = {"purpose": spec["purpose"], "source_run": spec["source_run"], "samples": len(spec["samples"]),
             "model_path": str(args.model_path.resolve()), "best_epoch": completed["best_epoch"],
+            "independent_test": spec["purpose"] == TEST_PURPOSE, "output_prefix": args.output_prefix,
             "threshold": 0.5, "mask_threshold": 0.5, "overlap_mask_area_threshold": 0.8,
             "image_size": [640, 480], "resize": False, "batch_size": 2,
             "optimizer_steps": 0, "device": args.device, "mode": "infer" if args.execute else "plan_only"}
@@ -94,9 +120,10 @@ def main(argv=None):
     if model.config.id2label != {c["id"]: c["name"] for c in CLASSES}:
         raise ValueError("checkpoint label mapping mismatch")
     model.requires_grad_(False).eval().to(args.device)
-    args.output.mkdir(parents=True, exist_ok=False)
-    (args.output / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
-    (args.output / "loading_info.json").write_text(json.dumps(loading, indent=2) + "\n")
+    if not args.output_prefix:
+        args.output.mkdir(parents=True, exist_ok=False)
+    (args.output / (args.output_prefix + "plan.json")).write_text(json.dumps(plan, indent=2) + "\n")
+    (args.output / (args.output_prefix + "loading_info.json")).write_text(json.dumps(loading, indent=2) + "\n")
     started = time.monotonic()
     details = []
     with torch.inference_mode():
@@ -113,13 +140,13 @@ def main(argv=None):
                 target_sizes=[(480, 640)] * len(rows))
             for row, result in zip(rows, results, strict=True):
                 png, segments = instance_png(result["segmentation"].cpu().numpy(), result["segments_info"])
-                name = row["id"] + ".png"
+                name = args.output_prefix + row["id"] + ".png"
                 Image.fromarray(png).save(args.output / name)
                 details.append({**row, "instance_map": name, "segments": segments})
     report = {"plan": plan, "samples": details, "elapsed_seconds": time.monotonic() - started,
-              "optimizer_steps": 0, "complete": True, "independent_test": False,
+              "optimizer_steps": 0, "complete": True, "independent_test": spec["purpose"] == TEST_PURPOSE,
               "physical_grasp_validated": False}
-    (args.output / "predictions.json").write_text(json.dumps(report, indent=2) + "\n")
+    (args.output / (args.output_prefix + "predictions.json")).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"complete": True, "samples": len(details), "elapsed_seconds": report["elapsed_seconds"]}))
     return 0
 

@@ -1,4 +1,4 @@
-"""逐根摆放拍摄与 RGB 候选标注；默认只显示计划，--record 仅打开全局相机。"""
+"""逐根加入／移除拍摄与 RGB 候选标注；默认只显示计划，--record 仅打开全局相机。"""
 
 import argparse
 import math
@@ -95,15 +95,20 @@ def capture_live(sequence, profile, *, strips, exposure, white_balance):
         if not controls["lock_verified"]:
             print("警告：曝光/白平衡锁定未获驱动完整确认；候选标签必须复核，详情见 sequence.json。", flush=True)
         for index in range(strips + 1):
-            prompt = "清空料堆区域，手退出画面" if index == 0 else f"放入第 {index} 根竹条，等静止后手退出画面"
+            if sequence.capture_order == "remove":
+                prompt = (f"摆好全部 {strips} 根竹条，手退出画面" if index == 0 else
+                          f"拿走一根当前未被压住的竹条，应剩 {strips - index} 根；其余不动，手退出画面")
+            else:
+                prompt = "清空料堆区域，手退出画面" if index == 0 else f"放入第 {index} 根竹条，等静止后手退出画面"
             reply = input(f"{prompt}；回车拍照，q 结束：").strip().lower()
             if reply == "q":
                 reason = "operator_stopped"
                 break
             frame = camera.read()
             record = sequence.append(frame, source={"camera": "global_rgb", "controls": read_controls(camera.videocapture)})
-            print(f"已保存 {sequence.output / record['image']}；复核图：{record['review_image']}；"
-                  f"提示：{record.get('warnings', [])}", flush=True)
+            detail = (f"复核图：{record['review_image']}；提示：{record.get('warnings', [])}"
+                      if "review_image" in record else "拍到空场景后，自动倒序生成标注候选")
+            print(f"已保存 {sequence.output / record['image']}；{detail}", flush=True)
         else:
             reason = "completed"
     except (KeyboardInterrupt, EOFError):
@@ -134,7 +139,9 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="New directory, never overwrite an existing group")
     parser.add_argument("--placement-id", required=True, help="Physical grouping ID shared by every derived frame")
     parser.add_argument("--split", choices=("train", "validation", "test"), default="train")
-    parser.add_argument("--strips", type=int, default=5, help="Number of additions after the empty baseline")
+    parser.add_argument("--strips", type=int, default=5, help="Total strips; capture N+1 images including the empty scene")
+    parser.add_argument("--capture-order", choices=("add", "remove"), default="add",
+                        help="add: empty to full; remove: full to empty, then reverse for annotation")
     parser.add_argument("--threshold", type=int, default=25, help="Maximum RGB channel difference threshold, 1..255")
     parser.add_argument("--min-area", type=int, default=80, help="Minimum changed component area in pixels")
     parser.add_argument("--roi", type=int, nargs=4, metavar=("X0", "Y0", "X1", "Y1"),
@@ -145,7 +152,8 @@ def main(argv=None):
     parser.add_argument("--white-balance", type=float, help="Temperature in kelvin; default: freeze warmed-up reading")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--record", action="store_true", help="Open only the global camera for interactive capture")
-    mode.add_argument("--input-images", type=Path, nargs="+", help="Offline images in explicit order: empty, +1, +2, ...")
+    mode.add_argument("--input-images", type=Path, nargs="+",
+                      help="Offline images in capture order: 0..N for add, N..0 for remove")
     args = parser.parse_args(argv)
     if args.strips < 1 or not 1 <= args.threshold <= 255 or args.min_area < 1:
         parser.error("strips/min-area must be positive and threshold must be 1..255")
@@ -158,7 +166,7 @@ def main(argv=None):
     if not math.isfinite(args.min_chroma_change) or args.min_chroma_change < 0:
         parser.error("min-chroma-change must be finite and nonnegative")
     if args.input_images and len(args.input_images) < 2:
-        parser.error("input-images needs an empty baseline and at least one addition")
+        parser.error("input-images needs at least two frames, including the empty scene")
     configuration = load_joint_camera_configuration(args.camera_set)
     # Store only the camera that will actually be opened, not the wrist profile.
     configuration["camera_mapping"] = {"global_rgb": configuration["camera_mapping"]["global_rgb"]}
@@ -171,6 +179,7 @@ def main(argv=None):
     plan = {"mode": "offline" if args.input_images else "camera", "camera_configuration": configuration,
             "output": str(args.output), "placement_id": args.placement_id, "split": args.split,
             "strips": len(args.input_images) - 1 if args.input_images else args.strips,
+            "capture_order": args.capture_order,
             "threshold": args.threshold, "min_area": args.min_area,
             "roi_xyxy": args.roi, "min_chroma_change": args.min_chroma_change,
             "robot_connected": False, "annotation_status": "needs_review"}
@@ -188,7 +197,8 @@ def main(argv=None):
         configuration = {"source": "offline_images", "camera_configuration_verified": False}
     sequence = PlacementSequence(args.output, placement_id=args.placement_id, split=args.split,
                                  configuration=configuration, threshold=args.threshold, min_area=args.min_area,
-                                 roi=args.roi, min_chroma_change=args.min_chroma_change)
+                                 roi=args.roi, min_chroma_change=args.min_chroma_change,
+                                 capture_order=args.capture_order)
     write_json(args.output / "plan.json", plan)
     if args.input_images:
         import cv2
@@ -207,6 +217,10 @@ def main(argv=None):
     else:
         capture_live(sequence, configuration["camera_mapping"]["global_rgb"], strips=args.strips,
                      exposure=args.exposure, white_balance=args.white_balance)
+    if args.capture_order == "remove":
+        print("capture_*.png 保留实际拍摄顺序；" + (
+            "frame_*.png 已按空场景到整堆排列，用于后续标注。" if sequence.manifest["finished"] else
+            "本组未拍完，只保留已拍原图，未生成倒序标注候选。"))
     print(f"序列记录：{args.output / 'sequence.json'}；所有标签均待人工复核。")
     return 0
 

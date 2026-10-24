@@ -1,0 +1,228 @@
+{
+  "placement_id": "pile_062",
+  "image_size": [
+    640,
+    480
+  ],
+  "annotation_source": "assistant_rgb_polygon_draft",
+  "placement_from_above_confirmed": true,
+  "older_strips_stationary_confirmed": true,
+  "placement_confirmation_source": "User confirmed 全部符合 in this chat for pile_062: first remove the upper strip of each crossing pair, then remove the two remaining strips one at a time; other strips did not move or visibly tilt, and camera/support stayed fixed. Bound to source sequence created_at_utc=2026-10-24T06:58:14.755645+00:00. Placement-from-above describes the equivalent reversed annotation order, not physical capture order.",
+  "strip_dimensions_mm": {
+    "length": 400,
+    "width": 25,
+    "thickness": 8
+  },
+  "draft_method": {
+    "kind": "difference_rectangle_with_visual_corner_corrections",
+    "parameters": {
+      "threshold": 25,
+      "min_area": 80,
+      "roi_xyxy": [
+        280,
+        160,
+        640,
+        480
+      ],
+      "min_chroma_change": 8
+    },
+    "procedure": "Fit a minimum-area rectangle to all saved difference components, retaining both sides of a same-color crossing. Inspect the full introduced strip in RGB and align endpoints and long edges. Keep each strip as one ID; visibility is derived from confirmed ordering. All polygons remain unreviewed."
+  },
+  "note": "Independent test, assigned before capture. Human field confirmation is not contour approval. No model inference used; original RGB and candidate files unchanged.",
+  "objects": [
+    {
+      "id": "strip_001",
+      "frame_index": 1,
+      "polygon": [
+        [
+          497,
+          243
+        ],
+        [
+          510,
+          243
+        ],
+        [
+          532,
+          395
+        ],
+        [
+          517.5,
+          394.28333282470703
+        ]
+      ],
+      "reviewed": true,
+      "truncated": false,
+      "capture_index": 3,
+      "draft_warnings": [
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          489.57,
+          242.2
+        ],
+        [
+          511.56,
+          238.85
+        ],
+        [
+          535.82,
+          398.05
+        ],
+        [
+          513.83,
+          401.4
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Align full introduced-strip RGB long edges and endpoints; exclude neighboring shadows/background and bridge same-color crossing gaps. Not human-reviewed."
+    },
+    {
+      "id": "strip_002",
+      "frame_index": 2,
+      "polygon": [
+        [
+          435,
+          343.78333282470703
+        ],
+        [
+          466,
+          211
+        ],
+        [
+          478,
+          213.28333282470703
+        ],
+        [
+          447,
+          344.78333282470703
+        ]
+      ],
+      "reviewed": true,
+      "truncated": false,
+      "capture_index": 2,
+      "draft_warnings": [
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          429.69,
+          347.59
+        ],
+        [
+          462.74,
+          206.37
+        ],
+        [
+          481.77,
+          210.82
+        ],
+        [
+          448.71,
+          352.04
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Align full introduced-strip RGB long edges and endpoints; exclude neighboring shadows/background and bridge same-color crossing gaps. Not human-reviewed."
+    },
+    {
+      "id": "strip_003",
+      "frame_index": 3,
+      "polygon": [
+        [
+          390,
+          286
+        ],
+        [
+          521,
+          192
+        ],
+        [
+          530,
+          199
+        ],
+        [
+          397,
+          291.28333282470703
+        ]
+      ],
+      "reviewed": true,
+      "truncated": false,
+      "capture_index": 1,
+      "draft_warnings": [
+        "multiple_changed_components",
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          386.8,
+          285.4
+        ],
+        [
+          518.48,
+          186.64
+        ],
+        [
+          531.68,
+          204.24
+        ],
+        [
+          400,
+          303
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Align full introduced-strip RGB long edges and endpoints; exclude neighboring shadows/background and bridge same-color crossing gaps. Not human-reviewed."
+    },
+    {
+      "id": "strip_004",
+      "frame_index": 4,
+      "polygon": [
+        [
+          469,
+          381
+        ],
+        [
+          538,
+          239
+        ],
+        [
+          550,
+          245
+        ],
+        [
+          484,
+          386
+        ]
+      ],
+      "reviewed": true,
+      "truncated": false,
+      "capture_index": 0,
+      "draft_warnings": [
+        "multiple_changed_components",
+        "chroma_filter_may_remove_same_color_crossings"
+      ],
+      "initial_difference_rectangle": [
+        [
+          465.58,
+          381.72
+        ],
+        [
+          532.74,
+          233.97
+        ],
+        [
+          554.06,
+          243.66
+        ],
+        [
+          486.9,
+          391.41
+        ]
+      ],
+      "assistant_edge_adjusted": true,
+      "edge_adjustment_reason": "Align full introduced-strip RGB long edges and endpoints; exclude neighboring shadows/background and bridge same-color crossing gaps. Not human-reviewed."
+    }
+  ]
+}

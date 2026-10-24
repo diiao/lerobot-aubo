@@ -9,9 +9,9 @@ from .strip_segmentation_data import CLASSES, child, read_json
 
 
 class StripDataset:
-    def __init__(self, root, split):
+    def __init__(self, root, split, *, manifest_name="dataset.json"):
         self.root = Path(root)
-        self.samples = [s for s in read_json(self.root / "dataset.json")["samples"] if s["split"] == split]
+        self.samples = [s for s in read_json(child(self.root, manifest_name))["samples"] if s["split"] == split]
 
     def __len__(self):
         return len(self.samples)
