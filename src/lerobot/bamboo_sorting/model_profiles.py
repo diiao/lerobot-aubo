@@ -43,6 +43,10 @@ SEGMENTATION_CHECKPOINT = (
     '/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/'
     'outputs/short_strip_mask2former_baseline/best'
 )
+TARGET_STACK_SEGMENTATION_CHECKPOINT = (
+    '/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/'
+    'outputs/short_strip_mask2former_failure_finetuning/best'
+)
 TARGET_STACK_REMOTE_ROOT = '/home/rentao/program/lerobot-aubo-joint-stack'
 TARGET_STACK_CHECKPOINT = TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_target_smolvla/final'
 TARGET_STACK_MODEL_SHA = 'c45fdeb1d36f71749008357956b6f3ca90a042e7c8e049a99d307204363fb0e9'

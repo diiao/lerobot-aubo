@@ -31,6 +31,22 @@ def test_real_dimensions_preserve_unpadded_loss():
     torch.testing.assert_close(masked_action_loss(losses, 8), losses.mean((1, 2)))
 
 
+def test_expert_timestep_weights_have_expected_loss_and_gradient():
+    losses = torch.full((1, 4, 32), float("nan"))
+    losses[0, :3, :7] = torch.tensor([2., 4., 8.])[:, None]
+    losses.requires_grad_()
+    pad = torch.tensor([[False, False, False, True]])
+    weights = torch.tensor([[1., 3., 1., 999.]])
+    result = masked_action_loss(losses, 7, pad, timestep_weights=weights)
+    torch.testing.assert_close(result, torch.tensor([4.4]))
+    result.sum().backward()
+    torch.testing.assert_close(losses.grad[0, :3, :7], torch.tensor([1., 3., 1.])[:, None].expand(3, 7)/35)
+    assert torch.count_nonzero(losses.grad[0, 3]) == 0
+    assert torch.count_nonzero(losses.grad[..., 7:]) == 0
+    torch.testing.assert_close(masked_action_loss(losses, 7, pad, timestep_weights=torch.ones(1, 4)),
+                               masked_action_loss(losses, 7, pad), rtol=0, atol=0)
+
+
 @pytest.mark.parametrize('pad', [torch.ones(2, 3, dtype=torch.bool), torch.zeros(2, 3), torch.zeros(2, 4, dtype=torch.bool)])
 def test_invalid_or_empty_temporal_masks_fail(pad):
     with pytest.raises(ValueError):
@@ -128,6 +144,9 @@ def test_policy_forward_uses_execution_weight_and_preserves_padding_alias():
     fake.config.execution_loss_fraction = None
     uniform, _ = SmolVLAPolicy.forward(fake, batch)
     torch.testing.assert_close(uniform, torch.tensor(6.))
+    weighted, info = SmolVLAPolicy.forward(fake, batch, action_loss_weights=torch.tensor([[1., 3., 2., 1.]]))
+    torch.testing.assert_close(weighted, torch.tensor(40/6))
+    assert info["uniform_valid_loss"] == 6.
     batch["action_is_pad"] = torch.tensor([[False, True, True, True]])
     with pytest.raises(ValueError, match="Conflicting"):
         SmolVLAPolicy.forward(fake, batch)

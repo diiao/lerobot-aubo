@@ -7,6 +7,7 @@ offline. Smoke uses synthetic data and ZERO optimizer steps, never real capture.
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -24,9 +25,22 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--video-backend", choices=("pyav", "torchcodec"), default="pyav")
+    parser.add_argument("--learning-rate", type=float, help="Override optimizer peak learning rate for an explicit continuation")
+    parser.add_argument("--preclose-loss-weight", type=float,
+                        help="Training-only future-action weight near expert closure; 1 keeps the uniform objective")
+    parser.add_argument("--preclose-frames", type=int, default=10,
+                        help="Expert frames before first close to weight, including the close frame")
     args = parser.parse_args(argv)
     if args.steps < 1 or args.batch_size < 1:
         parser.error("steps and batch-size must be positive")
+    for name in ("learning_rate", "preclose_loss_weight"):
+        value = getattr(args, name)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            parser.error(f"{name.replace('_', '-')} must be finite and positive")
+    if args.preclose_frames < 0:
+        parser.error("preclose-frames must be nonnegative")
+    if args.preclose_loss_weight is not None and (not args.target_conditioned or args.stage not in ("plan", "train")):
+        parser.error("preclose-loss-weight requires target-conditioned plan/train")
     if args.target_conditioned and args.stage in ("preflight", "train", "evaluate") and args.data_manifest is None:
         parser.error("--target-conditioned requires --data-manifest")
     if args.data_manifest and any(getattr(args, name) is not None for name in
@@ -146,7 +160,9 @@ def run_model(args, prepared):
 
     def dataset(which):
         from lerobot.bamboo_sorting.policy.joint_training import load_prepared_dataset
-        return load_prepared_dataset(prepared[which], video_backend=args.video_backend)
+        return load_prepared_dataset(prepared[which], video_backend=args.video_backend,
+            preclose_loss_weight=args.preclose_loss_weight if which == "train" else None,
+            preclose_frames=args.preclose_frames)
 
     def loader(ds, shuffle=False):
         return DataLoader(ds, batch_size=args.batch_size, shuffle=shuffle, num_workers=0,
@@ -173,6 +189,8 @@ def run_model(args, prepared):
             setattr(cfg, name, getattr(joint_cfg, name))
         cfg.load_vlm_weights = False
         cfg.vlm_model_name = str(args.vlm_path.resolve())
+        if args.learning_rate is not None:
+            cfg.optimizer_lr = args.learning_rate
         policy = SmolVLAPolicy.from_pretrained(args.base_path, config=cfg, local_files_only=True, strict=True)
         if args.stage == "smoke":
             stats = {key: {"mean": [0] * GRIPPER_INDEX + [50], "std": [1] * GRIPPER_INDEX + [50],
@@ -221,7 +239,9 @@ def run_model(args, prepared):
                         raw = next(iterator)
                     if any(task != JOINT_TASK for task in raw["task"]):
                         raise ValueError("unexpected training instruction")
-                    loss, _ = policy(pre(raw))
+                    weights = raw.get("action_loss_weights")
+                    extra = {} if weights is None else {"action_loss_weights": weights}
+                    loss, loss_info = policy(pre(raw), **extra)
                     if not torch.isfinite(loss):
                         raise ValueError("nonfinite training loss")
                     loss.backward()
@@ -229,8 +249,13 @@ def run_model(args, prepared):
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
-                    stream.write(json.dumps({"step": step, "loss": float(loss.detach()), "gradient_norm": float(norm),
-                        "lr": optimizer.param_groups[0]["lr"], "elapsed_s": time.monotonic() - start}) + "\n")
+                    record = {"step": step, "loss": float(loss.detach()), "gradient_norm": float(norm),
+                        "lr": optimizer.param_groups[0]["lr"], "elapsed_s": time.monotonic() - start}
+                    if weights is not None:
+                        record.update(uniform_valid_loss=loss_info["uniform_valid_loss"],
+                            sample_keys=raw["training_sample_key"],
+                            weighted_valid_timesteps=int(((weights > 1) & ~raw["action_is_pad"]).sum()))
+                    stream.write(json.dumps(record) + "\n")
                     stream.flush()
                     if step == 1 or step % 100 == 0:
                         print(f"step={step} loss={float(loss.detach()):.6f}", flush=True)

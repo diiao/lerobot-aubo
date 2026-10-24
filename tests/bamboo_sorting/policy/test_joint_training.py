@@ -182,6 +182,26 @@ def test_concat_preserves_source_local_action_chunks(monkeypatch):
     assert ds[2]["action"].eq(9).all()
 
 
+def test_preclose_weights_follow_future_expert_frame_and_source(tmp_path):
+    import json
+    import torch
+    from lerobot.bamboo_sorting.policy.joint_training import PrecloseWeightedDataset
+    original = {"episode_index": 0, "frame_index": 5, "action": torch.arange(350).reshape(50, 7),
+                "action_is_pad": torch.arange(50) >= 45}
+    datasets = []
+    for name, close in (("source_a", 12), ("source_b", 23)):
+        annotation = tmp_path/f"{name}.json"
+        annotation.write_text(json.dumps({"episodes": [{"episode_index": 0, "close_frame": close}]}))
+        datasets.append(PrecloseWeightedDataset([original], dict(root=name,episodes=[0],target_annotations=str(annotation)),
+            weight=3.,frames_before_close=10))
+    a, b = datasets[0][0], datasets[1][0]
+    assert torch.where(a["action_loss_weights"] == 3)[0].tolist() == list(range(8))
+    assert torch.where(b["action_loss_weights"] == 3)[0].tolist() == list(range(8, 19))
+    assert a["training_sample_key"] == "source_a/0/5" and b["training_sample_key"] == "source_b/0/5"
+    assert "action_loss_weights" not in original
+    assert a["action"] is original["action"] and a["action_is_pad"] is original["action_is_pad"]
+
+
 @pytest.mark.parametrize("multiple_sources", [False, True])
 @pytest.mark.parametrize("target_conditioned", [False, True])
 def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monkeypatch, multiple_sources, target_conditioned):
@@ -216,12 +236,15 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
             self.config.save_pretrained(path)
             torch.save(self.state_dict(), path / "toy.pt")
 
-        def forward(self, batch, reduction="mean"):
+        def forward(self, batch, reduction="mean", action_loss_weights=None):
             image_key = "target_global_rgb" if target_conditioned else "global_rgb"
             assert f"observation.images.{image_key}" in batch
             assert ("observation.images.global_rgb" in batch) != target_conditioned
-            loss = (self.value - batch["action"]).square().mean((1, 2))
-            return (loss if reduction == "none" else loss.mean()), {}
+            from lerobot.policies.smolvla.losses import masked_action_loss
+            errors = (self.value - batch["action"]).square()
+            uniform = errors.mean((1, 2))
+            loss = masked_action_loss(errors, 7, batch["action_is_pad"], timestep_weights=action_loss_weights)
+            return (loss if reduction == "none" else loss.mean()), {"uniform_valid_loss":float(uniform.mean().detach())}
 
         def predict_action_chunk(self, batch):
             return self.value.expand(len(batch["observation.state"]), 50, 7)
@@ -270,6 +293,13 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
             {**prepared["train"], "root": str(tmp_path / "train2")}], "frames": 6}
         prepared["validation"] = {"sources": [prepared["validation"],
             {**prepared["validation"], "root": str(tmp_path / "validation2")}], "frames": 6}
+    training_extra = []
+    if multiple_sources and target_conditioned:
+        annotation = tmp_path/"close_frames.json"
+        annotation.write_text(json.dumps({"episodes":[{"episode_index":0,"close_frame":1}]}))
+        for source in prepared["train"]["sources"]:
+            source["target_annotations"] = str(annotation)
+        training_extra = ["--preclose-loss-weight","3","--learning-rate","1e-5"]
     monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_training.prepare_training_data", lambda *args, **kwargs: prepared)
     data_args = ["--train-root", str(tmp_path / "train"), "--train-evidence", str(tmp_path / "te"),
                  "--validation-root", str(tmp_path / "validation"), "--validation-evidence", str(tmp_path / "ve")]
@@ -284,13 +314,18 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
     output = tmp_path / "output"
     entry = _entry()
     assert entry.main(["--stage", "train", "--steps", "2", "--batch-size", "2",
-        "--base-path", str(base), "--vlm-path", str(vlm), "--output", str(output), *data_args]) == 0
+        "--base-path", str(base), "--vlm-path", str(vlm), "--output", str(output), *data_args, *training_extra]) == 0
     assert json.loads((output / "reload_check.json").read_text())["identical_prediction"]
     from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
     from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
     assert json.loads((output / "final/aubo_joint_contract.json").read_text()) == (
         target_policy_contract_record() if target_conditioned else joint_contract_record())
     assert len((output / "training.jsonl").read_text().splitlines()) == 2
+    if training_extra:
+        assert json.loads((output/"final/config.json").read_text())["optimizer_lr"] == 1e-5
+        logs = [json.loads(line) for line in (output/"training.jsonl").read_text().splitlines()]
+        assert all(len(row["sample_keys"]) == 2 for row in logs)
+        assert sum(row["weighted_valid_timesteps"] for row in logs) > 0
     assert json.loads((output / "validation.json").read_text())["activate_samples"] == (2 if multiple_sources else 1)
     prediction_sources = np.load(output / "heldout_predictions.npz")["source_index"]
     assert prediction_sources.tolist() == ([0, 0, 0, 1, 1, 1] if multiple_sources else [0, 0, 0])

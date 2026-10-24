@@ -364,7 +364,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         return self.config.rtc_config is not None and self.config.rtc_config.enabled
 
     def forward(
-        self, batch: dict[str, Tensor], noise=None, time=None, reduction: str = "mean"
+        self, batch: dict[str, Tensor], noise=None, time=None, reduction: str = "mean", action_loss_weights=None
     ) -> dict[str, Tensor]:
         """Do a full training forward pass to compute the loss.
 
@@ -401,8 +401,13 @@ class SmolVLAPolicy(PreTrainedPolicy):
             actions_is_pad,
             execution_horizon=self.config.n_action_steps,
             execution_loss_fraction=self.config.execution_loss_fraction,
+            timestep_weights=action_loss_weights,
         )
         loss_dict["losses_after_rm_padding"] = per_sample_loss.detach().mean().item()
+        if action_loss_weights is not None:
+            loss_dict["uniform_valid_loss"] = masked_action_loss(
+                losses, self.config.action_feature.shape[0], actions_is_pad
+            ).detach().mean().item()
 
         if reduction == "none":
             # Return per-sample losses (B,) by averaging over time and action dims

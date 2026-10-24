@@ -187,12 +187,41 @@ def prepare_training_manifest(path, *, target_conditioned=False):
     return result
 
 
-def load_prepared_dataset(record, *, video_backend="pyav"):
+class PrecloseWeightedDataset:
+    """Training-only weights tied to expert future frame indices, never predicted closure."""
+    def __init__(self, dataset, record, *, weight, frames_before_close):
+        self.dataset = dataset
+        self.weight = float(weight)
+        self.frames_before_close = frames_before_close
+        self.source_name = Path(record["root"]).name
+        annotations = json.loads(Path(record["target_annotations"]).read_text())
+        self.close_frames = {ep["episode_index"]: ep["close_frame"] for ep in annotations["episodes"]
+                             if ep["episode_index"] in record["episodes"]}
+        if set(self.close_frames) != set(record["episodes"]):
+            raise ValueError("preclose weights require every selected episode's expert close frame")
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        import torch
+        raw = self.dataset[index]
+        ep, frame = int(raw["episode_index"]), int(raw["frame_index"])
+        future_frames = frame + torch.arange(raw["action"].shape[0])
+        close = self.close_frames[ep]
+        selected = (future_frames >= close-self.frames_before_close) & (future_frames <= close)
+        weights = torch.where(selected, self.weight, 1.0).to(torch.float32)
+        return {**raw, "action_loss_weights": weights,
+                "training_sample_key": f"{self.source_name}/{ep}/{frame}"}
+
+
+def load_prepared_dataset(record, *, video_backend="pyav", preclose_loss_weight=None, preclose_frames=10):
     """Each source constructs action chunks before concatenation: no cross-source tails."""
     from torch.utils.data import ConcatDataset
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     if "sources" in record:
-        ds = ConcatDataset([load_prepared_dataset(source, video_backend=video_backend)
+        ds = ConcatDataset([load_prepared_dataset(source, video_backend=video_backend,
+                            preclose_loss_weight=preclose_loss_weight, preclose_frames=preclose_frames)
                             for source in record["sources"]])
     else:
         ds = LeRobotDataset("local/aubo-joint", root=record["root"], episodes=record["episodes"],
@@ -200,6 +229,8 @@ def load_prepared_dataset(record, *, video_backend="pyav"):
         if "target_frames" in record:
             from .joint_target_policy import JointTargetDataset
             ds = JointTargetDataset(ds, record["target_frames"])
+        if preclose_loss_weight is not None:
+            ds = PrecloseWeightedDataset(ds, record, weight=preclose_loss_weight, frames_before_close=preclose_frames)
     if len(ds) != record["frames"]:
         raise ValueError("selected dataset frame count changed")
     return ds

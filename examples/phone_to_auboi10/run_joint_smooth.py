@@ -15,6 +15,7 @@ from lerobot.bamboo_sorting.model_profiles import (
 )
 from lerobot.bamboo_sorting.policy.joint_target_policy import TargetInputSession
 from lerobot.bamboo_sorting.runtime.continuous import MAX_TARGET_REOBSERVATIONS, execute_continuous
+from lerobot.bamboo_sorting.runtime.joint_target_runtime import LIVE_MOTION_RADIUS_PX
 from lerobot.bamboo_sorting.runtime.joint_smooth import (
     DT, MAX_ACCEL, MAX_CAMERA_SKEW, MAX_PREDICTION_AGE, MAX_SPEED, MAX_TCP_SPEED,
     MAX_TRACKING_ERROR_DEG, MAX_WITHOUT_PREDICTION,
@@ -191,6 +192,9 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
         plan.update(empty_target_reobservations_per_target=MAX_TARGET_REOBSERVATIONS,
             empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
+    if args.track_target_motion:
+        plan['target_motion_support_policy']='diagnostic_only'
+        plan['target_motion_search_radius_px']=LIVE_MOTION_RADIUS_PX
     return plan
 
 

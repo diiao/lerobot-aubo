@@ -15,6 +15,7 @@ from ..model_profiles import (
     TARGET_STACK_MODEL_SHA,
     TARGET_STACK_PYTHONPATH,
     TARGET_STACK_REMOTE_ROOT,
+    TARGET_STACK_SEGMENTATION_CHECKPOINT,
     TARGET_STACK_SERVICE_ROOT,
 )
 from ..perception.target_seed import reviewed_masks
@@ -78,5 +79,6 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
         options.update(remote_root=TARGET_STACK_REMOTE_ROOT, checkpoint=TARGET_STACK_CHECKPOINT,
                        expected_sha256=TARGET_STACK_MODEL_SHA,
                        inference_script=TARGET_STACK_SERVICE_ROOT + '/joint_inference_stdio.py',
-                       pythonpath=TARGET_STACK_PYTHONPATH)
+                       pythonpath=TARGET_STACK_PYTHONPATH,
+                       segmentation_checkpoint=TARGET_STACK_SEGMENTATION_CHECKPOINT)
     return seed, options

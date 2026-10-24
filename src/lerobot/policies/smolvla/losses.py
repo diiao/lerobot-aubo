@@ -13,6 +13,7 @@ def masked_action_loss(
     *,
     execution_horizon: int | None = None,
     execution_loss_fraction: float | None = None,
+    timestep_weights: Tensor | None = None,
 ) -> Tensor:
     """Reduce real coordinates, optionally balancing execution and future groups.
 
@@ -25,7 +26,7 @@ def masked_action_loss(
     if isinstance(action_dim, bool) or not isinstance(action_dim, int) or not 0 < action_dim <= losses.shape[-1]:
         raise ValueError("action_dim must select real action coordinates")
     real = losses[..., :action_dim]
-    if action_is_pad is None and execution_loss_fraction is None:
+    if action_is_pad is None and execution_loss_fraction is None and timestep_weights is None:
         return real.mean(dim=(1, 2))
     if action_is_pad is None:
         valid = torch.ones(losses.shape[:2], dtype=torch.bool, device=losses.device)
@@ -37,6 +38,16 @@ def masked_action_loss(
     if (count == 0).any():
         raise ValueError("each sample must contain a non-padded action")
     masked = real.masked_fill(~valid[..., None], 0)
+    if timestep_weights is not None:
+        if execution_loss_fraction is not None:
+            raise ValueError("choose timestep weights or execution-group weighting")
+        if timestep_weights.shape != losses.shape[:2]:
+            raise ValueError("timestep_weights must have shape (batch, time)")
+        weights = timestep_weights.to(device=losses.device, dtype=losses.dtype)
+        if not torch.isfinite(weights).all() or (weights <= 0).any():
+            raise ValueError("timestep_weights must be finite and positive")
+        weights = weights.masked_fill(~valid, 0)
+        return (masked * weights[..., None]).sum(dim=(1, 2)) / (weights.sum(dim=1) * action_dim)
     if execution_loss_fraction is None:
         return masked.sum(dim=(1, 2)) / (count * action_dim)
     if (

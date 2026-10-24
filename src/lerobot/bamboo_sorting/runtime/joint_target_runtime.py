@@ -15,6 +15,9 @@ from ..policy.joint_target import outline_target_images
 from ..policy.joint_target_policy import target_policy_contract_record
 
 
+LIVE_MOTION_RADIUS_PX = 16
+
+
 class TargetForegroundMissing(ValueError):
     """Only a same-frame multi-target empty assignment; never a model/IO error."""
 
@@ -136,7 +139,7 @@ class FreshTargetInputs:
             # The human seed remains unchanged, and only CURRENT foreground can
             # become the policy outline.
             from ..perception.joint_target_separation import MultiStripSeparation
-            self.separator = MultiStripSeparation(motion_masks)
+            self.separator = MultiStripSeparation(motion_masks, motion_radius_px=LIVE_MOTION_RADIUS_PX)
             self.separator.last_frame = self.index-1
             evidence['motion_reference'] = {k:motion_reference[k] for k in
                 ('frame_id', 'source', 'human_reviewed', 'diagnostics', 'failures')}
@@ -175,15 +178,16 @@ class FreshTargetInputs:
                     raise ValueError('target association failed: selected target has no current foreground: ' + self.target_id)
                 if motion_masks is not None:
                     failures = motion_reference['failures']
-                    # Failed optical flow can only fall back to the last location
-                    # when this frame's segmentation still supports that region.
-                    # A tiny nonempty fragment cannot certify a moved identity.
+                    # Visibility can shrink as the gripper approaches. Keep
+                    # overlap ratios as diagnostics, never a separate stop gate.
+                    # Identity separation and the selected-empty check above
+                    # still require actual foreground from this frame.
                     support = {t: float(np.count_nonzero(masks[t] & m) / m.sum())
                                for t, m in motion_masks.items()}
-                    evidence['motion_reference']['current_foreground_support'] = support
-                    for target in motion_masks:
-                        if support[target] < (.5 if target in failures else .25):
-                            raise ValueError('target motion reference lacks current foreground support: ' + target)
+                    insufficient = [t for t in motion_masks
+                                    if support[t] < (.5 if t in failures else .25)]
+                    evidence['motion_reference'].update(current_foreground_support=support,
+                        support_policy='diagnostic_only', insufficient_support_targets=insufficient)
                 prepared = outline_target_images(images, mask)
                 return {'observation.state':frame['observation.state'], 'task':frame['task'],
                         'target_contract':target_policy_contract_record(), 'target_input':dict(metadata),

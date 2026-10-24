@@ -237,8 +237,10 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
         assert options['expected_sha256'] == joint_target_live_setup.STACK_MODEL_SHA
         assert options['inference_script'] == joint_target_live_setup.STACK_SERVICE_ROOT + '/joint_inference_stdio.py'
         assert options['remote_root'] == joint_target_live_setup.STACK_REMOTE_ROOT
+        assert options['segmentation_checkpoint'] == joint_target_live_setup.TARGET_STACK_SEGMENTATION_CHECKPOINT
     else:
         assert '/multi_foreground/' in options['inference_script']
+        assert options['segmentation_checkpoint'] == joint_target_live_setup.SEGMENTATION_CHECKPOINT
     FreshTargetInputs(seed, forbidden)  # No segmenter call at construction, including last remaining strip.
     args = ['--model', model, '--target-snapshot', str(tmp_path), '--target-selections', str(labels),
             '--target-id', 's-001']
@@ -248,6 +250,7 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
     plan = json.loads(capsys.readouterr().out)
     assert plan['target_selection_mode'] == 'multi_foreground' and plan['requested_suction_cycles'] == 1
     assert plan['checkpoint'] == options['checkpoint']
+    assert plan['segmentation_checkpoint'] == options['segmentation_checkpoint']
     if model == 'target-stack':
         old_args = [*args]
         old_args[1] = 'target-pair'
@@ -255,6 +258,7 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
         old_plan = json.loads(capsys.readouterr().out)
         assert {k for k in plan if plan[k] != old_plan.get(k)} == {
             'model', 'checkpoint', 'checkpoint_sha256', 'inference_script',
+            'segmentation_checkpoint',
             'empty_target_reobservations_per_target','empty_target_policy'}
         with pytest.raises(SystemExit):
             m.main([*args, '--cycles', '3'])
@@ -268,15 +272,18 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
     assert {k: v for k, v in tolerant.items() if v != plan[k]} == expected_changes
     if model == 'target-stack':
         sequence = [t['target_id'] for t in targets]
-        sequence_args = args[:-2] + ['--target-sequence', *sequence]
+        sequence_args = args[:-2] + ['--target-sequence', *sequence, '--track-target-motion']
         assert m.main(sequence_args) == 0
         sequence_plan = json.loads(capsys.readouterr().out)
         assert sequence_plan['requested_suction_cycles'] == count
         assert sequence_plan['automatic_home'] == (count > 1)
         assert sequence_plan['remaining_targets_by_pick'] == [sequence[i:] for i in range(count)]
+        assert sequence_plan['target_motion_support_policy'] == 'diagnostic_only'
+        assert sequence_plan['target_motion_search_radius_px'] == 16
         for i, target in enumerate(sequence):
-            filtered, _ = joint_target_live_setup.prepare_live_setup(
+            filtered, filtered_options = joint_target_live_setup.prepare_live_setup(
                 tmp_path, labels, target, multi_separation=True, model=model, remaining_target_ids=sequence[i:])
+            assert filtered_options['segmentation_checkpoint'] == options['segmentation_checkpoint']
             FreshTargetInputs(filtered, forbidden)
             assert [t['target_id'] for t in filtered['visible_targets']] == sequence[i:]
         assert json.loads(labels.read_text())['targets'] == targets
