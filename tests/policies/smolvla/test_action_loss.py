@@ -1,7 +1,120 @@
 import pytest
 import torch
 
-from lerobot.policies.smolvla.losses import masked_action_loss
+from lerobot.policies.smolvla.losses import holding_action_loss, masked_action_loss
+
+
+def test_gripper_weighting_preserves_arm_gradients_and_supervises_release():
+    errors = torch.arange(2 * 5 * 32, dtype=torch.float64).reshape(2, 5, 32).requires_grad_()
+    pad = torch.tensor([[False, False, False, False, True], [False, False, True, True, True]])
+    weights = torch.tensor([[1., 3., 3., 1., 999.], [1., 3., 1., 1., 1.]])
+    uniform = masked_action_loss(errors, 7, pad)
+    weighted = masked_action_loss(errors, 7, pad, gripper_weights=weights)
+    original_grad = torch.autograd.grad(uniform.sum(), errors, retain_graph=True)[0]
+    actual_grad = torch.autograd.grad(weighted.sum(), errors)[0]
+    torch.testing.assert_close(actual_grad[..., :6], original_grad[..., :6], rtol=0, atol=0)
+    assert torch.count_nonzero(actual_grad[pad]) == torch.count_nonzero(actual_grad[..., 7:]) == 0
+    torch.testing.assert_close(actual_grad[0, :4, 6], weights[0, :4].double() / (8 * 7))
+    assert actual_grad[0, 3, 6] > 0  # unweighted release still supervised
+    torch.testing.assert_close(masked_action_loss(errors, 7, pad, gripper_weights=torch.ones(2, 5)),
+                               uniform, rtol=0, atol=0)
+    with pytest.raises(ValueError, match="choose gripper"):
+        masked_action_loss(errors, 7, pad, gripper_weights=weights, timestep_weights=weights)
+
+
+def test_holding_loss_separates_constant_offset_from_drift_and_masks_unused_rows():
+    expert = torch.zeros(2, 5, 32, dtype=torch.float64)
+    expert[:, :, :6] = torch.arange(5)[:, None] * .001  # preserve expert micro-motion
+    pad = torch.tensor([[False, False, False, False, True], [False, False, False, True, True]])
+    pairs = torch.tensor([[True, True, False, True], [False, False, False, True]])
+    constant = expert + 2
+    torch.testing.assert_close(holding_action_loss(constant, expert, pairs, pad), torch.zeros(2, dtype=torch.float64), atol=1e-25, rtol=0)
+    assert masked_action_loss((constant - expert).square(), 7, pad).min() > 0
+    drift = expert.clone()
+    drift[0, :, :6] += torch.arange(5)[:, None] * .5
+    drift[pad] = float("nan")
+    drift[..., 6:] = float("nan")  # gripper and padded dimensions have no auxiliary gradient
+    drift.requires_grad_()
+    result = holding_action_loss(drift, expert, pairs, pad)
+    torch.testing.assert_close(result, torch.tensor([.125, 0.], dtype=torch.float64))
+    result.sum().backward()
+    assert torch.isfinite(drift.grad).all()
+    assert torch.count_nonzero(drift.grad[pad]) == torch.count_nonzero(drift.grad[..., 6:]) == 0
+    assert torch.count_nonzero(drift.grad[0, 3]) == torch.count_nonzero(drift.grad[1]) == 0
+
+
+@pytest.mark.parametrize("flow_time", [0., .1, .5, 1.])
+def test_reconstructed_hold_gradient_scales_with_noise_time_and_stays_bounded(flow_time):
+    generator = torch.Generator().manual_seed(7)
+    expert = torch.randn(2, 50, 32, generator=generator, dtype=torch.float64)
+    noise = torch.randn(2, 50, 32, generator=generator, dtype=torch.float64)
+    target = noise - expert
+    velocity = (target + torch.randn(2, 50, 32, generator=generator, dtype=torch.float64)).requires_grad_()
+    pairs = torch.ones(2, 49, dtype=torch.bool)
+    pairs[1, 1:] = False  # a sparse hold does not amplify gradients
+    estimate = flow_time * noise + (1-flow_time) * expert - flow_time * velocity
+    base = masked_action_loss((velocity - target).square(), 7).mean()
+    auxiliary = .1 * holding_action_loss(estimate, expert, pairs).mean()
+    base_grad = torch.autograd.grad(base, velocity, retain_graph=True)[0]
+    aux_grad = torch.autograd.grad(auxiliary, velocity)[0]
+    bound = 4 * .1 * 7 / 6 * flow_time**2
+    assert aux_grad.norm() <= (bound + 1e-12) * base_grad.norm()
+    assert torch.count_nonzero(aux_grad[..., 6:]) == 0
+    perfect = flow_time * noise + (1-flow_time) * expert - flow_time * target
+    torch.testing.assert_close(holding_action_loss(perfect, expert, pairs), torch.zeros(2, dtype=torch.float64), atol=1e-28, rtol=0)
+
+
+def _production_forward(class_name):
+    """Execute the actual forward method with fake tensors, without transformers/model downloads."""
+    import ast
+    import math
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[3] / "src/lerobot/policies/smolvla/modeling_smolvla.py"
+    tree = ast.parse(path.read_text())
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
+    method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "forward")
+    namespace = dict(torch=torch, Tensor=torch.Tensor, math=math, F=torch.nn.functional,
+                     masked_action_loss=masked_action_loss, holding_action_loss=holding_action_loss,
+                     OBS_STATE="observation.state", ACTION="action",
+                     OBS_LANGUAGE_TOKENS="observation.language.tokens",
+                     OBS_LANGUAGE_ATTENTION_MASK="observation.language.attention_mask",
+                     make_att_2d_masks=lambda pad, att: pad[:, :, None] & pad[:, None, :])
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
+    return namespace["forward"]
+
+
+def test_actual_training_forward_wires_clean_estimate_without_changing_default_or_rng():
+    from types import SimpleNamespace
+    flow_forward = _production_forward("VLAFlowMatching")
+    policy_forward = _production_forward("SmolVLAPolicy")
+    actions = torch.zeros(1, 4, 32)
+    noise = torch.ones_like(actions)
+    time = torch.tensor([.5])
+    velocity = torch.arange(4).float()[None, :, None].expand_as(actions).clone().requires_grad_()
+    embeds = lambda *a, **kw: (torch.zeros(1, 4, 32), torch.ones(1, 4, dtype=torch.bool), torch.zeros(1, 4, dtype=torch.bool))
+    flow = SimpleNamespace(config=SimpleNamespace(chunk_size=4), embed_prefix=embeds, embed_suffix=embeds,
+        vlm_with_expert=SimpleNamespace(forward=lambda **kw: ((None, velocity), None)), action_out_proj=lambda x: x)
+    fake = SimpleNamespace(config=SimpleNamespace(adapt_to_pi_aloha=False, action_feature=SimpleNamespace(shape=(7,)),
+        action_representation="absolute", execution_loss_fraction=None, n_action_steps=1),
+        prepare_images=lambda b: (None, None), prepare_state=lambda b: None, prepare_action=lambda b: actions,
+        model=SimpleNamespace(forward=lambda *a, **kw: flow_forward(flow, *a, **kw)))
+    batch = {"observation.language.tokens": None, "observation.language.attention_mask": None,
+             "action_is_pad": torch.tensor([[False, False, False, True]])}
+    rng = torch.get_rng_state().clone()
+    base, _ = policy_forward(fake, batch, noise=noise, time=time)
+    disabled, _ = policy_forward(fake, batch, noise=noise, time=time, holding_loss_coefficient=0.)
+    torch.testing.assert_close(base, disabled, rtol=0, atol=0)
+    actual, info = policy_forward(fake, batch, noise=noise, time=time, holding_loss_coefficient=.1,
+                                  holding_pair_mask=torch.ones(1, 3, dtype=torch.bool), reduction="none")
+    torch.testing.assert_close(actual, base[None] + .1 * torch.tensor([2 * .25 / 3]))
+    assert info["holding_loss"] == pytest.approx(2 * .25 / 3)
+    actual.sum().backward()
+    assert torch.count_nonzero(velocity.grad[:, 3]) == torch.count_nonzero(velocity.grad[..., 7:]) == 0
+    closed, info = policy_forward(fake, batch, noise=noise, time=time, gripper_loss_weights=torch.tensor([[1., 3., 3., 1.]]))
+    expected = masked_action_loss((noise-actions-velocity).square(), 7, batch["action_is_pad"],
+                                  gripper_weights=torch.tensor([[1., 3., 3., 1.]])).mean()
+    torch.testing.assert_close(closed, expected)
+    assert "gripper_weighted_loss" in info and torch.equal(rng, torch.get_rng_state())
 
 
 def test_unused_coordinates_have_no_loss_or_gradient():

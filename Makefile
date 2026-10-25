@@ -51,7 +51,7 @@ PYTHON_PATH := $(shell which python)
 # If uv is installed and a virtual environment exists, use it
 UV_CHECK := $(shell command -v uv)
 ifneq ($(UV_CHECK),)
-	PYTHON_PATH := $(shell .venv/bin/python)
+	PYTHON_PATH := $(shell .venv/bin/python -c 'import sys; print(sys.executable)')
 endif
 
 export PATH := $(dir $(PYTHON_PATH)):$(PATH)
