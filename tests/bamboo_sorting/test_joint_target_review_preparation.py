@@ -105,13 +105,19 @@ def test_saved_issue_cannot_be_bypassed_by_omitting_issue_from_review(tmp_path):
  assert not row['reviewed']
 
 
-def test_multi_seed_import_separation_review_and_runtime_share_pixels(tmp_path):
+@pytest.mark.parametrize('strip_count', [3, 4, 6])
+def test_multi_seed_import_separation_review_and_runtime_share_pixels(tmp_path, strip_count):
  from tests.bamboo_sorting.perception_fakes import crossing_seeds, instance_map
  from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
- masks=crossing_seeds();instances,segments=instance_map(masks)
+ masks=crossing_seeds()
+ for i in range(4,strip_count+1):
+  mask=np.zeros((480,640),bool);mask[100:400,40+(i-4)*50:52+(i-4)*50]=True
+  masks[f's-{i:03}']=mask
+ target='s-002' if strip_count==3 else f's-{strip_count:03}'
+ instances,segments=instance_map(masks)
  for segment in segments:segment['pixels']=int((instances==segment['mask_id']).sum())
- s=setup(tmp_path,2);ep=s['episodes'][0];ep.update(target_id='s-002',pick_step=1,available_target_count=2)
- for row in ep['frames']:row['target_id']='s-002'
+ s=setup(tmp_path,2);ep=s['episodes'][0];ep.update(target_id=target,pick_step=7,available_target_count=strip_count-1)
+ for row in ep['frames']:row['target_id']=target
  p=prediction(tmp_path,s,[instances,instances],[segments,segments]);m.import_predictions(tmp_path,s,p)
  assert ep['frames'][0]['instance_ids_base64']
  selection=dict(frame_id=ep['frames'][0]['frame_id'],human_reviewed=True,reviewed_at='synthetic',
@@ -120,15 +126,15 @@ def test_multi_seed_import_separation_review_and_runtime_share_pixels(tmp_path):
  m.write(export,dict(schema='aubo_joint_target_review_decisions',source_dataset_root='/example',seeds={'0':selection}))
  m.import_seeds(tmp_path,s,export);m.separate_predictions(tmp_path,s)
  assert not ep['reviewed'] and all(not f['reviewed'] for f in ep['frames'])
- seed=dict(schema='joint_target_live_seed',snapshot_id='synthetic',human_reviewed=True,target_id='s-002',
-           target_selection_mode='multi_foreground',mask_png=encode_mask(masks['s-002']),
-           excluded_mask_png=encode_mask(masks['s-001']|masks['s-003']),
+ seed=dict(schema='joint_target_live_seed',snapshot_id='synthetic',human_reviewed=True,target_id=target,
+           target_selection_mode='multi_foreground',mask_png=encode_mask(masks[target]),
+           excluded_mask_png=encode_mask(np.logical_or.reduce([mask for name,mask in masks.items() if name!=target])),
            visible_targets=[dict(target_id=t,mask_png=encode_mask(mask)) for t,mask in masks.items()])
  runtime=FreshTargetInputs(seed,lambda rgb:(instances,segments))
  images={'observation.images.'+name:np.zeros((480,640,3),np.uint8) for name in ('global_rgb','grasp_rgb')}
  for i,row in enumerate(ep['frames']):
   _,evidence=runtime.prepare(dict(**images,task='test',**{'observation.state':np.zeros(7)}),
-                             dict(frame_id=str(i),target_id='s-002',phase='approach'))
+                             dict(frame_id=str(i),target_id=target,phase='approach'))
   np.testing.assert_array_equal(np.array(Image.open(tmp_path/row['mask_path']))>0,decode_mask(evidence['mask_png']))
  with pytest.raises(ValueError,match='overwrite'):m.separate_predictions(tmp_path,s)
 

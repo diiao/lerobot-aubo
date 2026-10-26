@@ -54,3 +54,18 @@ TARGET_STACK_SERVICE_ROOT = TARGET_STACK_REMOTE_ROOT + '/artifacts/joint_stack_l
 TARGET_STACK_PYTHONPATH = (
     TARGET_STACK_REMOTE_ROOT + '/src:/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/deps'
 )
+TARGET_STACK_THIN_CHECKPOINT = TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_target_thin_outline_smolvla/final'
+TARGET_STACK_THIN_MODEL_SHA = '992f69d28e043bc4c758e44d655a0605c113184441eeddc9983d347d5c3e378a'
+TARGET_STACK_THIN_SERVICE_ROOT = TARGET_STACK_REMOTE_ROOT + '/artifacts/joint_stack_thin_outline_live_service'
+TARGET_STACK_THIN_PYTHONPATH = (
+    TARGET_STACK_THIN_SERVICE_ROOT + '/src:/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/deps'
+)
+
+# Same training run and joint contract as target-stack, but raw dual RGB only.
+# The shared stack worker already supports the plain contract and full action
+# chunk, so no separate remote service or segmentation dependency is needed.
+BASELINE_STACK_CHECKPOINT = TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_baseline_smolvla/final'
+BASELINE_STACK_MODEL_SHA = '9c4a474c0702bddbe8c44c68b4306bbc3febad967474a6473275af5778151b14'
+BASELINE_STACK_SERVICE_ROOT = TARGET_STACK_REMOTE_ROOT + '/artifacts/joint_stack_live_service'
+BASELINE_STACK_INFERENCE_SCRIPT = BASELINE_STACK_SERVICE_ROOT + '/joint_inference_stdio.py'
+BASELINE_STACK_PYTHONPATH = TARGET_STACK_REMOTE_ROOT + '/src'

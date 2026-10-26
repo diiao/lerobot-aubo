@@ -17,6 +17,10 @@ from ..model_profiles import (
     TARGET_STACK_REMOTE_ROOT,
     TARGET_STACK_SEGMENTATION_CHECKPOINT,
     TARGET_STACK_SERVICE_ROOT,
+    TARGET_STACK_THIN_CHECKPOINT,
+    TARGET_STACK_THIN_MODEL_SHA,
+    TARGET_STACK_THIN_PYTHONPATH,
+    TARGET_STACK_THIN_SERVICE_ROOT,
 )
 from ..perception.target_seed import reviewed_masks
 from ..mask_codec import encode_mask
@@ -29,9 +33,13 @@ STACK_SERVICE_ROOT = TARGET_STACK_SERVICE_ROOT
 
 
 def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separation=False, multi_separation=False,
-                       model='target-pair', remaining_target_ids=None, motion_tracking=False):
+                       model='target-pair', remaining_target_ids=None, motion_tracking=False, outline_width_px=2):
     if model not in ('target-pair', 'target-stack'):
         raise ValueError('unknown target model')
+    if type(outline_width_px) is not int or outline_width_px not in (1, 2):
+        raise ValueError('target outline width must be 1 or 2 pixels')
+    if outline_width_px == 1 and model != 'target-stack':
+        raise ValueError('thin outline checkpoint requires target-stack')
     if model == 'target-stack' and not multi_separation:
         raise ValueError('stack model requires visible seeds for all remaining strips')
     if motion_tracking and (model != 'target-stack' or not multi_separation):
@@ -81,4 +89,8 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
                        inference_script=TARGET_STACK_SERVICE_ROOT + '/joint_inference_stdio.py',
                        pythonpath=TARGET_STACK_PYTHONPATH,
                        segmentation_checkpoint=TARGET_STACK_SEGMENTATION_CHECKPOINT)
+        if outline_width_px == 1:
+            options.update(checkpoint=TARGET_STACK_THIN_CHECKPOINT, expected_sha256=TARGET_STACK_THIN_MODEL_SHA,
+                           inference_script=TARGET_STACK_THIN_SERVICE_ROOT + '/joint_inference_stdio.py',
+                           pythonpath=TARGET_STACK_THIN_PYTHONPATH, target_outline_width_px=1)
     return seed, options

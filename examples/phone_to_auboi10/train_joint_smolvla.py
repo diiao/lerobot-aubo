@@ -6,6 +6,7 @@ offline. Smoke uses synthetic data and ZERO optimizer steps, never real capture.
 """
 
 import argparse
+from functools import partial
 import json
 import math
 from pathlib import Path
@@ -19,6 +20,8 @@ def parse_args(argv=None):
                         help="Reuse an audited data_preflight.json with the same manifest; no repeated full hashing")
     parser.add_argument("--target-conditioned", action="store_true",
                         help="Approach-only target outline; every source needs reviewed target_annotations")
+    parser.add_argument("--target-outline-width-px", type=int, choices=(1, 2), default=2,
+                        help="Offline target input candidate; checkpoint records its explicit width (default 2)")
     for name in ("train-root", "train-evidence", "validation-root", "validation-evidence",
                  "train-source-root", "validation-source-root", "base-path", "vlm-path", "output", "checkpoint"):
         parser.add_argument(f"--{name}", type=Path)
@@ -28,44 +31,20 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--video-backend", choices=("pyav", "torchcodec"), default="pyav")
     parser.add_argument("--learning-rate", type=float, help="Override optimizer peak learning rate for an explicit continuation")
-    parser.add_argument("--preclose-loss-weight", type=float,
-                        help="Training-only future-action weight near expert closure; 1 keeps the uniform objective")
-    parser.add_argument("--preclose-frames", type=int, default=10,
-                        help="Expert frames before first close to weight, including the close frame")
-    parser.add_argument("--holding-loss-coefficient", type=float, default=0.,
-                        help="Training-only six-joint clean-action increment loss; 0 disables it")
-    parser.add_argument("--holding-tolerance-deg", type=float, default=.01,
-                        help="Expert max joint distance from close pose defining its contiguous hold")
-    parser.add_argument("--gripper-close-loss-weight", type=float,
-                        help="Training-only last-coordinate weight at expert close and following rows")
-    parser.add_argument("--gripper-close-frames", type=int, default=3,
-                        help="Inclusive close-window length, clipped before the first release")
-    parser.add_argument("--phase-balanced-sampling", action="store_true",
-                        help="Training-only 4/2/1/1 whole/late-hold/close/release input batches; original loss")
-    parser.add_argument("--fit-observations", type=Path,
-                        help="Diagnostic only: JSON sample_keys selecting one fixed training batch; original loss")
+    parser.add_argument("--checkpoint-steps", type=int, nargs="*", default=[],
+                        help="Save intermediate weights at these training updates; final is always saved")
     args = parser.parse_args(argv)
+    if args.target_outline_width_px != 2 and not args.target_conditioned:
+        parser.error("target-outline-width-px requires --target-conditioned")
     if args.steps < 1 or args.batch_size < 1:
         parser.error("steps and batch-size must be positive")
-    for name in ("learning_rate", "preclose_loss_weight", "holding_tolerance_deg", "gripper_close_loss_weight"):
-        value = getattr(args, name)
-        if value is not None and (not math.isfinite(value) or value <= 0):
-            parser.error(f"{name.replace('_', '-')} must be finite and positive")
-    if args.preclose_frames < 0:
-        parser.error("preclose-frames must be nonnegative")
-    if not math.isfinite(args.holding_loss_coefficient) or args.holding_loss_coefficient < 0:
-        parser.error("holding-loss-coefficient must be finite and nonnegative")
-    if args.gripper_close_frames < 1:
-        parser.error("gripper-close-frames must be positive")
-    candidates = [args.preclose_loss_weight is not None, args.holding_loss_coefficient > 0,
-                  args.gripper_close_loss_weight is not None, args.phase_balanced_sampling,
-                  args.fit_observations is not None]
-    if sum(candidates) > 1:
-        parser.error("evaluate training objectives, phase sampling and fixed-observation diagnostics separately")
-    if any(candidates) and (not args.target_conditioned or args.stage not in ("plan", "train")):
-        parser.error("training objectives require target-conditioned plan/train")
-    if args.phase_balanced_sampling and args.batch_size != 8:
-        parser.error("phase-balanced-sampling requires batch-size 8 for the fixed 4/2/1/1 allocation")
+    if args.learning_rate is not None and (not math.isfinite(args.learning_rate) or args.learning_rate <= 0):
+        parser.error("learning-rate must be finite and positive")
+    if (len(set(args.checkpoint_steps)) != len(args.checkpoint_steps)
+            or any(step < 1 or step >= args.steps for step in args.checkpoint_steps)):
+        parser.error("checkpoint-steps must be unique positive updates before the final step")
+    if args.checkpoint_steps and args.stage not in ("plan", "train"):
+        parser.error("checkpoint-steps requires plan/train")
     if args.prepared_data is not None and (args.data_manifest is None or args.stage not in ("plan", "train", "evaluate")):
         parser.error("prepared-data requires a manifest and plan/train/evaluate")
     if args.target_conditioned and args.stage in ("preflight", "train", "evaluate") and args.data_manifest is None:
@@ -96,7 +75,7 @@ def parse_args(argv=None):
             if any(output == p or p in output.parents or output in p.parents for p in protected):
                 parser.error("output must be independent of manifest and source roots")
         for path in (args.train_root, args.validation_root, args.train_evidence, args.validation_evidence, args.prepared_data,
-                     args.base_path, args.vlm_path, args.checkpoint, args.fit_observations):
+                     args.base_path, args.vlm_path, args.checkpoint):
             if path is not None and (output == path.resolve() or path.resolve() in output.parents
                                      or output in path.resolve().parents):
                 parser.error("output must be independent of input roots")
@@ -108,18 +87,9 @@ def main(argv=None):
     plan = {k: str(v.resolve()) if isinstance(v, Path) else v for k, v in vars(args).items()}
     plan.update(fixed_joint_targets_deg={}, state_action_names=["J1", "J2", "J3", "J4", "J5", "J6", "gripper_pos"],
                 chunk_size=50, n_action_steps=1, smoke_optimizer_steps=0, policy_execution_authorized=False)
-    if args.fit_observations:
-        plan["diagnostic_only"] = True
     print(json.dumps(plan, indent=2, ensure_ascii=False))
     if args.stage == "plan":
         return 0
-    fit_keys = None
-    if args.fit_observations:
-        fit_keys = json.loads(args.fit_observations.read_text())["sample_keys"]
-        if (not isinstance(fit_keys, list) or len(fit_keys) != args.batch_size
-                or not all(isinstance(key, str) for key in fit_keys)
-                or len(set(fit_keys)) != len(fit_keys)):
-            raise ValueError("fit-observations requires unique sample_keys with count equal to batch-size")
     from lerobot.bamboo_sorting.policy.joint_training import (
         prepare_training_data, prepare_training_manifest, read_prepared_training_data, write_json,
     )
@@ -127,7 +97,8 @@ def main(argv=None):
     if args.stage != "smoke":
         if args.prepared_data:
             prepared = read_prepared_training_data(args.prepared_data, args.data_manifest,
-                                                  target_conditioned=args.target_conditioned)
+                                                  target_conditioned=args.target_conditioned,
+                                                  target_outline_width_px=args.target_outline_width_px)
         elif args.data_manifest:
             prepared = prepare_training_manifest(args.data_manifest, target_conditioned=args.target_conditioned)
         else:
@@ -137,6 +108,9 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=False)
     write_json(args.output / "plan.json", plan)
     if prepared is not None:
+        if args.target_conditioned:
+            from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+            prepared = {**prepared, "contract": target_policy_contract_record(outline_width_px=args.target_outline_width_px)}
         write_json(args.output / "data_preflight.json", prepared)
     if args.stage == "preflight":
         return 0
@@ -146,11 +120,11 @@ def main(argv=None):
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     os.environ["WANDB_MODE"] = "disabled"
-    run_model(args, prepared, fit_keys=fit_keys)
+    run_model(args, prepared)
     return 0
 
 
-def run_model(args, prepared, *, fit_keys=None):
+def run_model(args, prepared):
     import gc
     import importlib.metadata
     import math
@@ -165,10 +139,11 @@ def run_model(args, prepared, *, fit_keys=None):
     from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
     if args.target_conditioned:
         from lerobot.bamboo_sorting.policy.joint_target_policy import (
-            SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
+            SmolVLAJointTargetOfflineAdapter, SmolVLAJointThinTargetOfflineAdapter, target_policy_contract_record,
         )
-        contract_record = target_policy_contract_record
-        adapter_class = SmolVLAJointTargetOfflineAdapter
+        contract_record = partial(target_policy_contract_record, outline_width_px=args.target_outline_width_px)
+        adapter_class = (SmolVLAJointThinTargetOfflineAdapter if args.target_outline_width_px == 1
+                         else SmolVLAJointTargetOfflineAdapter)
         image_keys = adapter_class.image_keys
     else:
         contract_record, adapter_class, image_keys = joint_contract_record, SmolVLAJointOfflineAdapter, JOINT_IMAGE_KEYS
@@ -205,13 +180,7 @@ def run_model(args, prepared, *, fit_keys=None):
     def dataset(which):
         from lerobot.bamboo_sorting.policy.joint_training import load_prepared_dataset
         return load_prepared_dataset(prepared[which], video_backend=args.video_backend,
-            preclose_loss_weight=args.preclose_loss_weight if which == "train" else None,
-            preclose_frames=args.preclose_frames,
-            holding_loss_coefficient=args.holding_loss_coefficient if which == "train" else 0.,
-            holding_tolerance_deg=args.holding_tolerance_deg,
-            gripper_close_loss_weight=args.gripper_close_loss_weight if which == "train" else None,
-            gripper_close_frames=args.gripper_close_frames,
-            phase_balanced_sampling=args.phase_balanced_sampling and which == "train")
+            target_outline_width_px=args.target_outline_width_px)
 
     def loader(ds, shuffle=False):
         return DataLoader(ds, batch_size=args.batch_size, shuffle=shuffle, num_workers=0,
@@ -219,6 +188,17 @@ def run_model(args, prepared, *, fit_keys=None):
 
     def observation(raw):
         return {k: raw[k] for k in [*images, "observation.state", "task"]}
+
+    def save_checkpoint(path, step):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        policy.save_pretrained(path)
+        pre.save_pretrained(path)
+        post.save_pretrained(path)
+        write_json(path / "aubo_joint_contract.json", contract_record())
+        if prepared is not None:
+            write_json(path / "data_preflight.json", prepared)
+        write_json(path / "training_progress.json", {"optimizer_step": step,
+            "implicit_resume_supported": False, "policy_execution_authorized": False})
 
     if args.stage == "evaluate":
         provenance = json.loads((args.checkpoint / "data_preflight.json").read_text())
@@ -271,21 +251,7 @@ def run_model(args, prepared, *, fit_keys=None):
             del loss
         else:
             train_dataset = dataset("train")
-            if args.fit_observations:
-                from lerobot.bamboo_sorting.policy.joint_training import FixedObservationDataset
-                train_dataset = FixedObservationDataset(train_dataset, fit_keys)
-                write_json(args.output / "fit_observations.json", train_dataset.report)
-            if args.holding_loss_coefficient > 0 or args.gripper_close_loss_weight is not None or args.phase_balanced_sampling:
-                from lerobot.bamboo_sorting.policy.joint_training import training_supervision_record
-                write_json(args.output / "training_supervision.json", training_supervision_record(train_dataset))
-            if args.phase_balanced_sampling:
-                from lerobot.bamboo_sorting.policy.joint_training import PhaseBalancedBatchSampler, phase_sampling_inputs
-                sampler = PhaseBalancedBatchSampler(*phase_sampling_inputs(train_dataset), steps=args.steps, seed=args.seed)
-                write_json(args.output / "sampling_plan.json", sampler.report)
-                batches = DataLoader(train_dataset, batch_sampler=sampler, num_workers=0,
-                                     generator=torch.Generator().manual_seed(args.seed))
-            else:
-                batches = loader(train_dataset, args.fit_observations is None)
+            batches = loader(train_dataset, shuffle=True)
             optimizer = cfg.get_optimizer_preset().build(params)
             warmup = min(1000, max(1, args.steps // 10))
             def scale(step):
@@ -303,18 +269,7 @@ def run_model(args, prepared, *, fit_keys=None):
                         raw = next(iterator)
                     if any(task != JOINT_TASK for task in raw["task"]):
                         raise ValueError("unexpected training instruction")
-                    if args.fit_observations and raw["training_sample_key"] != train_dataset.sample_keys:
-                        raise ValueError("fixed diagnostic batch differs from the selected observations")
-                    if args.phase_balanced_sampling and raw["training_sample_key"] != sampler.report["batches"][step-1]["sample_keys"]:
-                        raise ValueError("loaded input identities differ from the frozen phase sampling plan")
-                    weights = raw.get("action_loss_weights")
-                    extra = {} if weights is None else {"action_loss_weights": weights}
-                    if args.holding_loss_coefficient > 0:
-                        extra.update(holding_pair_mask=raw["holding_pair_mask"],
-                                     holding_loss_coefficient=args.holding_loss_coefficient)
-                    if args.gripper_close_loss_weight is not None:
-                        extra["gripper_loss_weights"] = raw["gripper_loss_weights"]
-                    loss, loss_info = policy(pre(raw), **extra)
+                    loss, _ = policy(pre(raw))
                     if not torch.isfinite(loss):
                         raise ValueError("nonfinite training loss")
                     loss.backward()
@@ -324,42 +279,18 @@ def run_model(args, prepared, *, fit_keys=None):
                     scheduler.step()
                     record = {"step": step, "loss": float(loss.detach()), "gradient_norm": float(norm),
                         "lr": optimizer.param_groups[0]["lr"], "elapsed_s": time.monotonic() - start}
-                    if args.fit_observations:
-                        record.update(diagnostic_only=True, sample_keys=raw["training_sample_key"])
-                    if args.phase_balanced_sampling:
-                        record.update(uniform_valid_loss=record["loss"],
-                                      sample_keys=raw["training_sample_key"], sampling_groups=sampler.groups[step-1])
-                    if weights is not None:
-                        record.update(uniform_valid_loss=loss_info["uniform_valid_loss"],
-                            sample_keys=raw["training_sample_key"],
-                            weighted_valid_timesteps=int(((weights > 1) & ~raw["action_is_pad"]).sum()))
-                    if args.holding_loss_coefficient > 0 or args.gripper_close_loss_weight is not None:
-                        record.update(uniform_valid_loss=loss_info["uniform_valid_loss"],
-                                      sample_keys=raw["training_sample_key"])
-                        if args.holding_loss_coefficient > 0:
-                            record.update(holding_loss=loss_info["holding_loss"],
-                                          scaled_holding_loss=loss_info["scaled_holding_loss"],
-                                          holding_valid_pairs=int(raw["holding_pair_mask"].sum()))
-                        else:
-                            record.update(gripper_weighted_loss=loss_info["gripper_weighted_loss"],
-                                gripper_weighted_valid_timesteps=int(
-                                    ((raw["gripper_loss_weights"] != 1) & ~raw["action_is_pad"]).sum()))
                     stream.write(json.dumps(record) + "\n")
                     stream.flush()
                     if step == 1 or step % 100 == 0:
                         print(f"step={step} loss={float(loss.detach()):.6f}", flush=True)
+                    if step in args.checkpoint_steps:
+                        save_checkpoint(args.output / "checkpoints" / f"step_{step:06d}", step)
+                        print(f"checkpoint_saved step={step}", flush=True)
             torch.save({"step": args.steps, "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()},
                        args.output / "training_state.pt")
             del optimizer, scheduler, loss
         checkpoint = args.output / "final"
-        policy.save_pretrained(checkpoint)
-        pre.save_pretrained(checkpoint)
-        post.save_pretrained(checkpoint)
-        write_json(checkpoint / "aubo_joint_contract.json", contract_record())
-        if prepared is not None:
-            write_json(checkpoint / "data_preflight.json", prepared)
-        if args.fit_observations:
-            write_json(checkpoint / "fit_observations.json", train_dataset.report)
+        save_checkpoint(checkpoint, args.steps if args.stage == "train" else 0)
         torch.manual_seed(args.seed)
         before = post(policy.predict_action_chunk(pre(observation(raw)))).detach().cpu()
         del params, policy, pre, post
@@ -423,8 +354,6 @@ def run_model(args, prepared, *, fit_keys=None):
     write_json(args.output / "validation_by_source.json", {"sources": by_source,
         "physical_success_verified": False, "policy_execution_authorized": False})
     write_json(args.output / "complete.json", {"stage": args.stage, "completed": True,
-        "diagnostic_only": args.fit_observations is not None or (
-            args.checkpoint is not None and (args.checkpoint / "fit_observations.json").is_file()),
         "policy_execution_authorized": False, "physical_success_verified": False})
 
 

@@ -30,7 +30,8 @@ def render_packet(images, evidence, *, index, sensor_times, status='prediction a
         mask = decode_mask(evidence['mask_png'], allow_empty=True)
         pixels = int(mask.sum())
         if pixels:
-            marked = outline_target_images(images, mask)['target_global_rgb']
+            marked = outline_target_images(images, mask,
+                outline_width_px=evidence.get('target_outline_width_px', 2))['target_global_rgb']
             y, x = np.nonzero(mask)
             cv2.rectangle(marked, (int(x.min()), int(y.min())),
                           (int(x.max()), int(y.max())), (255, 220, 0), 1)

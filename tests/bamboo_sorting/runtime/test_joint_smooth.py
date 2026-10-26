@@ -1,5 +1,6 @@
 import json
 import math
+import io
 import numpy as np
 from pathlib import Path
 import pytest
@@ -293,6 +294,218 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
         m.main([*args, '--paired-target-separation'])
 
 
+def test_baseline_stack_plan_matches_target_single_without_target_input(monkeypatch,capsys):
+    m=load_entry(monkeypatch)
+    from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a,**kw:(
+        dict(snapshot_id='seed'),dict(expected_sha256='target-model',checkpoint='target-checkpoint',
+            inference_script='target-service',segmentation_checkpoint='segmentation')))
+    baseline=['--model','baseline-stack']
+    target=['--model','target-stack','--target-snapshot','snapshot','--target-selections','labels','--target-id','A']
+    assert m.main(baseline)==0
+    b=json.loads(capsys.readouterr().out)
+    assert m.main(target)==0
+    t=json.loads(capsys.readouterr().out)
+    assert b['requested_suction_cycles']==t['requested_suction_cycles']==1
+    assert b['max_seconds']==t['max_seconds']==120
+    assert b['action_selection']==t['action_selection']=='observation_age_while_open_first_step_while_closed'
+    assert b['pending_suction_policy']==t['pending_suction_policy']=='continue_inference_while_open'
+    assert b['model']=='baseline-stack' and b['target_conditioned'] is False
+    assert b['checkpoint']==m.BASELINE_STACK_CHECKPOINT
+    assert b['checkpoint_sha256']==m.BASELINE_STACK_MODEL_SHA
+    assert b['inference_script']==m.BASELINE_STACK_INFERENCE_SCRIPT
+    assert b['image_codec']=='rgb_zlib'
+    assert not any(k in b for k in ('target_id','seed_snapshot_id','segmentation_checkpoint','target_phase_source'))
+    shared=('requested_suction_cycles','max_seconds','servo_command_time_s','control_hz',
+        'joint_speed_deg_s','joint_acceleration_deg_s2','tcp_speed_m_s','max_servo_tracking_error_deg',
+        'max_prediction_age_s','watchdog_s','max_camera_skew_s','max_camera_age_ms','max_control_gap_s',
+        'max_state_age_s','inference_timeout_s','stale_state_refreshes_per_step','action_selection',
+        'pending_suction_policy','transport_age_aligned','target_preview','track_target_motion')
+    assert {k:b[k] for k in shared}=={k:t[k] for k in shared}
+    assert {k for k in b if b[k]!=t.get(k)}=={
+        'model','checkpoint_sha256','checkpoint','inference_script','inference_pythonpath',
+        'target_conditioned','target_input','image_codec','transport_phase_source'}
+    assert m.main(baseline+['--transport-age-aligned'])==0
+    transport=json.loads(capsys.readouterr().out)
+    assert transport['action_selection']=='observation_age_open_and_transport'
+    assert {k for k in transport if transport[k]!=b[k]}=={'action_selection','transport_age_aligned'}
+    assert m.main(baseline+['--latency-tolerant'])==0
+    relaxed=json.loads(capsys.readouterr().out)
+    assert m.main(target+['--latency-tolerant'])==0
+    target_relaxed=json.loads(capsys.readouterr().out)
+    assert {k:relaxed[k] for k in shared}=={k:target_relaxed[k] for k in shared}
+    assert relaxed['max_prediction_age_s']==1.5 and relaxed['watchdog_s']==1.5
+    assert relaxed['max_camera_age_ms']==400 and relaxed['max_camera_skew_s']==.3
+    assert relaxed['max_control_gap_s']==.7 and relaxed['max_state_age_s']==.25
+    assert relaxed['inference_timeout_s']==5.
+
+
+@pytest.mark.parametrize('extra',[
+    ['--cycles','2'],['--target-snapshot','x'],['--target-selections','x'],['--target-id','A'],
+    ['--target-sequence','A'],['--target-preview'],['--track-target-motion'],
+    ['--paired-target-separation'],['--multi-target-separation'],
+])
+def test_baseline_stack_rejects_target_options_before_connection(monkeypatch,extra):
+    m=load_entry(monkeypatch)
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    with pytest.raises(SystemExit):m.main(['--model','baseline-stack',*extra])
+
+
+def test_baseline_stack_accepts_one_cycle_without_target_files(monkeypatch,capsys):
+    m=load_entry(monkeypatch)
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    assert m.main(['--model','baseline-stack','--cycles','1'])==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['requested_suction_cycles']==1 and plan['max_seconds']==120
+
+
+def test_thin_stack_plan_selects_complete_profile_without_changing_control(monkeypatch,capsys,tmp_path):
+    m=load_entry(monkeypatch)
+    from lerobot.bamboo_sorting import model_profiles as profiles
+    from lerobot.bamboo_sorting.runtime import live_setup
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',
+        snapshot_id='thin',execution_eligible=False)))
+    labels=tmp_path/'selection.json'
+    labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection',snapshot_id='thin',
+        human_reviewed=True,targets=[dict(target_id='A',polygons=[[[100,100],[120,100],[120,400],[100,400]]])])))
+    args=['--model','target-stack','--target-snapshot',str(tmp_path),'--target-selections',str(labels),
+          '--target-id','A','--target-preview','--track-target-motion','--transport-age-aligned',
+          '--latency-tolerant','--max-seconds','600']
+    assert m.main(args)==0
+    original=json.loads(capsys.readouterr().out)
+    assert m.main([*args,'--target-outline-width-px','1'])==0
+    thin=json.loads(capsys.readouterr().out)
+    assert {k for k in thin if thin[k]!=original.get(k)}=={
+        'checkpoint','checkpoint_sha256','inference_script','target_outline_width_px'}
+    assert thin['checkpoint']==profiles.TARGET_STACK_THIN_CHECKPOINT
+    assert thin['checkpoint_sha256']==profiles.TARGET_STACK_THIN_MODEL_SHA
+    _,options=live_setup.prepare_live_setup(tmp_path,labels,'A',model='target-stack',
+                                           multi_separation=True,outline_width_px=1)
+    assert options['target_outline_width_px']==1
+    assert options['pythonpath']==profiles.TARGET_STACK_THIN_PYTHONPATH
+    assert m.main([*args,'--target-outline-width-px','1','--observe-after-arrival'])==0
+    arrival=json.loads(capsys.readouterr().out)
+    assert {k for k in arrival if arrival[k]!=thin.get(k)}=={
+        'mode','action_selection','pending_suction_policy','observe_after_arrival',
+        'arrival_joint_tolerance_deg','arrival_trajectory_speed_deg_s'}
+    assert arrival['observe_after_arrival'] is True
+    assert arrival['action_selection']=='observation_age_open_and_transport_at_receipt_then_frozen'
+    assert arrival['requested_suction_cycles']==1 and not arrival['automatic_home']
+    with pytest.raises(SystemExit):m.parse_args(['--model','baseline-stack','--target-outline-width-px','1'])
+    with pytest.raises(SystemExit):m.parse_args(['--model','baseline-stack','--observe-after-arrival'])
+
+
+@pytest.mark.parametrize('ready_width', [1,2])
+def test_thin_pipe_matches_contract_and_rejects_two_pixel_worker(monkeypatch,tmp_path,ready_width):
+    from lerobot.bamboo_sorting.runtime import inference as inf
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    launch=[]
+    class Process:
+        def __init__(self,command,**kw):launch.extend(command);self.stdin=io.StringIO()
+        def wait(self,timeout):pass
+    monkeypatch.setattr(inf.subprocess,'Popen',Process)
+    ready=dict(ready=True,checkpoint_sha256='thin',contract=target_policy_contract_record(outline_width_px=ready_width),
+               action_chunk_available=True,target_live=False)
+    monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:ready)
+    options=dict(expected_sha256='thin',target_conditioned=True,target_outline_width_px=1,return_action_chunk=True)
+    if ready_width==2:
+        with pytest.raises(ValueError,match='identity mismatch'):inf.InferencePipe(tmp_path,**options)
+    else:
+        pipe=inf.InferencePipe(tmp_path,**options)
+        try:
+            assert '--target-outline-width-px 1' in launch[-1]
+            assert pipe.contract==target_policy_contract_record(outline_width_px=1)
+        finally:pipe.close()
+
+
+def test_baseline_stack_pipe_launch_and_request_are_plain_lossless(monkeypatch,tmp_path):
+    m=load_entry(monkeypatch)
+    from lerobot.bamboo_sorting.runtime import inference as inf
+    from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK, joint_contract_record
+    args,sequence,target_mode,approach,mixed,timeout,parser=m.parse_args(['--model','baseline-stack'])
+    _,_,_,_=m.resolve_targets(args,sequence,target_mode,parser)
+    options=m.resolve_config(args,sequence,target_mode,approach,mixed,timeout,None)['pipe_options']
+    assert options['target_conditioned'] is False and options['return_action_chunk'] is True
+    assert options['checkpoint']==m.BASELINE_STACK_CHECKPOINT
+    assert options['expected_sha256']==m.BASELINE_STACK_MODEL_SHA
+    launch=[]
+    class Process:
+        def __init__(self,command,**kw):launch.extend(command);self.stdin=io.StringIO()
+        def wait(self,timeout):pass
+    monkeypatch.setattr(inf.subprocess,'Popen',Process)
+    chunk=[[0.]*7 for _ in range(50)]
+    ready=dict(ready=True,checkpoint_sha256=m.BASELINE_STACK_MODEL_SHA,contract=joint_contract_record(),
+               bf16=False,task=JOINT_TASK,action_chunk_available=True,target_live=False,
+               segmentation_checkpoint=None)
+    response=dict(id=0,checkpoint_sha256=m.BASELINE_STACK_MODEL_SHA,shape=[50,7],action=chunk[0],
+                  raw_action=chunk[0],action_chunk=chunk,raw_action_chunk=chunk)
+    messages=iter([ready,response])
+    monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:next(messages))
+    pipe=inf.InferencePipe(tmp_path,task=JOINT_TASK,**options)
+    try:
+        joined=launch[-1]
+        assert '--return-action-chunk' in joined and '--target-conditioned' not in joined
+        assert '--target-segmentation-checkpoint' not in joined
+        assert m.BASELINE_STACK_CHECKPOINT in joined and m.BASELINE_STACK_MODEL_SHA in joined
+        assert 'PYTHONPATH='+m.BASELINE_STACK_PYTHONPATH in joined
+        images={k:np.zeros((480,640,3),np.uint8) for k in ('global_rgb','grasp_rgb')}
+        result=pipe.predict(0,[0]*7,images,codec='rgb_zlib',seed=42)
+        assert result['action_chunk']==chunk and result['shape']==[50,7]
+        packet=json.loads(pipe.process.stdin.getvalue())
+        assert packet['codec']=='rgb_zlib' and packet['seed']==42
+        assert set(packet['images'])=={'global_rgb','grasp_rgb'}
+        assert not any(k in packet for k in ('target_contract','target_input','target_seed','target_motion'))
+        assert pipe.ready['contract']==joint_contract_record()
+        with pytest.raises(ValueError,match='target metadata requires'):
+            pipe.predict(1,[0]*7,images,target_input=dict(phase='approach'))
+    finally:pipe.close()
+
+
+@pytest.mark.parametrize('ready_sha,ready_contract,drop_chunk_row',[
+    ('wrong',None,False),(None,'wrong',False),(None,None,True),
+])
+def test_baseline_stack_pipe_rejects_wrong_identity_contract_or_chunk(
+        monkeypatch,tmp_path,ready_sha,ready_contract,drop_chunk_row):
+    from lerobot.bamboo_sorting.runtime import inference as inf
+    from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_TASK, joint_contract_record
+    launch=[]
+    class Process:
+        def __init__(self,command,**kw):launch.extend(command);self.stdin=io.StringIO()
+        def wait(self,timeout):pass
+    monkeypatch.setattr(inf.subprocess,'Popen',Process)
+    sha=ready_sha or 'hash'
+    contract=joint_contract_record() if ready_contract is None else ready_contract
+    chunk=[[0.]*7 for _ in range(50)]
+    ready=dict(ready=True,checkpoint_sha256=sha,contract=contract,bf16=False,task=JOINT_TASK,
+               action_chunk_available=True,target_live=False,segmentation_checkpoint=None)
+    response=dict(id=0,checkpoint_sha256='hash',shape=[50,7],action=chunk[0],raw_action=chunk[0],
+                  action_chunk=chunk[:-1] if drop_chunk_row else chunk,raw_action_chunk=chunk)
+    messages=iter([ready,response])
+    monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:next(messages))
+    options=dict(expected_sha256='hash',target_conditioned=False,return_action_chunk=True,
+                  request_timeout_s=2.)
+    if ready_sha or ready_contract:
+        with pytest.raises(ValueError,match='identity mismatch'):
+            inf.InferencePipe(tmp_path,task=JOINT_TASK,**options)
+    else:
+        pipe=inf.InferencePipe(tmp_path,task=JOINT_TASK,**options)
+        try:
+            with pytest.raises(ValueError,match='50 x 7'):
+                pipe.predict(0,[0]*7,{k:np.zeros((480,640,3),np.uint8) for k in ('global_rgb','grasp_rgb')},
+                             codec='rgb_zlib')
+        finally:pipe.close()
+
+
 @pytest.mark.parametrize('model,expected_cycles',[('legacy-single',1),('mixed-double',2),('mixed-both-orders',2)])
 def test_plan_does_not_connect(monkeypatch,capsys,model,expected_cycles):
     m=load_entry(monkeypatch)
@@ -426,6 +639,14 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('mixed-both-orders',1,False,False,'latency'),
     ('mixed-both-orders',1,'hung',False,'latency'),
     ('mixed-both-orders',1,False,False,'camera_latency'),
+    ('baseline-stack',1,False,False,7),
+    ('baseline-stack',1,False,False,'transport'),
+    ('baseline-stack',1,False,False,'baseline_replan'),
+    ('baseline-stack',1,False,False,'latency'),
+    ('baseline-stack',1,False,False,'camera_latency'),
+    ('baseline-stack',1,True,False,7),
+    ('baseline-stack',1,'hung',False,7),
+    ('baseline-stack',1,False,False,'discard'),
     ('target-pair',1,False,False,7),
     ('target-pair',1,True,False,7),
     ('target-pair',1,'hung',False,7),
@@ -438,6 +659,9 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('target-stack',1,False,True,'serial_slow'),
     ('target-stack',1,'hung',False,'latency'),
     ('target-stack',1,False,False,'camera_latency'),
+    ('target-stack',1,False,False,'arrival'),
+    ('target-stack',1,'hung',False,'arrival'),
+    ('target-stack',1,'arrival_unreachable',False,'arrival'),
     ('target-stack',3,False,False,'sequence'),
     ('target-stack',3,False,False,'sequence_motion_preview'),
     ('target-stack',3,'home_failure',False,'sequence'),
@@ -452,6 +676,14 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     target_metadata=[]
     motion_preview=approach=='sequence_motion_preview'
     if motion_preview:approach='sequence'
+    baseline_replan=model=='baseline-stack' and approach=='baseline_replan'
+    arrival_test=approach=='arrival'
+    arrival_events=[]
+    original_log=m.continuous.log
+    def capture_log(handle,value):
+        if 'goal_arrived' in value:arrival_events.append(value['goal_arrived'])
+        original_log(handle,value)
+    if arrival_test:monkeypatch.setattr(m.continuous,'log',capture_log)
     motion_calls=[];preview_packets=[]
     if motion_preview:
         import cv2
@@ -502,7 +734,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             dict(snapshot_id='seed',target_id=a[2],**({'visible_targets':[dict(target_id=t,mask_png=mask_png) for t in kw['remaining_target_ids']]} if motion_preview else {})),dict(live_target_seed=dict(target_id=a[2],remaining=kw.get('remaining_target_ids')),expected_sha256='target-model',target_conditioned=True,
                 return_action_chunk=True,segmentation_checkpoint='segmentation')))
     replan_test=approach in ('replan','replan_at_receipt')
-    transport_test=approach in ('transport','sequence')
+    transport_test=approach in ('transport','sequence','baseline_replan') or arrival_test
     transport_error=inference_error=='transport_hung'
     if transport_test or sequence_test:approach=7
     replan_at_receipt=approach=='replan_at_receipt'
@@ -510,10 +742,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     camera_latency_test=approach=='camera_latency'
     serial_slow_test=approach=='serial_slow'
     serial_latency_test=approach in ('serial_latency','serial_slow')
-    latency_test=approach in ('latency','camera_latency','serial_latency','serial_slow') or sequence_test
+    latency_test=approach in ('latency','camera_latency','serial_latency','serial_slow') or sequence_test or arrival_test
     if latency_test:approach=7
     if replan_test or discard_test:approach=7
     if replan_at_receipt:approach=2
+    if baseline_replan:approach=1
     phase_calls={};transport_responses=[0]
     delayed=[False];state_reads=[0];requests=[]
     def sleep(s):clock[0]+=s
@@ -534,6 +767,8 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             assert kw['max_camera_age_ms']==(400 if latency_test and model!='target-pair' else (100 if model=='legacy-single' else 250))
             if 'state_snapshot' in kw:
                 assert kw['state_snapshot'][0][-1]==state[-1]
+            if arrival_test and state[-1]==100:
+                clock[0]+=.06  # A new camera frame captured after accepted IO.
             times=[clock[0]-.3,clock[0]-.02,clock[0]] if camera_latency_test else [clock[0]-.050327,clock[0],clock[0]]
             images={name:np.full((480,640,3),len(requests)%256,np.uint8) for name in ('global_rgb','grasp_rgb')} if recovery_case or motion_preview else {}
             return state.copy(),images,times
@@ -558,7 +793,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             return [.2,-.5,.3,0,0,0],0
     class Pipe:
         def __init__(self,*a,**kw):
-            self.target_id=kw.get('live_target_seed',{}).get('target_id')
+            self.target_id=(kw.get('live_target_seed') or {}).get('target_id')
             if sequence_test:
                 assert not enabled[0]
                 worker_targets.append(self.target_id)
@@ -578,6 +813,13 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             elif model in ('target-pair','target-stack'):
                 assert kw['target_conditioned'] and kw['expected_sha256']=='target-model'
                 assert kw['return_action_chunk']
+            elif model=='baseline-stack':
+                assert kw['target_conditioned'] is False and kw['return_action_chunk'] is True
+                assert kw['checkpoint']==m.BASELINE_STACK_CHECKPOINT
+                assert kw['expected_sha256']==m.BASELINE_STACK_MODEL_SHA
+                assert kw['inference_script']==m.BASELINE_STACK_INFERENCE_SCRIPT
+                assert kw['remote_root']==m.TARGET_STACK_REMOTE_ROOT
+                assert kw['live_target_seed'] is None and kw['segmentation_checkpoint'] is None
             else:
                 assert 'expected_sha256' not in kw
         def close(self):pass
@@ -591,6 +833,30 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                         assert kw['target_motion']['frame_id']==kw['target_input']['frame_id']
                         assert list(kw['target_motion']['masks_png'])==['A','B','C'][['A','B','C'].index(self.target_id):]
                     else:assert 'target_motion' not in kw
+            elif model=='baseline-stack':
+                assert kw['codec']=='rgb_zlib'
+                assert 'target_input' not in kw and 'target_motion' not in kw
+                assert set(a[1]) <= {'global_rgb','grasp_rgb'}
+            if baseline_replan:
+                if a[0][-1]==100:
+                    chunk=[[*START_DEG,100.] for _ in range(50)]
+                    for row in chunk:row[5]+=.4
+                    for i,row in enumerate(chunk):
+                        row[0]=START_DEG[0]+(.02*i if i<6 else .4)
+                        row[-1]=0. if i==6 else 100.
+                        if i>6:row[0]=361.
+                elif index==0:
+                    # A close target that a fresh pre-IO observation supersedes.
+                    chunk=[[*START_DEG,0.] for _ in range(50)]
+                    chunk[1][5]+=2.;chunk[1][6]=100.
+                elif index==1:
+                    chunk=[[*START_DEG,0.] for _ in range(50)]
+                    for row in chunk:row[3]+=.2;row[5]+=.4
+                else:
+                    chunk=[[*START_DEG,100.] for _ in range(50)]
+                    for row in chunk:row[5]+=.4
+                return {'action':chunk[0],'raw_action':chunk[0],'shape':[50,7],
+                        'action_chunk':chunk,'raw_action_chunk':chunk}
             if recovery_case and self.target_id=='B':
                 b_requests.append(index)
                 if len(b_requests)==2 or (len(b_requests)>2 and inference_error=='empty_persistent'):
@@ -603,6 +869,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                 if len(b_requests)>2 and inference_error=='empty_bad_recovery':raise RuntimeError('recovery model failure')
             if sequence_test and inference_error=='next_failure' and self.target_id=='B':raise RuntimeError('next target inference failed')
             if inference_error and not sequence_failure and index and not transport_error:raise RuntimeError('inference failed')
+            if arrival_test and inference_error=='arrival_unreachable':
+                chunk=[[*START_DEG,0.] for _ in range(50)]
+                for row in chunk:row[5]+=15.
+                return dict(action=chunk[0],raw_action=chunk[0],shape=[50,7],
+                    action_chunk=chunk,raw_action_chunk=chunk,target_input=dict(kw['target_input']))
             if approach:
                 chunk=[[*START_DEG,0.] for _ in range(50)]
                 if not inference_error or sequence_failure or inference_error=='pending_failure' or transport_error:
@@ -657,6 +928,14 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                     # Keep approaching while the second 550-ms request runs;
                     # the old 750-ms age limit stopped this exact waiting path.
                     chunk=[[*START_DEG,0.] for _ in range(50)]
+                if arrival_test and index==0:
+                    # Vary open-state rows: reaching the receipt-selected row
+                    # must neither advance to later rows nor start a new request.
+                    chunk=[[*START_DEG,0.] for _ in range(50)]
+                    for i,row in enumerate(chunk):row[5]+=.2+.02*i
+                elif arrival_test and a[0][-1]==100 and index>=3:
+                    chunk=[[*START_DEG,0.] for _ in range(50)]
+                    for row in chunk:row[0]+=.4;row[5]+=.4
                 return {'action':chunk[0], 'raw_action':chunk[0], 'shape':[50,7],
                     'action_chunk':chunk,'raw_action_chunk':chunk,
                     **({'target_evidence':dict(kw['target_input'],mask_png=None)} if motion_preview else {}),
@@ -668,7 +947,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         def __init__(self,fn,args):
             self.fn=fn;self.args=args
             self.ready=clock[0]+(.55 if serial_slow_test else .34 if serial_latency_test else .54 if latency_test and not camera_latency_test and args[0]==0 else .14)
-            if transport_test and args[1][-1]==100:self.ready=clock[0]+.34
+            if transport_test and args[1][-1]==100 and not baseline_replan:self.ready=clock[0]+.34
         def done(self):
             if inference_error=='hung' and self.args[0]>0:return False
             if transport_error and self.args[1][-1]==100 and transport_responses[0]>=1:return False
@@ -678,6 +957,8 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         def __init__(self,**kw):pass
         def submit(self,fn,*args):
             assert args[0] not in requests  # Discarding must not overwrite saved input snapshots.
+            if arrival_test and requests:
+                assert arrival_events[-1]['prediction_index']==requests[-1]
             requests.append(args[0])
             return Future(fn,args)
         def shutdown(self,**kw):pass
@@ -707,14 +988,40 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     if model in ('target-pair','target-stack'):
         argv+=['--target-snapshot','snapshot','--target-selections','labels']
         argv+=['--target-sequence','A','B','C'] if sequence_test else ['--target-id','A']
-    if expected_cycles!=(1 if model=='legacy-single' else 2):argv+=['--cycles',str(expected_cycles)]
+    if expected_cycles!=(1 if model in ('legacy-single','baseline-stack') else 2):argv+=['--cycles',str(expected_cycles)]
     if approach:argv.append('--approach-age-aligned')
     if latency_test:argv.append('--latency-tolerant')
+    if arrival_test:argv.append('--observe-after-arrival')
     if transport_test:argv.append('--transport-age-aligned')
     if motion_preview:
         argv[argv.index('--target-snapshot')+1]=str(tmp_path/'snapshot')
         argv.extend(['--track-target-motion','--target-preview'])
     result=m.main(argv)
+    if arrival_test:
+        complete=json.loads((out/'complete.json').read_text())
+        commands=list(map(json.loads,(out/'commands.jsonl').read_text().splitlines()))
+        rows=list(map(json.loads,(out/'trace.jsonl').read_text().splitlines()))
+        assert complete['observe_after_arrival'] and not enabled[0]
+        assert commands and all(c['target_frozen_until_arrival'] for c in commands)
+        for index in {c['prediction_index'] for c in commands}:
+            group=[c for c in commands if c['prediction_index']==index]
+            assert len({tuple(c['target']) for c in group})==1
+            assert len({c['action_selection']['selected_index'] for c in group if c['action_selection']})<=1
+        assert not any('pending_suction_replanned' in row for row in rows)
+        assert all(max(abs(a-b) for a,b in zip(e['target'][:6],e['state'][:6]))<.15
+                   and max(abs(v) for v in e['velocity'])<.3 for e in arrival_events)
+        if inference_error:
+            assert result==1 and not complete['suction_cycle_commanded']
+            assert 'no fresh prediction within 1500 ms' in complete['failure']
+            assert not any(kind=='suction' for kind,_ in events)
+            assert len(requests)==(1 if inference_error=='arrival_unreachable' else 2)
+        else:
+            assert result==0 and complete['suction_cycle_commanded']
+            assert [value for kind,value in events if kind=='suction']==[100,0]
+            assert {meta['phase'] for meta in target_metadata}=={'approach','transport'}
+            assert all(c['goal_observation_age_s']<=1.5 for c in commands)
+        assert not json.loads((out/'final_state.json').read_text())['servo_enabled']
+        return
     if motion_preview:
         assert [x for x in events if x[0]=='motion_init']==[('motion_init',('A','B','C'))]
         assert all(x in motion_calls for x in [('A','B','C'),('B','C'),('C',),()])
@@ -780,9 +1087,17 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             closed=[c for c in records if c['state'][-1]==100 and c['action_selection'] is not None]
             assert closed and any(c['action_selection']['selected_index']>0 for c in closed)
             assert all(c['target']==accepted[c['prediction_index']]['action_chunk'][c['action_selection']['selected_index']]
-                       and accepted[c['prediction_index']]['target_input']['phase']=='transport' for c in closed)
+                       for c in closed)
+            if model in ('target-pair','target-stack'):
+                assert all(accepted[c['prediction_index']]['target_input']['phase']=='transport' for c in closed)
+            else:
+                phases={row['index']:row['request_phase'] for row in map(json.loads,(out/'trace.jsonl').read_text().splitlines())
+                        if 'prediction' in row}
+                assert all('target_input' not in accepted[c['prediction_index']]
+                           and phases[c['prediction_index']]=='transport' for c in closed)
             releases=[c for c in closed if c['suction_target_frozen']]
-            assert releases and all(c['action_selection']['selected_index']==12 and c['target'][-1]==0 for c in releases)
+            release_index=6 if baseline_replan else 12
+            assert releases and all(c['action_selection']['selected_index']==release_index and c['target'][-1]==0 for c in releases)
             # Between predictions the selected step advances; it is not fixed at receipt.
             assert any(len({c['action_selection']['selected_index'] for c in closed if c['prediction_index']==i})>1
                        for i in {c['prediction_index'] for c in closed})
@@ -796,6 +1111,16 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             changes=[json.loads(s)['pending_suction_replanned'] for s in (out/'trace.jsonl').read_text().splitlines()
                      if 'pending_suction_replanned' in json.loads(s)]
             assert any(r['previous_target'][-1]==100 and r['updated_target'][-1]==0 for r in changes)
+        if baseline_replan:
+            rows=[json.loads(s) for s in (out/'trace.jsonl').read_text().splitlines()]
+            replan_at=next(i for i,row in enumerate(rows) if 'pending_suction_replanned' in row
+                           and row['pending_suction_replanned']['updated_target'][-1]==0)
+            first_io=next(i for i,row in enumerate(rows) if 'suction' in row)
+            start_at=next(i for i,row in enumerate(rows) if 'baseline_transport_start' in row)
+            # The superseded close is never commanded; transport starts only
+            # after the later accepted close command.
+            assert replan_at<first_io<start_at
+            assert [x for kind,x in events if kind=='suction']==[100,0]
     control_events=[e for e in events if e[0] not in ('motion_init','preview_closed')]
     assert r['video']['complete'] and control_events[0][0]=='video_start' and control_events[-1][0]=='video_close'
     trace=(out/'trace.jsonl').read_text()
@@ -811,10 +1136,28 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         elif serial_latency_test:assert .3 < first['received_at']-min(first['sensor_times']) < .5
         else:assert .5 < first['received_at']-min(first['sensor_times']) < .75
         if inference_error=='hung':
-            expected='no fresh prediction within 1500 ms' if model in ('target-pair','target-stack') else 'limit=750 ms'
+            expected='no fresh prediction within 1500 ms' if model in ('target-pair','target-stack','baseline-stack') else 'limit=750 ms'
             assert expected in r['failure']
     assert 'observation_skipped' not in trace
     assert ('state_refresh_before_servo' in trace)==slow_fk
+    if model=='baseline-stack':
+        assert 'target_input' not in trace and 'target_contract' not in trace
+        rows=[json.loads(line) for line in trace.splitlines()]
+        predictions=[row for row in rows if 'prediction' in row]
+        assert predictions and all(row['request_phase'] in ('approach','transport') for row in predictions)
+        discarded=[row for row in rows if 'discarded_prediction' in row]
+        assert all(row['request_phase'] in ('approach','transport') for row in discarded)
+        if discard_test:
+            # A pre-close observation returned after IO still carries its
+            # request-bound approach phase and is discarded, never accepted.
+            assert any(row['request_phase']=='approach' for row in discarded)
+        starts=[row['baseline_transport_start'] for row in rows if 'baseline_transport_start' in row]
+        if not inference_error:
+            assert len(starts)==1 and starts[0]['source']=='accepted_close_command'
+            assert r['first_accepted_close_s']==starts[0]['accepted_monotonic_s']
+            assert r['model']=='baseline-stack' and r['target_id'] is None
+            assert r['physical_grasp_success'] is None
+            assert r['requested_suction_cycles']==1 and r['completed_suction_cycles']==1
     if model in ('target-pair','target-stack'):
         rows=[json.loads(line) for line in trace.splitlines()]
         accepted=[row['target_phase_command'] for row in rows if 'target_phase_command' in row]

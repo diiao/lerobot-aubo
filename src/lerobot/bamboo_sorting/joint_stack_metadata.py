@@ -5,7 +5,7 @@ captures without stack fields remain valid and are not silently relabeled.
 """
 
 STACK_FIELDS = ("pick_step", "available_target_count")
-MAX_STACK_PICK_STEP = 6
+MAX_STACK_TARGET_COUNT = 6
 OUTCOME_FIELDS = ("target_matched", "held", "single_strip", "delivered", "neighbor_disturbed")
 HUMAN_OUTCOMES = ("single_success", "empty", "multi_pick", "slip", "blocked", "uncertain")
 
@@ -16,9 +16,11 @@ def stack_metadata(metadata):
     if not isinstance(metadata.get("target_id"), str) or not metadata["target_id"].strip():
         raise ValueError("stack capture requires target_id")
     for key in STACK_FIELDS:
-        maximum = MAX_STACK_PICK_STEP if key == "pick_step" else 3
-        if type(metadata.get(key)) is not int or not 1 <= metadata[key] <= maximum:
-            raise ValueError(f"{key} must be an integer from 1 to {maximum}")
+        value = metadata.get(key)
+        if type(value) is not int or value < 1:
+            raise ValueError(f"{key} must be a positive integer")
+        if key == "available_target_count" and value > MAX_STACK_TARGET_COUNT:
+            raise ValueError(f"{key} must be an integer from 1 to {MAX_STACK_TARGET_COUNT}")
     return {key: metadata[key] for key in STACK_FIELDS}
 
 
@@ -27,7 +29,7 @@ def validate_stack_sequence(records):
 
 pick_step numbers recorded attempts, not inferred successful removals. A retry
 can use the same target_id at the next step; neither success nor remaining
-object count is inferred from the step number.
+object count is inferred from the step number. It has no object-count cap.
 """
     scenes = {}
     for record in records:

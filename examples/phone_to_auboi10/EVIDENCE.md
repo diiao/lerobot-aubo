@@ -1,6 +1,6 @@
 # 证据与历史索引
 
-更新：2026-10-24。操作方法与后续计划统一见[项目手册](README.md)；本文只维护结果摘要、原始证据路径和历史索引。
+更新：2026-10-25。操作方法与后续计划统一见[项目手册](README.md)；本文只维护结果摘要、原始证据路径和历史索引。
 部署记录是当时快照，不代表远端当前状态。历史段落中的“尚未／下一步／未提交”按该段实验时点理解；当前状态以本文总览和最新实机复核为准。
 
 2026-10-02文档与旧功能的删除范围、保留理由及验证见[清理记录](../../docs/AUBO_CLEANUP_2026-10-02.md)。
@@ -30,6 +30,8 @@
 - [更早历史与证据](#历史原文与证据)
 
 ## 提交与实验进展总览
+
+**最新阶段决定（2026-10-25）**：P2首轮8/8次尝试、4/4组配对已结束（6次软件正常完成、2次人工中断）。用户最新要求暂停四根／六根接口扩展、新采集及混合训练，先弄清baseline与target的对准差异。08仍保留指定C单根送达、无扰动结果，但用户补充C在拍照前主动向画面右侧稍移，快照对应调整后的摆放；该条件不是运行中移物，位移及因果贡献未知。逐次结果和限制见[首轮配对结果](#p2首轮配对结果)。P1旧候选训练及五堆验证继续暂停、未通过，当前先分析既有输入、动作和时序证据；计划与操作见[项目手册](README.md#当前位置与下一步)。
 
 当前分支为`research/depth-vla-phase-a`。下表保留截至2026-10-19的功能落点；后续源码／离线测试整理见[2026-10-22记录](#2026-10-22-源码结构与测试整理)，本次静态扩展归档以`70d6b4ef`为提交前检查点。2026-10-24用户确认[静态视觉复核](#多根静态分割数据链路检查)达到本阶段预期，开始准备抓取场景验证。提交日期不等于实验发生日期；Git保存代码／文档／已跟踪标注，不保存被忽略的模型、录像与数据集。日常操作见[项目手册](README.md)，原始结果不因文档同步而改写。
 
@@ -193,11 +195,11 @@ trial04回放中的空目标由旧逻辑30幅降到1幅，剩余为原现场已�
 
 **判断与后续边界**：本子集支持训练内仍有生成精度残差，同时存在验证泛化差距，不能二选一地宣布“训练完全学准”或“完全没有泛化差别”。当前未确立可验证的软件缺陷，也没有选定新的运行修复。后续候选是现有成功数据上的小范围学习精度对照：以相同初始权重、数据、步数、学习率和种子的普通续训为控制，只检验提高末段未来动作监督权重是否有额外收益；预期是同时减少训练／验证闭爪误差，并须检查搬运等非末段行为是否退化。用户于2026-10-24明确同意训练验证，具体执行记录见下文。候选权重写独立目录，保留当前final及运行配置；离线指标不能证明物理抓偏已解决。
 
-**末段学习精度训练对照（2026-10-24，已授权完成，未部署）**：入口为[close_precision_training/plan.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/plan.json)。两组均从当前target-stack final开始，复用审核过的60条训练示教、训练统计和9条验证示教；各1000步、batch 8、seed 42、峰值学习率1e-5，100步预热后余弦衰减，优化器状态均重新建立。控制组权重1，实验组把专家close_frame-10至close_frame（含端点）的未来动作损失设为3倍，按每个样本的有效权重之和归一化；不改变抽样、图像、动作标签或7个维度的相对权重。目标是与控制组比较额外收益，不把训练损失下降直接当作生成精度或抓取成功。
+**末段学习精度训练对照（2026-10-24，已授权完成，未部署）**：入口为close_precision_training/plan.json。两组均从当前target-stack final开始，复用审核过的60条训练示教、训练统计和9条验证示教；各1000步、batch 8、seed 42、峰值学习率1e-5，100步预热后余弦衰减，优化器状态均重新建立。控制组权重1，实验组把专家close_frame-10至close_frame（含端点）的未来动作损失设为3倍，按每个样本的有效权重之和归一化；不改变抽样、图像、动作标签或7个维度的相对权重。目标是与控制组比较额外收益，不把训练损失下降直接当作生成精度或抓取成功。
 
 训练代码、原始输入快照与输出隔离在远端`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/close_precision_training_20261024/`，原运行代码与检查点不覆盖；训练入口直接复用原final中的`data_preflight.json`，核对来源及数量，不重复整套数据哈希。隔离代码对一个已有原模型样本的预测一致性检查已通过。58项离线测试通过、1项条件跳过，覆盖真实维度／补齐屏蔽、权重与梯度、按来源及未来帧定位、训练保存重载。每组训练后严格重载，评价完整6023帧验证首行动作，并对相同18组训练／验证末段输入×3个种子各生成54个50行动作块；原模型54份结果复用。评价须包含闭爪误差的均值及尾部、固定第10行、逐示教／场景／种子、缺失闭爪及再打开，并检查其他接近段和搬运段退化。两组训练、完整验证及54份动作块预测均已完成，不涉及相机、机械臂、IO或真机部署。
 
-结果入口为[assessment.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/assessment.json)，逐动作／示教／场景／种子及完整验证分阶段比较为同目录`comparison.json`。两组8000次样本呈现和学习率逐项一致，训练统计完全一致；加权覆盖全部60条示教，共6623次有效未来动作行监督（同一专家行可出现在多个输入的动作块中）。严格保存重载均完全一致；隔离代码的原模型复算差为0。下表关节误差先对单次预测的六个关节绝对差取最大，再按各侧27次预测汇总；不是末端毫米误差。
+结果入口为assessment.json，逐动作／示教／场景／种子及完整验证分阶段比较为同目录`comparison.json`。两组8000次样本呈现和学习率逐项一致，训练统计完全一致；加权覆盖全部60条示教，共6623次有效未来动作行监督（同一专家行可出现在多个输入的动作块中）。严格保存重载均完全一致；隔离代码的原模型复算差为0。下表关节误差先对单次预测的六个关节绝对差取最大，再按各侧27次预测汇总；不是末端毫米误差。
 
 | 指标 | 原模型 | 普通续训 | 末段3倍加权 |
 | --- | --- | --- | --- |
@@ -225,7 +227,7 @@ trial04回放中的空目标由旧逻辑30幅降到1幅，剩余为原现场已�
 
 **本轮决定**：两组均不替换当前运行检查点。加权有小幅局部收益，但未形成跨指标、示教的一致优势，闭合时机和末段残差仍在；本次物理抓偏尚未解决。用户随后同意分别研究持位与闭合时序，已完成下文的拆分及输入敏感性研究；进一步训练目标仅形成独立候选，尚未加训。候选保留于远端上述目录`outputs/uniform/final`（SHA-256前缀`e370222a`）和`outputs/preclose_weighted/final`（完整身份见`chunk_complete.json`）；本地已取回日志、配置、预测和评价，模型权重保留在远端。`execution_check.json`确认实验工作进程已退出、当时无GPU计算进程；SSH退出码0。原运行配置及模型未替换。
 
-**持位与闭合时序拆分（2026-10-24，已授权完成首轮研究）**：统一入口为[holding_and_closure_assessment.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/holding_and_closure_assessment.json)，完整逐输入／种子／场景数据见同目录`holding_and_closure.json`，脚本为`analyze_hold_and_close.py`。先复用三模型共162个保存动作块，以及完整验证中闭合前后21帧的首行预测；再用现有三个检查点完成下述输入敏感性对照。没有新增训练、采集或真机执行。
+**持位与闭合时序拆分（2026-10-24，已授权完成首轮研究）**：统一入口为holding_and_closure_assessment.json，完整逐输入／种子／场景数据见同目录`holding_and_closure.json`，脚本为`analyze_hold_and_close.py`。先复用三模型共162个保存动作块，以及完整验证中闭合前后21帧的首行预测；再用现有三个检查点完成下述输入敏感性对照。没有新增训练、采集或真机执行。
 
 **到位后保持姿态**：以专家闭合关节姿态为参考，用0.01°容差确定包含闭合帧的连续近似持位段；该容差仅用于离线选取专家区间。18组输入都有共同第0至27行，专家在这段内最大的关节跨度为0.005684°，输入状态到专家闭合姿态的最大差为0.003494°。模型的首行偏差和后续相对动作变化分别统计：后者为`(预测q[k]−预测q[0])−(专家q[k]−专家q[0])`，可以区分固定初始偏差与多余运动。下表为验证侧27个动作块；关节误差仍先取六关节最大值，区间指标再按行和样本汇总。
 
@@ -250,7 +252,7 @@ trial04回放中的空目标由旧逻辑30幅降到1幅，剩余为原现场已�
 
 固定普通组闭合行，加权组关节误差仍较大，说明本子集的差异不只来自闭合行不同。用专家第10行作读数还需要在线不可获得的未来标签，不能转化为运行时强制闭合规则。
 
-**输入线索敏感性对照**：完整验证的9条示教中，输入夹爪状态分量与全局图像的描边阶段都在专家闭合命令后1帧变化；三组模型在连续新观察中的首行输出，也都从这一帧开始连续3帧闭合，新增两组另有少数提前单帧脉冲。仅观察这一共变关系不能分清状态与视觉作用。因此对9组闭合前10帧输入×3种子，分别切换状态分量0/100及同帧全局图有／无描边，六关节状态、腕图、任务和其他条件保持。原始81份控制结果复用，新做243次扰动预测及3次同输入一致性核对；三次核对差均0。原图来自已有审核PNG，与描边输入的差异只在548至766个紫色像素，未生成新图像。结果与完整条件见[输入对照分析](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/hold_close_input_study/analysis.json)及同目录`manifest.json`。
+**输入线索敏感性对照**：完整验证的9条示教中，输入夹爪状态分量与全局图像的描边阶段都在专家闭合命令后1帧变化；三组模型在连续新观察中的首行输出，也都从这一帧开始连续3帧闭合，新增两组另有少数提前单帧脉冲。仅观察这一共变关系不能分清状态与视觉作用。因此对9组闭合前10帧输入×3种子，分别切换状态分量0/100及同帧全局图有／无描边，六关节状态、腕图、任务和其他条件保持。原始81份控制结果复用，新做243次扰动预测及3次同输入一致性核对；三次核对差均0。原图来自已有审核PNG，与描边输入的差异只在548至766个紫色像素，未生成新图像。结果与完整条件见输入对照分析及同目录`manifest.json`。
 
 | 输入组合 | 原模型首行预测闭合 | 普通续训 | 末段加权 |
 | --- | --- | --- | --- |
@@ -268,18 +270,18 @@ trial04回放中的空目标由旧逻辑30幅降到1幅，剩余为原现场已�
 
 本轮4项合成检查通过（正确专家轨迹、常量偏差、已知线性漂移、提前单帧闭合），162份原首次闭合指标精确复现；输入对照的243份输出、3次一致性及退出记录通过。独立GPU进程已退出，检查时无GPU计算进程，SSH退出码0。进一步训练预算和持位项倍率尚未确定；当前模型、运行配置及物理成功结论保持。
 
-**持位／闭合阶段1（2026-10-24，本地实现与离线验证完成，未真实训练）**：上述研究中的两个候选现已分别接入现有训练链路，默认关闭；具体原理、损失归一化、命令、固定评价及建议门槛统一见[README阶段1方案](README.md#持位与闭合训练的阶段1)。旧研究JSON保留当时状态，不改写旧实验结论。新增机器入口为[hold_close_training_plan.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/hold_close_training_plan.json)，标签／控制组核对为同目录`hold_close_supervision_audit.json`，固定观察索引为`hold_close_evaluation_manifest.json`，本地检查记录为`hold_close_stage1_check.json`；CPU准备脚本为`prepare_hold_close_training.py`，拒绝覆盖已有报告，不加载模型或视频。
+**持位／闭合阶段1（2026-10-24，本地实现与离线验证完成，未真实训练）**：上述研究中的两个候选现已分别接入现有训练链路，默认关闭；具体原理、损失归一化、命令、固定评价及建议门槛统一见[README阶段1方案](EVIDENCE.md#短续训候选退役与1像素正式训练准备)。旧研究JSON保留当时状态，不改写旧实验结论。新增机器入口为hold_close_training_plan.json，标签／控制组核对为同目录`hold_close_supervision_audit.json`，固定观察索引为`hold_close_evaluation_manifest.json`，本地检查记录为`hold_close_stage1_check.json`；CPU准备脚本为`prepare_hold_close_training.py`，拒绝覆盖已有报告，不加载模型或视频。
 
 - 原始数值数据检查覆盖60条训练示教和9条验证示教。全部专家闭合命令当帧输入仍开爪，状态首个闭合帧均为`close_frame+1`；所有三行候选窗口都是连续闭合。0.01°容差下，包含闭合帧的连续持位区间长分别为训练38～104帧、验证44～58帧。标签由原始度数计算，训练损失使用已有标准化坐标；未改动作、状态、图片或人工标注。
 - CPU复现旧uniform的1000步采样：8000次样本顺序及学习率逐项相同；训练统计重算最大差约`6.66e-12`，均值的float32表示完全一致。预计新持位项覆盖29445对有效相邻行，闭合项覆盖1776次未来动作行。这是固定采样的监督出现次数，不是实际训练梯度，也不是独立示教数。旧uniform具备本地复用条件，但远端当前环境、原始输入及隔离代码尚未核对，因此复用决定仍有条件；uniform并非无描边baseline。
 - 针对性CPU测试为**60 passed、1 skipped**；完成训练代码收尾后，`make test-aubo-offline`全套为**783 passed、11 skipped、4 warnings（26.98秒）**。新增检查覆盖正确流速度还原、常量姿态误差与漂移区分、不同`t`的梯度尺度、夹爪／补齐屏蔽、源与episode边界、首次离开后的回到原姿态、提前释放截断、六关节基础梯度不变、关闭项行为与随机状态、真实前向方法的合成接线，以及玩具模型的训练／严格保存重载／验证。可选依赖集成项仍有条件跳过；四条警告为既有`imp`和torchvision视频接口弃用警告。测试不使用真实SmolVLA、GPU、相机或机械臂。
 - 当前交付是软件候选与固定方案，**新增真实训练步数0、模型预测0、远端写入0、硬件操作0**。未提升任何检查点、未修改运行选行／闭合阈值或加三行过滤；物理抓偏仍未证明修复。未提交或推送，用户原有Makefile修改保留。忽略目录中的新报告随原实验产物保存，Git提交仍不构成这些产物的备份。
 
-**持位／闭合真实训练（2026-10-24启动，2026-10-25完成；两组均未通过筛选）**：用户明确同意开始训练后，按README冻结参数依次完成A持位、B闭合，各1000步、完整6023帧验证和432份固定动作块评价。统一结论入口为[hold_close_assessment.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/hold_close_assessment.json)，完整逐预测、场景／示教／种子／观察位置指标及门槛见[hold_close_comparison.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/hold_close_comparison.json)。授权为同目录`hold_close_authorization.json`，当前执行状态为`hold_close_execution_status.json`，远端报告取回至`hold_close_results/`；A先完成时的`holding_comparison.json`保留。
+**持位／闭合真实训练（2026-10-24启动，2026-10-25完成；两组均未通过筛选）**：用户明确同意开始训练后，按README冻结参数依次完成A持位、B闭合，各1000步、完整6023帧验证和432份固定动作块评价。统一结论入口为hold_close_assessment.json，完整逐预测、场景／示教／种子／观察位置指标及门槛见hold_close_comparison.json。授权为同目录`hold_close_authorization.json`，当前执行状态为`hold_close_execution_status.json`，远端报告取回至`hold_close_results/`；A先完成时的`holding_comparison.json`保留。
 
 远端独立目录为`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/hold_close_training_20261024/`，复制旧实验隔离代码后仅替换四个已测试的训练文件，复用原Python虚拟环境。开训检查确认五项依赖、准备快照及统计与旧uniform一致，相关输入文件未在旧实验后修改，隔离代码复现原模型保存动作块的最大差为0，因此复用旧控制组。144组评价观察均来自原始数据，其中18组旧输入的图像／动作与原保存结果逐项一致；旧uniform复用54份动作块及6023帧预测，只补378份新观察预测，本轮固定评价新增合计1242份。核对记录为`hold_close_results/preflight.json`和`prepared_evaluation_inputs.json`。
 
-两组8000次样本顺序、学习率、训练统计及模型配置均与uniform逐项一致，损失／梯度有限，严格重载预测完全一致。A实际覆盖29445对持位动作、B覆盖1776次闭合窗口动作行，均与阶段1预计算一致。优化器耗时A 375.3秒、B 375.1秒；训练加完整验证分别约14.1／13.8分钟，从远端预检查到最后预测共32.7分钟。RTX 4090 D上两组PyTorch峰值已分配显存均约3.46 GB，整个新实验目录约3.84 GB。所有阶段退出码0，全部实验进程已退出，结束检查时无GPU计算进程；见[execution_check.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/hold_close_results/execution_check.json)。模型保留在该远端目录的`outputs/holding/final`与`outputs/gripper_close/final`；未替换原运行模型。
+两组8000次样本顺序、学习率、训练统计及模型配置均与uniform逐项一致，损失／梯度有限，严格重载预测完全一致。A实际覆盖29445对持位动作、B覆盖1776次闭合窗口动作行，均与阶段1预计算一致。优化器耗时A 375.3秒、B 375.1秒；训练加完整验证分别约14.1／13.8分钟，从远端预检查到最后预测共32.7分钟。RTX 4090 D上两组PyTorch峰值已分配显存均约3.46 GB，整个新实验目录约3.84 GB。所有阶段退出码0，全部实验进程已退出，结束检查时无GPU计算进程；见execution_check.json。模型保留在该远端目录的`outputs/holding/final`与`outputs/gripper_close/final`；未替换原运行模型。
 
 下表主指标为验证侧9条示教的闭合前10帧输入×3种子，共27份动作块；共同持位第0～27行按训练前定义评价。前三项为关节角指标，不是夹口毫米偏移；重复种子不是独立抓取实验。
 
@@ -302,13 +304,13 @@ B的持续闭合时机在三个验证场景均改善，均值／中位数达到�
 
 **决定**：A、B均不提升为运行模型，也不组合；原target-stack运行检查点保持。已完成本轮参数下的筛选，不原样重跑或自动加步数。下一项训练改动需针对仍在的绝对姿态误差及闭合脉冲重新确定。本轮没有相机、机械臂、IO或真机部署，`physical_grasp_success=null`；离线训练完成不证明此前抓偏已修复。分析仅使用已保存数组，合成边界检查及54份旧uniform主指标复现通过，见`hold_close_analysis_check.json`。三个验证场景此前已用于诊断，不是全新盲测集。
 
-**续训输入覆盖与下一项建议（2026-10-25）**：以保存的`training.jsonl`样本键关联已审核的持位／闭合／释放帧，结果见[training_input_coverage.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/training_input_coverage.json)。两组实际样本顺序相同，运行保存的标签与本地审核逐项一致。每组1000步共8000个互异输入；训练全集40673帧／60条示教，闭合当帧60个，占0.1475%。本轮抽到闭合当帧14个、覆盖14/60条，释放当帧10个；闭合前持位292个，整个持位输入600个、覆盖60/60条。另有598个输入的50行未来动作块包含闭合、覆盖60/60条；B的1776次加权未来动作行不等于1776个当前切换输入。该统计仅描述本轮短续训，不代表原模型全部训练历史，不能据此把物理抓偏单因果归为采样不足。下一项建议为保留原完整动作损失、只改变关键阶段输入采样；具体分配、风险、预算和沿用的验收标准统一见[README](README.md#持位与闭合训练的阶段1)。该统计先用于形成方案；用户随后认可并授权执行，当前进展见下一段。
+**续训输入覆盖与下一项建议（2026-10-25）**：以保存的`training.jsonl`样本键关联已审核的持位／闭合／释放帧，结果见training_input_coverage.json。两组实际样本顺序相同，运行保存的标签与本地审核逐项一致。每组1000步共8000个互异输入；训练全集40673帧／60条示教，闭合当帧60个，占0.1475%。本轮抽到闭合当帧14个、覆盖14/60条，释放当帧10个；闭合前持位292个，整个持位输入600个、覆盖60/60条。另有598个输入的50行未来动作块包含闭合、覆盖60/60条；B的1776次加权未来动作行不等于1776个当前切换输入。该统计仅描述本轮短续训，不代表原模型全部训练历史，不能据此把物理抓偏单因果归为采样不足。下一项建议为保留原完整动作损失、只改变关键阶段输入采样；具体分配、风险、预算和沿用的验收标准统一见[README](EVIDENCE.md#短续训候选退役与1像素正式训练准备)。该统计先用于形成方案；用户随后认可并授权执行，当前进展见下一段。
 
 **关键阶段均衡采样训练（2026-10-25，已完成，未通过筛选）**：用户明确“可以，我同意这个方案，继续执行”后，完成训练采样器与默认关闭的`--phase-balanced-sampling`入口，保留原模型和完整动作损失。本地定向检查29 passed；完整离线回归787 passed、11 skipped、4 warnings，用时26.28秒，后续日志字段调整再次通过29项定向检查。完整8000项清单含6363个互异输入、1637次重复采样，其中一次为同批重复；全轨迹4000项、末段2000项、闭合与释放各1000项，各事件前／当帧／后分别334／333／333项。加入其他采样组偶然抽到的事件后，闭合当帧共365次、释放当帧337次，全部60条示教均覆盖。检查记录为同一review目录的`phase_balanced_local_check.json`，完整清单为`phase_balanced_sampling_plan.json`。
 
-远端独立目录为`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/phase_balanced_training_20261025/`。复用原Python环境和隔离代码，仅替换本轮两个训练文件；模型与损失文件和上一实验逐字一致。远端实际加载的数值索引完整复现本地采样清单，原数据快照、统计及依赖与uniform一致，复用旧控制组。144组固定评价输入复用上一轮已核对的图像／动作；本组完成432份动作块及6023帧完整验证，未重复训练uniform或旧A／B候选。实际8000次样本及分组与冻结清单一致，学习率、归一化、依赖及模型配置与uniform一致，损失就是原均匀损失，严格重载8×50×7预测完全一致。归档为[phase_balanced_results](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/phase_balanced_results/)。授权、参数与执行状态分别为同一review目录的`phase_balanced_authorization.json`、`phase_balanced_training_plan.json`、`phase_balanced_execution_status.json`；冻结的准备记录不改写成完成状态。
+远端独立目录为`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/phase_balanced_training_20261025/`。复用原Python环境和隔离代码，仅替换本轮两个训练文件；模型与损失文件和上一实验逐字一致。远端实际加载的数值索引完整复现本地采样清单，原数据快照、统计及依赖与uniform一致，复用旧控制组。144组固定评价输入复用上一轮已核对的图像／动作；本组完成432份动作块及6023帧完整验证，未重复训练uniform或旧A／B候选。实际8000次样本及分组与冻结清单一致，学习率、归一化、依赖及模型配置与uniform一致，损失就是原均匀损失，严格重载8×50×7预测完全一致。归档为phase_balanced_results。授权、参数与执行状态分别为同一review目录的`phase_balanced_authorization.json`、`phase_balanced_training_plan.json`、`phase_balanced_execution_status.json`；冻结的准备记录不改写成完成状态。
 
-结论入口为[phase_balanced_assessment.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/phase_balanced_assessment.json)，完整分组与逐预测记录为[phase_balanced_comparison.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/phase_balanced_comparison.json)。下表沿用验证侧9条示教的闭合前10帧输入×3种子，共27份动作块及共同持位第0～27行；最后两项来自完整6023帧验证。
+结论入口为phase_balanced_assessment.json，完整分组与逐预测记录为phase_balanced_comparison.json。下表沿用验证侧9条示教的闭合前10帧输入×3种子，共27份动作块及共同持位第0～27行；最后两项来自完整6023帧验证。
 
 | 指标 | uniform | 关键阶段均衡采样 |
 | --- | ---: | ---: |
@@ -326,11 +328,11 @@ B的持续闭合时机在三个验证场景均改善，均值／中位数达到�
 
 训练侧持位绝对姿态误差0.3902°→0.4020°，多余运动0.7930°→0.6607°（减少约16.7%）；验证侧姿态没有达到5%改善，多余运动反增约12.6%，且三个验证场景的多余运动均增加。固定第10／27行及闭合时机中位数有局部改善，但未达到姿态／闭合综合门槛。释放前10帧输入的持续释放时间误差均值0.1733→0.2726秒，超过允许退化1帧的限制；释放当帧输入的该指标则改善，不能混为整段释放可靠性提升。共有55条关节／尾部等分项超限记录，含同一预测的多个指标，不能当作55次独立物理失败。全6023帧六关节MAE仅0.18109°→0.18218°，总平均仍掩盖阶段问题。
 
-RTX 4090 D上优化器循环373.8秒，训练加完整验证约13.8分钟，从预检查至最后固定预测约15.0分钟；PyTorch峰值已分配显存约3.46 GB，实验目录约1.87 GB。三个阶段退出码均为0，全部实验进程已退出，结束检查时无GPU计算进程，见[execution_check.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/phase_balanced_results/execution_check.json)。检查点保留在该远端目录的`outputs/phase_balanced/final`，未替换原运行模型。
+RTX 4090 D上优化器循环373.8秒，训练加完整验证约13.8分钟，从预检查至最后固定预测约15.0分钟；PyTorch峰值已分配显存约3.46 GB，实验目录约1.87 GB。三个阶段退出码均为0，全部实验进程已退出，结束检查时无GPU计算进程，见execution_check.json。检查点保留在该远端目录的`outputs/phase_balanced/final`，未替换原运行模型。
 
 **决定与边界**：本候选未通过，按预定分支结束，不自动增加步数、扫描采样比例或与失败候选组合。增加当前事件输入覆盖没有使本轮训练内绝对姿态更准，也没有使验证动作序列更可靠；结果不支持仅用这组重采样修复P1，不能据此宣布所有采样方法、模型架构或视觉输入无效。P1仍需新的、明确针对训练内姿态残差与动作时序的方案；P2、自主选择及P3顺序不前移。本轮无硬件操作，`physical_grasp_success=null`。结果分析只读保存数组，复用冻结指标与门槛；以uniform对自身检查未产生虚假改善或退化，记录为`phase_balanced_analysis_check.json`。重复种子不是独立抓取，既有验证场景不是全新盲测。
 
-**五组续训后的持续姿态偏差分解（2026-10-25，CPU保存数据分析）**：以原模型及五组续训已保存的闭合前10帧输入×3种子，在共同持位第0～27行分解六关节平方误差。第一种分解为“三种子平均后的平方误差＋种子间经验方差”；第二种独立分解为“每块行均值的平方误差＋块内随行变化”。两式数值恒等均检查通过；它们是同一误差的不同分解，比例不能相加，也不是总体偏差／方差估计或因果证明。数据和定义见[persistent_action_error_analysis.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/persistent_action_error_analysis.json)。
+**五组续训后的持续姿态偏差分解（2026-10-25，CPU保存数据分析）**：以原模型及五组续训已保存的闭合前10帧输入×3种子，在共同持位第0～27行分解六关节平方误差。第一种分解为“三种子平均后的平方误差＋种子间经验方差”；第二种独立分解为“每块行均值的平方误差＋块内随行变化”。两式数值恒等均检查通过；它们是同一误差的不同分解，比例不能相加，也不是总体偏差／方差估计或因果证明。数据和定义见persistent_action_error_analysis.json。
 
 | 验证侧模型 | 三种子平均后保留的平方误差占比 | 每块不随行变化部分占比 | 三种子平均后的持位姿态误差 |
 | --- | ---: | ---: | ---: |
@@ -342,11 +344,11 @@ RTX 4090 D上优化器循环373.8秒，训练加完整验证约13.8分钟，从�
 
 另只读60条训练数值数据，统计1,960,150个有效“当前观察／未来动作行”配对：若六关节表示为相对本次当前状态的偏移，J1标准差由同配对绝对值的21.2811°降至6.8812°，J6由20.9941°降至6.4330°；夹爪保持绝对值。该统计仅支持相对动作作为待验证候选，未安装为归一化参数或改变权重。训练示教闭合前持位时长最短0.72秒、中位1.00秒、最长1.68秒；不能归因于完全没有持位示范。9个拟合输入的状态和未来动作与既有评价清单逐项float32一致。
 
-**固定观察拟合诊断的本地准备**：[固定观察拟合方案](README.md#p1固定观察拟合诊断)已完成默认关闭的入口、源／episode／frame精确选择、批次身份日志及诊断检查点标记；原完整动作、补齐掩码、统计和验证集保持。32项定向CPU测试通过，使用假策略／合成数据覆盖选择、训练循环、保存重载及完整验证。保存数组检查中，专家动作能够通过拟合判据，旧uniform不能通过，“一直停在正确闭合关节位置、后续不运动”也因完整动作误差被拒绝，见[fixed_observation_fit_local_check.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/fixed_observation_fit_local_check.json)。以上为训练前CPU准备记录；用户随后明确授权，执行结果见下文。预算、门槛与结果分支只维护在上述README与机器计划；不把小样本拟合通过当部署验收。
+**固定观察拟合诊断的本地准备**：[固定观察拟合方案](EVIDENCE.md#p1新增动作模型横向对比)已完成默认关闭的入口、源／episode／frame精确选择、批次身份日志及诊断检查点标记；原完整动作、补齐掩码、统计和验证集保持。32项定向CPU测试通过，使用假策略／合成数据覆盖选择、训练循环、保存重载及完整验证。保存数组检查中，专家动作能够通过拟合判据，旧uniform不能通过，“一直停在正确闭合关节位置、后续不运动”也因完整动作误差被拒绝，见fixed_observation_fit_local_check.json。以上为训练前CPU准备记录；用户随后明确授权，执行结果见下文。预算、门槛与结果分支只维护在上述README与机器计划；不把小样本拟合通过当部署验收。
 
 **固定观察拟合诊断（2026-10-25，已完成：闭合通过、关节未通过）**：用户以“可以我授权开始训练”明确授权后，在独立目录`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/fixed_observation_fit_20261025/`完成一组1000步训练、6023帧完整验证及54份固定动作块。原始训练9个输入的双RGB像素、状态、50行专家动作与保存评价输入逐项一致；每一步的9个样本键完全符合清单，共9000次呈现，无验证输入。沿用原训练统计、依赖和模型配置，配置仅学习率有意改变；学习率逐步匹配冻结计划，严格重载的9×50×7预测完全一致。授权、传输、执行和完成检查分别见同一review目录的`fixed_observation_fit_authorization.json`、`fixed_observation_fit_transfer.json`、`fixed_observation_fit_execution_status.json`及`fixed_observation_fit_results/execution_check.json`。冻结的训练前计划保留原准备状态，当前完成状态以执行记录为准。
 
-评估入口为[fixed_observation_fit_assessment.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/fixed_observation_fit_assessment.json)，完整训练审核、原模型／uniform对照、逐观察及逐阶段结果为[fixed_observation_fit_comparison.json](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/fixed_observation_fit_comparison.json)。以下训练侧指标均来自9个已训练观察×3种子，共27份动作块；uniform是已有目标描边的普通续训对照。本诊断同时改变输入规模、batch与学习率，不能作单因素归因。
+评估入口为fixed_observation_fit_assessment.json，完整训练审核、原模型／uniform对照、逐观察及逐阶段结果为fixed_observation_fit_comparison.json。以下训练侧指标均来自9个已训练观察×3种子，共27份动作块；uniform是已有目标描边的普通续训对照。本诊断同时改变输入规模、batch与学习率，不能作单因素归因。
 
 | 训练侧指标 | uniform | 固定9观察拟合 | 拟合判据结果 |
 | --- | ---: | ---: | --- |
@@ -369,9 +371,128 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 
 复核脚本均在同一`review/`，固定入口仍为`grasp_failure_analysis.json`；`feedback_options_assessment.current_decision`明确几何方案暂缓，`pure_model_diagnosis`链接执行审计、18次现场观察复算、完整动作块评价及训练内对照。`analyze_pure_model_repair.py --summarize`只处理已保存的18次结果；`evaluate_expert_action_chunks.py`的`prepare/analyze/summarize/compare`仅处理本地数据，`predict`调用远端模型，`--refinement-20`用于已完成的27次内部步数对照，`--training-fit`用于已完成的训练内对照，`verify-processors`仅远端CPU读取。完整动作块诊断累计81＋27＋27＝135次样本预测，三个客户端均正常结束并关闭各自工作进程；此前18次现场观察复算单独统计。上述135次属于训练前诊断；后续两组续训及持位／时序研究单独记录在本节对应段落，不能把复用结果重复计为新增预测。现行运行模型与原始数据保持，未采集或连接机械臂。当前不安排原样重跑，不增加固定位置／腕角／高度补偿。本轮物体已有位移，旧快照不再用于新执行，后续流程只维护在[操作模板](README.md#目标条件模型单次真机试验)。
 
+#### 短续训候选退役与1像素正式训练准备
+
+**2026-10-25用户决定：删除7组1000步候选及相关派生实验，改为1像素同预算正式训练。** 准备完成后用户明确授权启动，远端已实际完成优化更新；当前状态及时间预估统一见[README](README.md#1像素描边正式训练)，启动身份及授权见该节机器记录。本文既有目的、参数、指标与局限继续保留，不重复登记结果；短适配未通过不能外推为完整训练无效，原双RGB＋独立目标条件结构方案暂停。
+
+清理对象为`uniform`、`preclose_weighted`、`holding`、`gripper_close`、`phase_balanced`、`fixed_observation_fit`、1像素短续训及α=0.10／0.25插值。主机为`gpu`，下列路径相对`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/`：
+
+| 清理目录 | 专属内容 |
+| --- | --- |
+| `close_precision_training_20261024/` | 普通续训、末段加权及配套源码、输入副本、预测和报告 |
+| `hold_close_training_20261024/` | 持位／闭合候选及配套产物 |
+| `phase_balanced_training_20261025/` | 阶段采样候选及配套产物 |
+| `fixed_observation_fit_20261025/` | 固定观察拟合候选及配套产物 |
+| `p1_inference_methods_20261025/` | 插值权重及配套预测代码 |
+| `live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/thin_outline_experiment/` | 1像素短续训及配套产物 |
+
+本地清理对应`review/close_precision_training/`、`review/target_alignment/thin_outline_experiment/`及4个专属`*thin_outline*.py`脚本；移除公共训练链路中旧候选的加权、持位、闭合、阶段采样、固定观察入口及专属测试。保留真实动作维度／补齐屏蔽的基础损失、1像素输入支持、普通训练／评价和当前运行接口。
+
+实施与删除后核对状态见唯一[清理清单](../../artifacts/maintenance/stack_short_training_retirement/manifest.json)。不为这些权重另建备份，Git不能恢复被忽略的实验权重；本文已去除指向退役产物的旧链接，路径文字仅为历史身份。原始示教、标注、现场证据、原始专家观察诊断、baseline-stack、原target-stack、target-pair、分割模型及预训练缓存保留。正式训练准备与当前参数只维护在[README](README.md#1像素描边正式训练)及其机器计划。
+
+清理后的全量回归发现P2 baseline入口检查仍借用旧候选的观察清单，已改用其自身原`prepared_inputs.json`提取的[独立6份观察索引](../../artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/selection_manifest.json)，不改变原输入、预测及完成记录。原大清单已删除，其旧摘要仅作为历史身份，不能重新证明原文件；后续核对明确报告“原清单不可用、冻结baseline记录已核对”。相关软件测试改用合成清单，不依赖实验目录。全量`make test-aubo-offline`通过832项、跳过11项；另以63份专家动作自对照及短闭合脉冲检查正式评价脚本，均为CPU检查、0次模型调用。
+
+#### 1像素同预算正式训练结果
+
+**2026-10-26训练与离线评价完成；后续独立服务及真机首轮结果见本节末。** 用户明确授权后，从原SmolVLA预训练基座训练30000步，原数据、seed、优化和冻结范围保持；具体参数只维护在[README](README.md#1像素描边正式训练)。训练循环11318秒（约3小时9分钟），所有30000步损失与梯度有限；首100／末100步平均训练损失1.41012／0.01547。final严格加载与重载预测逐值一致，通过完整6023帧验证。5000／10000／20000／30000步各189份动作块共756份、新增原2像素搬运／释放参考81份，加复用108份参考，均已齐备；30000步仍是预定主比较。
+
+初次CPU汇总因`prepared_data`为字符串而读取函数直接调用`.read_text()`报错，训练和GPU预测此前均已完成。仅把入口统一转为`Path`后重新CPU汇总，0次新增训练、0次新增GPU预测；[原失败记录](../../artifacts/training/stack_thin_outline_formal/execution_before_analysis_repair.json)和原日志保留，[修复记录](../../artifacts/training/stack_thin_outline_formal/analysis_repair.json)明确原因。[本地复核](../../artifacts/training/stack_thin_outline_formal/result_verification.json)从保存预测重新核算主指标、验证六关节均值，核对所有检查点样本身份、数量和有限值，均通过。
+
+完整验证的首行动作六关节平均绝对误差（度，越低越好）如下；三组6023帧的状态、专家动作、来源、episode和frame身份逐值一致。
+
+| 阶段 | 无描边baseline | 原2像素target | 新1像素target |
+| --- | --- | --- | --- |
+| 全部6023帧 | 0.17626 | 0.18239 | 0.18327 |
+| 接近2998帧 | 0.15484 | 0.17196 | 0.16934 |
+| 搬运3025帧 | 0.19750 | 0.19273 | 0.19708 |
+| 释放前后5帧，共99帧 | 0.20157 | 0.19645 | 0.19928 |
+
+预定闭爪前主指标是`before10`观察动作块第8～19行“每行六关节最大绝对误差”的均值，不与上表六关节MAE混用。9份验证观察×3推理seed共27份：baseline 0.69294°，原2像素0.71638°，1像素0.74119°（较2像素增加约3.5%）。复用已有baseline同观察预测，并核对状态、帧身份和既有主指标后，分角色结果如下；每类为3份观察×3推理seed，不是9次独立物理试验。
+
+| 验证角色 | 无描边baseline | 原2像素target | 新1像素target |
+| --- | --- | --- | --- |
+| 上层 | 0.38838 | 0.66470 | 0.73161 |
+| 下层 | 0.96014 | 0.92073 | 0.92224 |
+| 独立条 | 0.73019 | 0.56371 | 0.56970 |
+
+总体持续闭合绝对时序误差0.34963→0.32000秒，但首次闭合短脉冲10/27→11/27，不能只挑时序均值宣称整体改善。完整验证闭合边界首行命中三组均0/9，释放边界为baseline 0/9、两描边组各1/9，整体夹爪准确率不代表切换边界可靠。
+
+全部分组、中途走势、逐样本动作误差和事件覆盖见[唯一比较报告](../../artifacts/training/stack_thin_outline_formal/evaluation/comparison.json)。1像素完整训练没有表现出一致优势，不替换原运行模型；该结果不能推导为视觉模型无用或描边式目标条件普遍无效。验证仍是3个已参与诊断的摆放，推理seed不等于独立物理试验；该离线评价时尚无新1像素模型的真机抓取或同图换目标服从证据，后续首轮单目标结果见本节末。
+
+**进一步CPU诊断（2026-10-26，仅已保存结果）**：新增[诊断脚本](../../artifacts/training/stack_thin_outline_formal/diagnose_training.py)、[机器诊断](../../artifacts/training/stack_thin_outline_formal/evaluation/diagnosis.json)及[诊断图](../../artifacts/training/stack_thin_outline_formal/evaluation/diagnosis.png)，不改原比较报告。三组归一化逐值一致，新旧target的训练／验证来源审计内容一致；复用baseline预测的状态与帧身份再次核对，既有主指标精确复现。未新增训练、GPU推理或设备操作。
+
+- **场景差异**：p-102上层／下层的原2像素→1像素主误差为0.76751→0.31650°、0.85499→0.40313°；p-103则为0.49228→0.99469°、1.40935→1.94704°。下层在p-101也改善，但p-103抵消了前两堆收益；不能用总体均值解释为所有观察均退化。全部27个配对中1像素11个更小；按每份观察跨seed均值看，9份中5份更小。
+- **关节拆分**：诊断性只对J1～J5取每行最大误差时，原2像素0.45914°、1像素0.39739°（降低13.4%）；预定六关节主指标保持不变。上层J6分量MAE分别为baseline 0.23862°、2像素0.58282°、1像素0.68612°。1像素上层p-101／p-103的J6有符号偏差分别约-0.881°／+0.979°，总体符号均值接近0不能解释为各场景无偏，也不支持统一角度补偿。1像素持位误差平方中约91.2%来自每份预测块内持续存在的偏差；其首行动作最大关节误差0.66359°，原2像素0.61444°，不是单纯未来行抖动增大。
+- **训练走势**：选定验证`before10`主误差在5000／10000／20000／30000步为2.13832／1.41530／0.98410／0.74119°，训练内选定观察也持续下降。final训练内为0.36621°，原2像素0.40671°，验证却略差；存在所选观察上的泛化差距线索，未观察到已保存阶段中“训练越久验证越坏”的转折，也没有更长训练一定有效的证据。仅一次训练seed，推理seed不能估计重新训练的方差。
+- **跨时刻与搬运**：`before40`／`before25`全有效动作块最大关节误差均值由0.7956／0.7787°变为0.9968／0.9172°；`before10`全块却由0.9054°降至0.8864°，不能只评闭爪附近。释放前10帧观察的全块误差0.7085→0.6768°、持续释放时序误差0.2015→0.1926秒，有局部改善。搬运中段两宽度均为相同原RGB输入，其全块误差1.5716→1.5745°，模型参数变化的影响不局限于当前帧描边区域。
+- **评分对照与证据边界**：以“专家当前动作与当前状态的六关节最大差≤0.05°”划分1563个近静止指令样本，其复制当前关节状态的诊断MAE约0.00151°，1像素0.15523°；其余4460帧复制状态0.45234°、1像素0.19310°。此划分表示动作／状态接近程度，不是实际速度测量。复制状态不是可部署抓取策略；这些数值说明动作预测学到了超过原样保持的运动规律，不能单独证明视觉分支的因果贡献。独立条上1像素比baseline低约22%，上层则较差，不能概括为视觉整体无用。若后续检验视觉利用，应固定检查点、状态及seed做图像／目标提示消融；输出敏感性与实际抓对目标仍分别验证，本轮未新增此类GPU试验。
+
+诊断复现：项目`.venv/bin/python artifacts/training/stack_thin_outline_formal/diagnose_training.py`生成机器指标；系统已有matplotlib的`python3 .../diagnose_training.py --plot-only`只读取诊断JSON绘图，不安装依赖或更改项目环境。当前优先定位p-103等场景下的J6条件响应，采集扩充继续按独立会话的整堆划分与摆放多样性方案推进；不把数据不足、视觉冻结、分割错误或训练预算任一项当作已证明的唯一根因。
+
+**训练集全量拟合评价（2026-10-26，已完成并取回结果）**：用户要求用训练集检查，并明确“2像素和1像素对比即可”。仅对两份30000步final各评价原20堆／60条／40673帧，共81346帧预测；0次优化，不追加baseline推理或重算原6023帧验证。它用于区分已见示教残差与新摆放退化，训练集划分保持`train`，不把结果改称独立验证成绩。此前9份训练观察×3推理seed只覆盖3个训练堆，不能代替本次全量评价。
+
+[冻结范围](../../artifacts/training/stack_thin_outline_formal/training_set_evaluation_plan.json)及[选择清单](../../artifacts/training/stack_thin_outline_formal/training_set_selection.json)在推理前登记全部帧身份、每条示教的闭合前40／25／10帧、闭合、搬运中段、释放前10帧和释放共420个关键时刻；关键50行动作块从全量输出保留，不另做GPU调用。CPU实读全部420份输入，核对状态、未来动作与补齐屏蔽均通过，见[准备检查](../../artifacts/training/stack_thin_outline_formal/training_set_cpu_preflight.json)。原始p-001三条的角色暂记`unknown`，不猜测、不排除；其余每类19条。
+
+运行代码为[evaluate_training_set.py](../../artifacts/training/stack_thin_outline_formal/evaluate_training_set.py)，写入远端原正式训练目录下新的`training_set_evaluation/`；batch8、10个生成步，逐批重置`seed=42+batch_index`以匹配两模型初始噪声，仅推理、不计算训练损失、不更新权重。实际共4162.30秒（69分22秒），81346帧及840个关键动作块全部完成，无错误，进程已退出；见[完成记录](../../artifacts/training/stack_thin_outline_formal/training_set_evaluation/complete.json)、[启动记录](../../artifacts/training/stack_thin_outline_formal/training_set_launch.json)与[只读进度](../../artifacts/training/stack_thin_outline_formal/training_set_status.json)。初始预算1.5～2小时、总时限3小时，实际与早期纯推理约70分钟估算接近。结果已取回本地，保存[比较汇总](../../artifacts/training/stack_thin_outline_formal/training_set_evaluation/comparison.json)及两组完整首行动作数组／关键50行动作块。
+
+新增[CPU复核脚本](../../artifacts/training/stack_thin_outline_formal/analyze_training_set.py)与[训练集诊断](../../artifacts/training/stack_thin_outline_formal/training_set_evaluation/diagnosis.json)：40673帧身份／顺序、状态与专家动作逐值一致，数组均有限；两组各420个关键动作块唯一齐全，首行与全量数组一致，阈值解码一致，整体关节MAE及60条示教的主指标均复现。复核未加载模型或新增GPU调用。
+
+| 范围与指标（越小越好） | 原2像素target | 新1像素target | 1像素相对变化 |
+| --- | --- | --- | --- |
+| 完整训练40673帧：首行六关节MAE | 0.12427° | 0.12161° | 降低2.14% |
+| 既有验证6023帧：首行六关节MAE | 0.18239° | 0.18327° | 增加0.48% |
+| 全部60条训练示教：`before10`主误差 | 0.44152° | 0.39900° | 降低9.63% |
+| 既有9份验证观察×3推理seed：`before10`主误差 | 0.71638° | 0.74119° | 增加3.46% |
+
+完整训练首行MAE在20堆中17堆降低；闭爪主指标按每条示教为33/60降低、按每堆三条平均为14/20降低，不是所有示教均改善。训练上层／下层／独立条的主误差分别为0.50037→0.41491°、0.36424→0.36268°、0.43701→0.41035°，每类19条；`unknown`三条仍保留。完整训练J6 MAE由0.27385降至0.26349°，既有验证则由0.41917升至0.42588°，训练内改善不能替代新摆放表现。
+
+夹爪整体首行准确率为99.4788%→99.4861%，但闭合边界首行命中两组均2/60，释放边界为7/60→6/60；大量保持状态帧主导整体准确率。检查全部60个`before10`动作块时，两组均含连续至少3行的闭合预测（持续闭合缺失均0/60），因此首行低命中不等于整块不会闭合；首次闭合仅持续1～2行的短脉冲却由14/60增至19/60，持续闭合绝对时序误差0.18800→0.19533秒。释放前10帧的持续释放绝对时序误差0.16733→0.16800秒，未出现明显改善。动作块评分是给定专家观察的离线预测，不是机械臂实际执行或抓取成功率。
+
+结论：1像素确实改善本次训练内关节拟合，但尚未带来验证集一致优势，闭合连续性残差也在训练内存在。训练集的新噪声序列与既有验证评价不同，阶段组成和场景数量也不同；这些结果支持继续区分训练内事件残差与新摆放条件响应，不能单凭均值确定过拟合、更多步数必然有效或视觉模型无用。上述训练集评价时尚无图像／目标提示消融、独立训练seed复现或新1像素真机证据；后续首轮真机结果见本节末，原2像素默认模型保留。
+
+**1像素真机首轮准备（2026-10-26，用户明确授权单独试用）**：本轮[唯一计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/experiment_plan.json)使用新1像素final，身份`992f69d28e043bc4c758e44d655a0605c113184441eeddc9983d347d5c3e378a`首次核对通过。新增显式试用选项，默认原2像素入口保留；协议、当前掩码描边、预览与日志统一宽度，未改动作模型权重、控制补偿、运动限制或环境。远端新建`artifacts/joint_stack_thin_outline_live_service/`，以本次正式训练冻结源码为基础，只覆盖所需实时输入／协议模块与worker；原2像素服务和训练源码均未覆盖，见[部署记录](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/deployment.json)。
+
+软件检查182项通过（目标实时输入、持续入口、运动预览与目标策略四个相关文件），覆盖默认2像素保留、显式1像素模型绑定、输入与训练渲染一致、搬运原图、预览宽度及不匹配协议拒绝。真实GPU检查复用旧P2保存图像，只用于服务兼容性：严格加载新权重和现分割模型，接近／搬运两次请求均返回有效50×7动作块，另有2次合成预热；接近目标2722像素，同帧目标／运动参考／1像素约定及搬运原图协议通过。见[服务检查](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/service_check/summary.json)和[无设备计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/service_check/plan_1px.json)。这不是当前摆放，也不复用其旧标注执行真机。助手未连接相机、机器人或IO；准备阶段的物理结果均为`null`，随后操作者仅试A一次，现场结果及复核见下文。实际命令和回退方法统一见[现场入口](README.md#目标条件模型单次真机试验)。
+
+**首轮归位、新快照与标注审核（2026-10-26，准备已完成）**：操作者完成归位，[归位记录](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/home/complete.json)的`passed/completed=true`。新[快照](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/scene_snapshot/snapshot.json)ID为`67576a991c96437e9f6ea55ed5a66ade`，夹爪命令0，起点最大关节误差约0.00015°；全局图可见右侧交叉两条和左侧独立条。助手查看原双RGB，按本图准备[未审核草稿](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/scene_snapshot/selection_draft.json)：A为左下至右上的交叉上层条，B为右侧近竖直下层条，C为左侧独立条。A/B/C为2185／1865／2014像素，B仅保留遮挡两侧两个区域，互不重叠；[叠图](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/scene_snapshot/annotation_draft_preview.png)已查看。[审核页](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/scene_snapshot/review.html)预填三根、默认A且初始确认框未勾选，原页与原双RGB保留；实际准备入口拒绝未审核草稿，见[草稿检查](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/scene_snapshot/annotation_draft_check.json)。浏览器工具因本地文件协议限制未能打开该页，随后操作者自行审核导出，`human_reviewed=true`、快照ID一致、区域与草稿一致；导出虽保存在旧P2目录，但已按内容核对后原字节复制为本轮[selection.json](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/scene_snapshot/selection.json)，原导出保留。见[标注核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/selection_check.json)。使用真实入口生成[单次A计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/single_pick_plan.json)，核对新1像素模型／服务、宽度1、单周期、无自动归位及原控制限制；与兼容性计划仅种子快照ID不同，未连接设备或加载模型。准备完成时`A_pick_run/`尚不存在、实际尝试为0；随后操作者完成一次A试抓，结果如下。
+
+
+**1像素首轮A物理失败与复核（2026-10-26，结束后未继续B/C）**：操作者反馈“抓的还是有点歪，没抓到”，并补充“碰到了，没有立即松开，扰动了”。本轮计1次A尝试，未抓到／未送达、碰到目标及邻条扰动保留操作者来源；具体受扰邻条、是否推走A等未明确项目继续为`null`。见[现场反馈](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/review/operator_feedback.json)。[原运行完成记录](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/A_pick_run/complete.json)为`model_suction_cycle_completed`：1083条伺服记录、123份接受预测、1个指令周期，无软件异常；原`physical_grasp_success=null`保持不改。最终伺服关闭、机器人静止且夹爪命令松开。双路录像各1107帧、无编码错误，B/C未尝试，不计为失败。
+
+CPU复核只读取本轮日志、请求JPEG和录像，见[提取结果](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/review/extracted_evidence.json)及[判断与边界](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/review/assessment.json)。50份接受接近输入均为A／1像素，73份搬运均为闭合后原双RGB；闭合前在途#50按阶段约定丢弃。查看全部接近掩码叠图，未见整条身份切到B/C，掩码1620～2689像素；最后#49观察在IO闭合前约0.812秒，A运动参考因尺度0.9667低于0.97被拒绝更新并保留最近参考，支持率45.83%，此前A参考均更新成功。不能据轮廓仍对应A排除接触附近的参考滞后、局部掩码或时序影响。
+
+[闭爪前双路关键帧](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/review/closing_before.jpg)可见A斜穿夹指开口并靠近一侧；[闭爪后](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/review/closing_after.jpg)交叉两条明显转动，[末帧](../../artifacts/live/stack/stack_thin_outline_20261026_trial01/review/global_overview.jpg)三根仍在源区。闭合前最后伺服记录距IO接受约28.7 ms，实测关节对模型目标最大误差0.14063°，J6差-0.03127°，该条命令采用观察年龄0.72041秒；闭合前1秒最大目标误差0.82438°。这些说明闭合时基本跟到当时模型目标，不证明该目标对准竹条；不能直接归因于单一关节或排除接近过程／反馈时序。命令仅一次闭合、一次释放，间隔24.00487秒，未出现立即释放命令，与操作者反馈一致；IO读回匹配不证明夹持成功。关键帧按来源时间匹配，最大偏差约19.49 ms，IO接受时刻不是机械接触时刻。
+
+本轮证据表明1像素输入在这次摆放中仍未解决末段对准和夹持问题；无同摆放2像素配对结果，不能比较稳定成功率或确定描边宽度、过拟合、分割任一单一根因。下一项离线诊断优先对照保存的成功上层示教，区分模型末段位置／姿态目标及碰条后的反馈响应。本轮现场流程已结束，不自动继续B/C；已受扰的摆放不得直接复用旧种子续抓。没有追加训练、GPU推理、补偿或硬件操作。
+
+
+**1像素第二轮重新摆放准备（2026-10-26，用户授权再试一次）**：首轮失败及复核保持原样，用户决定重新摆放后进行第二轮单目标实验。[第二轮计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/experiment_plan.json)沿用同一新1像素final、独立服务、分割模型及控制参数，仍仅试A一次，不自动扩为三根连续抓取；复用首轮已通过的软件／GPU兼容性证据，未重复部署、哈希或GPU检查。准备时第二轮三个阶段目录均不存在。随后操作者完成归位，`home/complete.json`为`passed/completed=true`；新快照ID为`1135dc7c47a143eb8a5da598a20acf45`，夹爪命令0、起点最大关节误差约0.00015°。助手查看双RGB，按新图准备[未审核草稿](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/scene_snapshot/selection_draft.json)：A为左上至右下的交叉上层条，B为右上至左下的交叉下层条，C为左侧独立条；上下关系待人工确认。A/B/C为2256／1831／2003像素，B仅保留遮挡两侧，互不重叠。[审核页](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/scene_snapshot/review.html)已预填三根并保持确认框未勾选；原页面和原双RGB保留，[叠图](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/scene_snapshot/annotation_draft_preview.png)已查看，真实准备入口拒绝未审核草稿，见[草稿核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/scene_snapshot/annotation_draft_check.json)。随后操作者完成审核导出，`human_reviewed=true`且快照ID一致，三根区域与草稿一致；原导出保留，已原字节复制为本轮[selection.json](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/scene_snapshot/selection.json)，见[标注核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/selection_check.json)。使用真实入口生成[第二轮单次A计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/single_pick_plan.json)，与首轮计划仅种子快照ID不同；核对新1像素模型／独立服务、宽度1、单周期、无自动归位及原限制。准备完成时`A_pick_run/`尚不存在、实际尝试0、物理结果全部为`null`；随后操作者完成本轮A试抓，反馈及后续安排见下一段。助手未连接设备或加载模型。
+
+
+**1像素第二轮A反馈与第三轮三根流程准备（2026-10-26）**：第二轮操作者反馈“不行，这次还是抓歪，跟之前一样往右边偏”，按操作者来源记录本次物理失败及偏右现象；未给出的夹持、送达、邻条扰动细项继续为`null`，不把“右”直接换算成机器人坐标偏置。见[第二轮反馈](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/review/operator_feedback.json)及[有限日志核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial02/review/run_summary.json)。原`complete.json`为`model_suction_cycle_completed`，1019条伺服记录、114份接受预测（接近48／搬运66），1个指令周期；两路录像各1049帧、无编码错误。闭合／释放接受间隔22.34081秒，最终伺服关闭且静止；原`physical_grasp_success=null`保持不改。第二轮B/C未尝试，此处未新增视频归因诊断。
+
+用户随后明确授权第三轮一次启动完成三根流程。[第三轮计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/experiment_plan.json)继续使用同一新1像素模型、独立服务、分割及控制参数，改用`--target-sequence A B C`和新`three_pick_run/`，预定3个指令周期、两次目标间归位，C结束后不再归位。现有程序按指令周期切换目标，不能识别A抓空或未移走，因此本轮用于尝试完整顺序流程，不表示偏右已解决；A仍压住下层或场景被带乱时由操作者现场停止。准备时第三轮三个阶段目录均不存在。随后操作者归位通过并采集新快照，ID为`75ad91c690944461908c919d493300ad`，夹爪命令0、起点最大关节误差约0.00015°。助手查看双RGB及局部放大，当前摆放与第二轮相近，不当作新的独立布局类别；按当前新图核对并准备[未审核草稿](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/scene_snapshot/selection_draft.json)，A为左上至右下上层、B为右上至左下下层、C为左侧独立条。A/B/C为2179／1898／2012像素，B仅标遮挡两侧，非空且互不重叠。[叠图](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/scene_snapshot/annotation_draft_preview.png)已查看，[审核页](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/scene_snapshot/review.html)预填三根、确认框未勾选，原图和原页面保留；真实准备入口拒绝未审核草稿，见[草稿核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/scene_snapshot/annotation_draft_check.json)。随后操作者完成审核导出，`human_reviewed=true`且快照ID一致，三根区域与草稿一致；原导出保留并原字节复制为本轮[selection.json](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/scene_snapshot/selection.json)，见[标注及逐目标设置核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/selection_check.json)。真实入口生成[三根正式计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/three_pick_plan.json)，核对A→B→C、三个周期、仅目标间两次归位、每根600秒上限及双路录像；逐一检查3→2→1剩余身份，三份设置均绑定本轮快照、新1像素权重、独立服务及宽度1，原控制限制不变。准备完成时`three_pick_run/`尚不存在，实际尝试0、逐根物理结果全部为`null`；随后操作者启动并在A接近阶段中断，结果见下文。未改运行代码、固定补偿或模型，不重复部署／GPU检查，不启动训练，助手未连接设备。
+
+
+**第三轮A接近阶段中断与三轮联合诊断（2026-10-26）**：操作者反馈“这次还是抓歪，我手动停止了”，后续说明通过示教器停止或急停，并已现场确认停稳、伺服关闭或急停；具体按钮及报警发生在干预前还是后未明确。见[操作者反馈](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/operator_feedback.json)。[原完成记录](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/three_pick_run/complete.json)为`error`：464条伺服记录、49份接受预测，当前仍为A、已完成周期0、没有接受闭合命令；B/C和两次目标间归位均未开始。控制器报`isCollisionOccurred=True`，错误收尾还记录`servo remains enabled`，没有生成`final_state.json`；程序未确认安全停机与操作者后来现场确认停稳分别记录，不改原日志。双路录像各514帧、无编码错误。第三轮是对准失败后中断，不和前两轮已闭爪的抓空合并为三次完成抓取失败。
+
+[三轮保存证据](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/saved_alignment_evidence.json)仅用CPU读取日志、原请求JPEG和录像。三轮接近响应的模型SHA、快照、A身份和1像素协议一致有效；所有可关联的伺服`target`与实际所选模型完整动作行最大差均为0，没有发现本地额外关节偏置。前两轮闭合前最后实测对模型目标最大差为0.14063／0.14012°；第三轮停止前仍为0.64010°，不能声称第三轮已到闭爪目标。三轮接受观察年龄中位数为0.42419／0.42407／0.42487秒；第二轮最后闭合选第0行，不能把共同问题归成闭合时固定取第10行错误，也不能据此排除全程时序影响。第三轮全部49份接近掩码叠图已查看，仍主要对应A，未见整条身份切换；A/B参考在最后#47／#48因重叠拒绝更新，使用保留参考，局部掩码及参考滞后影响仍未排除。
+
+[腕图对照](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/wrist_comparison.jpg)、[第三轮末段](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/trial03_end_frames.jpg)及[第二轮闭合前](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/trial02_end_frames.jpg)支持夹口相对目标偏右、目标贴近左指的观察；历史trial04成功A更居中，但其布局不同，不能直接拿关节差作补偿。当前工作判断为末段模型条件动作及在线视觉纠偏不可靠；具体是位置、姿态、输入或时序各占多少尚未确立，不定为单一关节、数据量、描边或过拟合。详见[判断与边界](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/diagnosis.json)。
+
+下一项[固定观察对照计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial03/review/fixed_observation_plan.json)已完成CPU准备：取第三轮请求#30／#40／#45保存双RGB、实际状态与日志A掩码，分别按baseline／原2像素／新1像素各自训练约定输入，配对seed42／43／44，共27份动作块；不重新分割、不训练、不连接设备。保存JPEG不是原无损通信RGB，因此三模型须在同一JPEG解码输入上重新预测，不能把旧1像素输出当逐值匹配对照；模型差异本身也不是物理成功证明。尚未执行该新GPU任务，运行模型、控制限制、原始日志和录像均未改。
+
+**第四轮到位后观察对照准备（2026-10-26）**：用户要求去掉重规划再试，并明确选择“每个模型目标到位后再看图”。本地入口新增默认关闭的`--observe-after-arrival`；具体语义、限制与回退统一见[运行说明](README.md#目标条件模型单次真机试验)。[第四轮计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/experiment_plan.json)仅安排新1像素模型抓A一次，沿用同一独立服务、描边宽度、运动跟随、接收时取行、夹爪与阶段协议及全部原限制；运动中冻结选中行且不发下一份推理请求，到位后再观察。`goal_arrived`轨迹事件、命令中的冻结标记和实际观察年龄用于复核；原日志及前三轮产物保持。到位判据是关节误差和轨迹速度，不是物理成功。112项相关CPU检查通过，覆盖普通入口回归、无设备计划、新模式不提前观察／不换行、模型闭合后搬运、单个抓放周期及到不了／推理挂起时停止伺服；见[软件核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/software_check.json)。没有重部署、重新计算权重哈希、训练、真实GPU推理或设备连接。操作者随后完成归位及新快照：`home/complete.json`为`passed/completed=true`，快照ID为`149f11ad5d844e5a91ee4e5f119ca16e`，夹爪命令0、起点最大关节误差约0.00015°。已查看新双RGB，按本图准备[未审核草稿](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/scene_snapshot/selection_draft.json)：A为右侧左上至右下上层、B为交叉下层、C为左侧独立条，上下关系待操作者确认。A/B/C分别1990／1891／1855像素、互不重叠，B分为两个可见区域；[审核页](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/scene_snapshot/review.html)预填3根且确认框未勾选，原图和原页面保留，真实准备入口拒绝未审核草稿，见[核对记录](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/scene_snapshot/annotation_draft_check.json)。浏览器工具因本地file协议策略拒绝自动打开，之后由操作者手动打开并完成审核导出，没有绕过策略。已核对原导出`target_shadow_149f11ad5d844e5a91ee4e5f119ca16e_selection.json`为`human_reviewed=true`、快照ID一致、三根可见区域与草稿一致；保留原导出，原字节复制为本轮[selection.json](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/scene_snapshot/selection.json)，见[标注与配置核对](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/selection_check.json)。真实入口无设备、无模型加载生成[单次A计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/single_pick_plan.json)，确认`observe_after_arrival=true`、接收时选行后冻结、同一新1像素final与独立服务、只抓A一个指令周期、无自动归位，22项控制／新鲜度及相关参数与第二轮正式计划一致。准备完成时`A_pick_run/`尚不存在、实际尝试0、物理结果全部`null`，之后由操作者执行，结果如下；助手没有启动GPU调用或连接设备。现有固定观察27次GPU对照仍未运行；单轮新摆放对照不能独立证明重规划是偏斜根因。
+
+**第四轮到位后观察超时与后续恢复默认模式（2026-10-26）**：操作者执行后报告“突然停止了”，并决定不再关闭重规划。见[本轮复核](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/review/replanning_assessment.json)。原完成记录为`TimeoutError: no fresh prediction within 1500 ms`，接受4份A接近预测、发送100条伺服记录，4份目标均记录到位；没有接受闭合／释放、完成周期0，不能记为抓取失败或关闭重规划后的对准效果。最后接受的#3观察到接收约0.39581秒，接收到到位约1.00412秒，合计1.39993秒，原1.5秒期限只剩约0.10007秒；随后#4已开始运动参考处理，但停止前没有新预测被接受。原因是到位后再观察的串行调度耗尽原观察起算的watchdog预算，不据此判定GPU卡住。`final_state.json`确认`is_steady=true`、`servo_enabled=false`、夹爪命令0；双路录像各118帧、无编码错误。所有原日志保持不改，物理结果仍`null`，B/C未尝试。后续按用户决定省略`--observe-after-arrival`，沿用原默认异步滚动重规划，无需代码恢复、部署或追加检查；本轮产物保留，不自动启动下一轮。
+
+**恢复默认异步与时序核对（2026-10-26）**：用户要求恢复异步重规划并询问更新速度是否落后于运动。只用CPU读取前三轮异步及第四轮到位后观察日志，保存[完整时序统计](../../artifacts/live/stack/stack_thin_outline_20261026_trial04/review/async_timing_analysis.json)，复核脚本为同目录`analyze_async_timing.py`。前三轮A接近分别50／48／49份接受预测，更新间隔中位数0.39993／0.40035／0.39949秒（约2.50 Hz），接收时最旧输入年龄中位数0.42419／0.42407／0.42487秒。请求状态到该预测首条命令状态的实测最大单轴位移，中位数1.41855／1.48567／1.43332°；这描述推理期间机械臂移动，不是对准误差。动作模型路径中位数0.10047／0.10074／0.09773秒；远端解码及目标准备约0.054／0.054／0.053秒，本地图像编码约0.041／0.042／0.041秒，包含编码的管道往返中位数0.34304／0.34783／0.33874秒。计时存在包含关系，不能直接累加或把余量全部归为网络。前两轮闭合前2秒指令轨迹最大单轴速度中位数1.30448／0.95678°/s，最终实测对模型目标最大差约0.14063／0.14012°；小跟随误差不证明模型目标正确，也不能排除先前视觉延迟。当前结论是视觉反馈滞后确实存在，接近阶段没有人为2.5 Hz节流，更新速度主要受整条处理链路约束；年龄选行补偿名义时序但不保证物理对准，尚未证明延迟导致右偏。
+
+[异步恢复检查](../../artifacts/live/stack/stack_thin_outline_20261026_trial05/restoration_check.json)使用真实入口、不传`--execute`及`--observe-after-arrival`，核对恢复默认异步，原模型／服务／限制保持；与第四轮无设备计划仅6个到位模式相关字段改变（其中两项到位判据字段移除）。软件检查使用第四轮旧审核种子，计划已标记仅供软件检查，不用于新现场执行。下一轮[准备计划](../../artifacts/live/stack/stack_thin_outline_20261026_trial05/experiment_plan.json)使用新目录，当前`home/`、`scene_snapshot/`、`A_pick_run/`均不存在、尝试0、物理结果`null`；若继续真机，由操作者归位、拍新图、审核种子后核对本轮计划。没有改运行代码、放宽限制、调整速度、重跑已有112项测试、重新部署、权重哈希检查、GPU任务或助手设备连接。
+
 #### P1新增动作模型横向对比
 
-**2026-10-25当前决定：用户明确“不继续进行训练了”。** 六份新权重及配套评价已经完成，当前停止后续训练安排；不追加步数、不组合候选、不启动相对关节表达训练。保留已有模型、数据和结果，原target-stack继续作为现有运行检查点。本次横向汇总只读保存数组，未新增训练、推理或硬件操作。
+**历史阶段记录，候选现已按上节退役。** 2026-10-25用户当时明确“不继续进行训练了”，六份新权重及配套评价已完成，不追加步数或启动相对关节表达训练。用户随后选择无训练的权重插值、同模型多次预测平均及轻量平滑，历史进展见[下节](#p1无训练推理改进评价)。原target-stack继续作为运行检查点；本节保留当时只读保存数组的横向汇总，不代表候选权重仍存在。
 
 这六份权重都从同一个原target-stack final独立初始化，各新建优化器、各训练1000步；不是在上一候选上继续累积。共同结构为SmolVLA、单时刻双RGB和7维状态，输出50×7绝对关节／夹爪动作，10个内部生成步；视觉编码器冻结，可训练层及原全训练集归一化一致。全局图像的目标描边条件也相同，`uniform`不是P2无描边baseline。尚未训练相对关节表达、观察历史输入或新模型架构。
 
@@ -402,7 +523,49 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 
 固定观察拟合将训练侧27份闭合序列全部学准，验证侧固定观察也接近指定闭合时刻，但验证姿态明显退化。这些输入都位于闭合前10帧，不能据此推出任意阶段的条件闭合能力；完整验证的精确闭合当帧首行触发仍为0/9。完整6023帧六关节平均MAE，前五组约0.1806°～0.1822°，固定拟合为0.9895°；最后一组完整验证batch不同，随机噪声未逐帧配对，不能据此做精确因果量化。共同54份动作块则输入和种子匹配。
 
-**比较结论**：当前没有跨姿态、持位和闭合指标一致胜出且通过综合筛选的新增运行模型。六组差别主要来自学习目标和采样策略，不能称为六种新架构；固定拟合揭示离散闭合序列与连续关节精度的学习表现不同。新增权重尚无真机成功率对照，已有离线排名不直接等于抓取排名。本次结果与上文各组原始评价一致；按用户决定结束后续训练安排，后续只在已有成果上讨论和复核。
+**比较结论**：当前没有跨姿态、持位和闭合指标一致胜出且通过综合筛选的新增运行模型。六组差别主要来自学习目标和采样策略，不能称为六种新架构；固定拟合揭示离散闭合序列与连续关节精度的学习表现不同。新增权重尚无真机成功率对照，已有离线排名不直接等于抓取排名。本次结果与上文各组原始评价一致；按用户决定结束后续训练安排，转入下节的无训练方法筛选。
+
+#### P1无训练推理改进评价
+
+2026-10-25按新交接方向完成本地CPU分析、权重插值准备及用户随后授权的1242份固定预测；本轮候选均未通过筛选。先依用户要求提交当前9个修改文件为`76a80b61175f32f062a738b5820b778369515a60`，提交时工作区干净；提交前`make test-aubo-offline`为**790 passed、11 skipped、4 warnings（27.26秒）**，未推送。本节产物发生在该提交之后，保存于既有`review/close_precision_training/`，该目录受Git忽略，提交不构成分析产物或权重的备份。
+
+**规则与复现**：inference_methods_plan.json在新增比较前固定三种子、控制、夹爪多数投票和原有5%姿态／10%多余运动门槛；控制汇总全部单种子，不挑最有利种子。N=3完成后才冻结唯一三行平滑方案。分析脚本用`--method average`或`--method ma3`，复用既有持位及事件度量；已有输出拒绝覆盖，复现可用`--output-dir /tmp/<新建目录>`。复用了原模型54份、uniform 432份、fixed 54份；没有新模型调用。均按训练／验证、场景、目标、观察时刻、种子保存关节均值／P95、固定行、事件、最差样本和配对退化记录。
+
+下表为验证before10的共同持位0～27行，单位均为度，定义沿用前文。单种子与三行平滑各27份，N=3为9个观察各一份集成；重复种子不是独立实验，不能将9份写成27次。统计量用于有限样本描述，三处验证场景已反复用于诊断。
+
+| 模型 | 原姿态误差 | N=3姿态误差 | 三行平滑姿态误差 | 原多余运动 | N=3多余运动 | 三行平滑多余运动 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 原target-stack | 0.7396 | 0.7089 | 0.7171 | 0.8031 | 0.6209 | 0.6532 |
+| uniform | 0.6923 | 0.6581 | 0.6663 | 0.8530 | 0.7014 | 0.7315 |
+| fixed_observation_fit | 1.3678 | 1.3594 | 1.3568 | 0.6399 | 0.5060 | 0.5697 |
+
+**N=3平均：局部收益，未通过。** 评估入口及inference_average_comparison.json保存全部结果，派生动作在同目录`inference_average_derived_chunks.jsonl`。uniform训练姿态0.3902°→0.3171°，验证改善约4.95%、多余运动减少17.8%，三个验证场景的两项主指标均改善；持续闭合绝对时差0.3022→0.2667秒，before10短脉冲7/27→2/9，不能直接比较原始计数。姿态收益接近5%工程门槛，不能仅凭这一微小阈值差断言方向无效；更实质的限制是before1首次闭合绝对时差均值0.5274→0.6044秒，以及before_release10的提前释放22/27→8/9、短脉冲4/27→2/9、持续释放绝对时差中位0.12→0.20秒。释放时的关节姿态误差也变差。fixed平均后仍有1.3594°姿态误差，无法靠去除这三次生成的波动消除原有偏差。
+
+N=3需要三次模型生成。按保存耗时直接相加，uniform三次模型路径时间中位约0.436秒，相对一次平均调用的额外时间中位约0.290秒；原模型／fixed额外时间约0.199秒。这是历史调用之和，含不同运行条件及热身异常值，不是实测在线N=3延迟，也不能与历史现场0.430秒观察年龄直接相加后冒充测量。若额外开销落在当前串行关键路径，会压缩现有0.5秒预测年龄限制的余量；本轮不放宽时效、不增加GPU调用或接入运行链。
+
+**独立三行平滑：降低持位变化，却损害移动阶段，未通过。** 评估入口和inference_ma3_comparison.json显示uniform验证姿态改善3.77%、多余运动减少14.2%；夹爪每行原样保留，所有闭合／释放时机与脉冲完全相同。lift_start观察中，抬起开始后10行动作的误差均值0.6059°→0.5793°，但搬运中点完整块误差1.6706°→1.7680°（增加5.83%），J1 MAE 0.9364°→1.1212°；before_release10首次释放姿态误差0.6054°→0.6941°。多个单观察固定行动作误差增加超过0.2°。平滑对线性移动轨迹存在一行／40 ms滞后，不能以“夹爪时刻未变”推断释放位置未受影响。本轮结束该固定窗口，不与N=3组合、不扩大扫描。
+
+**原会话算术对照已正式复现**：平均报告的`diagnostic_controls`记录uniform关节原样、统一第10行开始闭合可得闭合时差及短脉冲全0；它说明该组before10评价不能排除固定时间模板，不证明真实模型忽略视觉。uniform／fixed原始输出各半平均的验证姿态0.9876°、持续闭合时差0.2178秒，与交接数值一致。这仅为跨模型输出算术，不是权重插值或同模型N=3效果；两者均未变成控制规则。
+
+**权重插值：已完成，α=0.10与0.25均未通过。** 准备时只读检查确认uniform／fixed各500个张量（225个float32、275个bfloat16）键／形状／类型相同，共享张量元数据相同，无非浮点张量；模型配置只在`optimizer_lr`不同。两套processor JSON、归一化张量及7维契约相同，144个准备输入和288幅图像存在。用户随后回复“确认，我授权”，按[冻结范围](EVIDENCE.md#p1无训练推理改进评价)完成两份独立检查点及1242份预测；没有训练、额外热身预测、6023帧完整验证、运行替换或硬件操作。不是将此前跨模型输出平均冒充权重插值实测。
+
+评估入口为weight_interpolation_assessment.json，完整分组、逐样本结果、失败条件与耗时见weight_interpolation_comparison.json。两个候选各432份，fixed补378份并复用原54份，uniform复用432份；四组现在均覆盖同一144个观察×3种子，数值输入／标签与原清单逐项相同。下表主指标仍只取before10共同持位0～27行，训练／验证各27份；角度不等于末端毫米误差或物理成功率。
+
+| 模型 | 训练姿态° | 验证姿态° | 验证多余运动° | 验证持续闭合时差秒 | 验证短脉冲 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| uniform控制 | 0.3902 | 0.6923 | 0.8530 | 0.3022 | 7/27 |
+| α=0.10 | 0.3678 | 0.7319 | 0.8300 | 0.2652 | 11/27 |
+| α=0.25 | 0.3252 | 0.8851 | 0.7807 | 0.2074 | 8/27 |
+
+两档训练内姿态均改善，验证姿态却分别增加5.72%和27.84%，多余运动也未达到10%改善。α=0.10仅p-101的姿态略有改善，p-102／103退化；α=0.25三个场景姿态均退化。持续闭合时差均值改善，短脉冲却从7/27变为11/27和8/27，不能称为闭合可靠性全面提升。验证before10完整50行J6 MAE由0.6858°增至0.7540°／0.9223°，逐关节与尾部结果保留在机器报告。
+
+跨阶段退化更明显：验证`transport_middle`动作块的每行六关节最大误差均值由1.6706°增至1.9814°／2.7761°，`before_release10`由0.6870°增至1.0007°／1.6547°，`release`由0.7192°增至1.0124°／1.6516°。同一最差搬运观察`p-103_ep2_transport_middle`、seed42，块内最大关节误差6.8404°→7.7062°／9.0750°。α=0.25在释放前10帧观察上的短脉冲4/27→7/27，释放后再次闭合6/27→10/27。仅保留了部分训练拟合／闭合时序收益，没有保留完整关键阶段的动作精度。
+
+**fixed跨时刻补测**：验证`before1`的27份预测仍21份在第10行、6份第11行持续闭合；`close`为22份第10行、5份第11行，较专家分别平均迟0.3689秒／0.4074秒。连同before10的20份第10行、7份第11行，这些相邻开放夹爪观察上的闭合位置接近固定块内时刻；支持限制原before10好分数的解释，仍不能据此断言模型完全不看视觉。其验证搬运中点块误差达到7.3969°，释放前／当帧分别4.8513°／4.8174°；释放后再闭合分别22/27／19/27。完整任务能力退化在相同离散关键观察上得到补充证据，不需要为淘汰本轮候选再追加全量验证。
+
+**执行与停止**：执行验收确认三组严格加载通过，两个融合文件序列化后张量逐项一致，500个端点张量中122个值不同；源模型文件大小与mtime保持，原模型未被写入。全流程167.7秒，预测阶段含三次加载约161.0秒，产物约2.414 GB；两档单次模型路径中位95.97／97.31 ms、P95为97.70／99.59 ms，包含保存图像读取的单次总耗时中位104.33／105.77 ms。这不是现场观察年龄，且不与不同时间测得的uniform耗时作因果速度比较。RTX 4090 D上单候选峰值已分配显存约1.28 GB；全部实验进程已退出，结束检查时无GPU计算进程。结果已取回`weight_interpolation_results/`，两份约1.20 GB权重保留远端独立目录。结果核对确认16个uniform控制分组与旧报告逐项一致、四组各432份输入／种子完整、候选配置及processor按原样复制；没有重跑无关软件回归。本轮两个系数均淘汰，按约定不扩大搜索、不追加完整验证或训练、不部署；P1仍未完成。
+
+CPU准备检查覆盖夹爪多数投票语义、三行滤波的因果行范围与线性滞后、浮点／整数处理、缺失键和shape／processor不匹配拒绝、微型检查点保存及严格重载、已有输出不覆盖、三模型控制指标复现和全部夹爪事件不变；该准备检查未加载真实模型。144个离散观察不构成连续在线序列，本轮未研究跨观察对齐融合。两种CPU方法及两档权重插值均未选为P1真机候选；新方法的闭环完整任务、现场时效和物理成功未验证，`physical_grasp_success=null`。
 
 ### 已解决与仍待验证的问题
 
@@ -421,7 +584,7 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 | 分割后自主选目标、自由顺序逐根清空 | **2026-10-24用户要求加入计划，尚未实现**；当前仍需人工审核种子和指定目标序列，计划见[手册](README.md#自主选目标与逐根清空) | 已有A→B→C连续执行不等于自主选择；一次检测为空不证明源区清空 |
 | 腕部20帧人工角度参考 | **仍待导入**，已有离线复核入口 | 没有真实误差验收，不能据草稿生成J6补偿或回归模型 |
 
-当前下一步为[P1纯模型末段学习改进](#p1首堆中止与当前目标检查修正)：训练内对照、普通续训与末段加权各1000步、持位／闭合拆分及输入敏感性研究已完成；两组续训均未提升为运行模型，两个独立候选现已各完成1000步真实训练和固定评价，A未改善持位，B改善时机却增加短脉冲与提前闭合，两组均未通过筛选；结果见上文[本轮评价](../../artifacts/live/stack/stack_target_p1_pile01_point_tracks_20261024/review/close_precision_training/hold_close_assessment.json)，定义与冻结门槛见[阶段1方案](README.md#持位与闭合训练的阶段1)。内部生成步数加倍未获稳定收益；几何纠偏暂缓，无描边基线对照仍在P1之后。新视觉模型接入状态及一次性检查脚本保存失败／按要求删除的记录保留，不重复加载检查。当前操作与后续顺序见[手册](README.md#当前位置与下一步)。
+当前[P1无训练推理改进](#p1无训练推理改进评价)的有限筛选已结束，未选出新运行候选。**2026-10-25用户决定暂停P1，先进入P2同数据有／无描边对照，再扩充四根、六根动作示教，合并兼容训练集训练后做真机实验。** P1末段对准仍未解决，暂停不记通过；旧候选搜索、纠偏诊断及五堆验证不继续。“训练数据太少”登记为待验证假设，不能据此断言增加数据必然修复训练内残差。原运行模型、视觉模型、训练／验证划分及全部历史结果保留；具体计划仅维护在[手册](README.md#p2对照与多根动作数据扩充)。本次仅更新阶段与数据安排，未新增采集、GPU推理、训练或硬件操作。
 
 **自主清堆目标登记（2026-10-24，仅计划更新）**：用户要求加入“视觉分割识别后，系统自行决定下一根，上层条或独立条先抓均可，逐根拿走直到清空”。已把任务定义、推荐实现、分阶段验证与评价边界写入[手册唯一计划入口](README.md#自主选目标与逐根清空)，保留指定目标服从研究和固定顺序历史结果。只读代码核对：[run_joint_smooth.py](run_joint_smooth.py)按人工序列预建会话，[live_setup.py](../../src/lerobot/bamboo_sorting/runtime/live_setup.py)要求人工审核种子，[continuous.py](../../src/lerobot/bamboo_sorting/runtime/continuous.py)在夹爪开合周期完成后切换预定目标，物理成功字段仍为`null`。因此自主选择、自动物理结果确认和清空判断均是待补能力，不是已有试验结论。任务选择与底层动作分开的研究背景可参考[SayCan原始项目](https://say-can.github.io/)；其结果不证明本项目可稳定清堆，也不意味着本计划必须引入语言模型规划器。本次只更新README与EVIDENCE，未改运行代码、模型、数据或历史结果，未新增推理、训练、采集及硬件操作。
 
@@ -739,6 +902,10 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 
 **当前总览（2026-10-19）**：训练20堆60条40673帧、验证3堆9条6023帧；12批采后与真实LeRobot／PyAV接口验收通过，69条的23107个接近帧已获用户确认。两组来源和划分一致，归一化仅使用训练帧；baseline和target各30000步均完成、严格重载及离线对照通过，见[训练结论](#三根动作模型身份与训练结论)。当前target-stack已部署并完成trial04一轮三根成功及一次真实空目标恢复，见[最新实机复核](#第四轮三根成功与现场空目标恢复)。下文按发生顺序保留准备、授权、训练及现场检查；其中旧`target_training_ready=false`等仅描述当时阶段，不是当前训练未完成的状态。
 
+**四根→六根人工示教准备已恢复（本次用户授权）**：与另一会话的1像素正式训练并行，仅推进采集接口、CPU检查和逐堆指导，替代此前暂停新采集的安排；混合训练、部署与自主抓取不在范围。核实分支`research/depth-vla-phase-a`、HEAD `76a80b61`，原有未提交改动保留。共享校验及录制提示现支持可取目标数1～6和正整数尝试序号；失败后超过第六次仍能保存，旧三根数据不改写。针对性CPU回归72项通过，覆盖四／六根失败后同ID重试到第8／12步、原一次结果及未知字段、真实LeRobot／PyAV双视频读回、采后审计、标注清单与四／六身份种子分离；均为合成数据和假设备，不证明现场相机、控制或抓取结果。另对原12批做只读命令／元数据审计，仍为训练20堆60条40673帧、验证3堆9条6023帧，全部通过，未重复解码旧视频。新编号`p-021`未占用，首条训练示教计划为四根交叉对＋两根独立中的上层条；[采集清单](../../artifacts/capture/stack/joint_stack_four_six_20261025/collection_manifest.json)中实际摆放、结果和可取数仍为未知，尚未录制。准备与验证记录见[preparation_check.json](../../artifacts/capture/stack/joint_stack_four_six_20261025/preparation_check.json)，现场命令只维护在[README采集章节](README.md#四根与六根动作数据扩充)。本任务未连接设备、运行GPU或修改既有训练来源／输出。
+
+**四根结构及预算（2026-10-26操作者确认）**：包括四根独立、一对交叉＋两根独立、两对交叉、一根压三根、二上二下；用户已明确“两独立”指“两对交叉，共四根”，随后确定合计30堆分批录制，并明确“30堆全部训练，验证另外录”。各类分配、验证及六根数量尚未确认；五类各6堆、6批每批每类1堆仅为建议。这是采集范围及预算确认，不是实际摆放或采集完成反馈。`p-021`计入该训练预算，原身份、目录及未知实际字段保留；覆盖与预算已写入同一采集清单。四→三→二→一提供三根及以下剩余场景，但同堆状态相关，未取得三根抓取准确率改善的实验结论。用户同意将数据规模研究的引用目的、主要结论及与本项目的差别补入文档，研究参考与适用边界、计数条件和规则统一见[README](README.md#四根与六根动作数据扩充)，论文不作为本项目准确率或30堆充分性的实验证据。本次只更新说明和机器清单，未操作设备、GPU或训练。
+
 2026-10-17按[正式采集计划](README.md#三根堆叠目标示教方案)录制训练堆`p-003`～`p-009`，共21条、13979帧，人工结果均为单根成功（单次确认录入）。第一次运行`joint_stack_train_20261017`在p-004第3条因腕部相机连续空帧、超过0.2秒无新帧被新鲜度检查中止，已保存5条（3383帧）并正常收尾；中断条未进入数据，残留的716张临时PNG经用户同意删除（LeRobot上游清理只处理`image`类型字段，视频字段的临时帧未被删）。空帧原因未确认，候选为腕部相机线／接口随手臂运动接触不良或USB瞬时问题。随后`joint_stack_train_20261017_from_p004`从p-004第3条续录16条（10596帧），未再中断。两批[采后检查](../../artifacts/capture/stack/joint_stack_train_20261017/capture_check.json)（[续录批](../../artifacts/capture/stack/joint_stack_train_20261017_from_p004/capture_check.json)）均通过：双路视频完整解码、帧时间与数据表一致，每条恰好一个夹紧／释放周期，元数据与速查卡一致；9次作废重录未混入视频。
 
 助手查看各堆三步起始全局图：p-006、p-009实际为A顺序（上层→下层→独立，用户确认），清单为B，k均为2／2／1、ID按抓取顺序，元数据无误；除p-008外，交叉对与独立条左右位置与按相机画面写的清单相反，操作者按自身视角摆放，堆间仍有变化。计入首批后训练共9堆27条，k≥2共15条；第2步k=2时抓下层条5堆、抓独立条仅p-003，后续批次补B顺序。p-008第1步上层条下端与独立条下端几乎相接，640×480下无法判断是否接触，画种子时核对。逐堆角色与观察见[摆放记录](../../artifacts/capture/stack/joint_stack_train_20261017/layout_record.json)。两批均未运行`prepare`、分割推理或训练；用户决定先继续采集验证堆和后续训练堆。
@@ -883,7 +1050,7 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 | 模型组 | 输入区别 | 最终检查点（相对远端项目根） | 当前用途 |
 | --- | --- | --- | --- |
 | baseline | 原始全局RGB＋腕部RGB，无指定目标描边 | `outputs/joint_stack_baseline_smolvla/final` | 已训练并离线评价；当前不是trial04使用模型，尚无本轮可比真机对照 |
-| target | 接近阶段全局RGB添加指定目标轮廓，搬运使用原图 | `outputs/joint_stack_target_smolvla/final` | CLI为`target-stack`，trial01～04使用；当前继续重复真机实验 |
+| target | 接近阶段全局RGB添加指定目标轮廓，搬运使用原图 | `outputs/joint_stack_target_smolvla/final` | CLI为`target-stack`，trial01～04使用；P1现已暂停，保留为P2原目标模型 |
 
 两组均输入当前七维状态和固定任务文字，输出六关节绝对角度及夹爪命令；J5由模型预测。Mask2Former是另一个冻结的轮廓分割模型，不是两组动作模型中的一组。运动跟随、预览、空目标恢复属于执行程序改进，没有更新上述权重。
 
@@ -927,7 +1094,7 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 
 六关节MAE算术平均仅用于紧凑汇总，不是新的物理性能指标。接近阶段同口径为0.15484→0.17196°，搬运阶段为0.19750→0.19273°；接近阶段没有呈现一致改善。p-103的J6从0.59767降至0.52579°，但p-101和p-102的J6变差，不能据单堆改善宣称目标描边整体有效，也不能由本次结果证明描边方案普遍无效。
 
-**离线结论及后续现场进展**：两组工程训练验收及离线对照完成后，原每30分钟自动跟进已停用。上述离线动作块首步评价未建立目标组整体优于基线的证据，精确夹紧事件均未命中、目标组释放仅命中1次。只有3个独立验证堆和一个训练seed，6023帧并非6023个独立试验；不能把该结果解释为闭环完全不能自主切换，也不能证明更广泛泛化或目标服从。训练验收之后，操作者已运行目标组并在trial04确认三根成功，见[现场复核](#第四轮三根成功与现场空目标恢复)，两种评价口径分别保留。当前优先按用户要求重复target-stack现场实验，状态／动作对齐、事件采样及动作块各步切换仍是必要时的诊断方向，不自动重训或加入脚本夹放。公平基线真机对照尚未进行；目标服从比较只统计至少两个可选目标的步骤。原始数据、标注和两组权重保持。
+**离线结论及后续现场进展（原训练验收阶段记录，当前状态见[P2首轮结果](#p2首轮配对结果)）**：两组工程训练验收及离线对照完成后，原每30分钟自动跟进已停用。上述离线动作块首步评价未建立目标组整体优于基线的证据，精确夹紧事件均未命中、目标组释放仅命中1次。只有3个独立验证堆和一个训练seed，6023帧并非6023个独立试验；不能把该结果解释为闭环完全不能自主切换，也不能证明更广泛泛化或目标服从。训练验收之后，操作者已运行目标组并在trial04确认三根成功，见[现场复核](#第四轮三根成功与现场空目标恢复)，两种评价口径分别保留。当时优先按用户要求重复target-stack现场实验，状态／动作对齐、事件采样及动作块各步切换仍是必要时的诊断方向，不自动重训或加入脚本夹放。该阶段基线真机对照尚未进行；随后P2首轮已完成，见上述当前状态。目标服从比较只统计至少两个可选目标的步骤。原始数据、标注和两组权重保持。
 
 **三根连续抓放部署准备（2026-10-18）**：用户提出三根抓放，并明确允许补齐新模型入口绑定及操作流程。新增`run_joint_smooth.py --model target-stack`，绑定本次目标模型；旧`target-pair`不变。新选项自动使用多目标种子分离，每次仍限定一个指定目标周期，三次之间由操作者确认结果、未持物后归位、重新拍照圈选。模型权重身份为`c45fdeb1d36f71749008357956b6f3ca90a042e7c8e049a99d307204363fb0e9`，远端只新增`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/joint_stack_live_service/joint_inference_stdio.py`（9113字节）；9个运行依赖模块与本地一致，无需重传源码或模型。原输出、训练参数、控制循环、阈值及旧部署均未覆盖。回退选择旧`target-pair`即可恢复原入口，但旧模型不是本次堆叠模型，不能据此替代新实验。见[部署检查](../../artifacts/capture/stack/joint_stack_train_20261017/live_deployment_check.json)。
 
@@ -958,6 +1125,243 @@ RTX 4090 D上优化器循环418.1秒，训练加完整验证约14.4分钟，启�
 
 
 **第三轮重新摆放与人工标注确认（2026-10-18）**：用户重新摆放三根并手动采集`artifacts/live/stack/stack_target_20261018_trial03/scene_snapshot/`，新快照ID为`6f7aa5b13f5e4a9f95c68e7863050d32`。助手按新图生成可见区域草稿并检查叠图；用户随后审核导出`selection.json`，`human_reviewed=true`，A/B/C齐全、互不重叠，面积分别2152／1958／2361像素，区域数1／2／1（B只含遮挡两侧）。原图、原审核页及未确认草稿保留，人工导出文件未修改。使用真实入口核对A→B→C、剩余种子3→2→1、两次自动归位、每根3次空目标重观察预算；[标注核对](../../artifacts/live/stack/stack_target_20261018_trial03/selection_check.json)与同目录`three_pick_plan.json`均完成，当时无硬件访问，`three_pick_run`尚未创建；随后实际执行及B抓空结果见下节。当前命令见[运行手册](README.md#目标条件模型单次真机试验)，旧trial02故障与B/C续跑说明保留为对应旧场景的记录。
+
+**P2无描边入口身份、实现与离线验收（2026-10-25）**：baseline不是`uniform`续训候选，而是与target同批60条训练／9条验证、30000步、batch 8、seed 42的原始无描边模型。2026-10-25只读执行`ssh gpu sha256sum .../outputs/joint_stack_baseline_smolvla/final/model.safetensors`，得到`9c4a474c0702bddbe8c44c68b4306bbc3febad967474a6473275af5778151b14`；同目录`model.safetensors`为1197789224字节，`aubo_joint_contract.json`逐项等于`joint_contract_record()`（`AuboI10JointLegacyTeleopV2`），`config.json`为七维状态／动作、`chunk_size=50`。未复制target SHA，未关闭身份检查。
+
+复用现有`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/joint_stack_live_service/joint_inference_stdio.py`（远端9805字节）：只读检查确认其非target分支使用普通契约、普通图像键和`--return-action-chunk`，因此baseline不需要新服务目录、分割权重或额外Python环境。`model_profiles.py`已登记`BASELINE_STACK_CHECKPOINT`、真实SHA、服务脚本和`/home/rentao/program/lerobot-aubo-joint-stack/src`。
+
+`run_joint_smooth.py --model baseline-stack`已贯通执行链：无快照／圈选／目标ID，默认一次指令周期、120秒；执行参数与target单目标逐项相同（25 Hz、servo 0.08秒、预测年龄0.5秒、看门狗0.6秒、相机年龄250毫秒、时间差100毫秒、控制间隔0.35秒、状态年龄0.1秒、响应等待2秒、状态刷新1次、`rgb_zlib`无损图像）。`--latency-tolerant`时两组同为1.5／1.5秒、400／300毫秒、0.7／0.25秒、5秒。baseline在连接前拒绝目标专用参数及`--cycles>1`。计划明确写出模型名、检查点、SHA、服务脚本、原始双RGB、无目标条件、无损编码、周期和取行方式。
+
+`continuous.py`只把baseline纳入与target相同的`rgb_zlib`无损编码，其他旧无描边模型仍用原默认JPEG；baseline不发送`target_input`、`target_seed`、掩码或目标文字。搬运阶段使用首次**IO调用成功后**记录的闭爪单调时钟，并在每次请求采集时把阶段与该请求绑定；收包时读取请求绑定阶段，不用收包时状态覆盖旧观察，也不创建虚假的`TargetInputSession`。旧在途结果、释放边界和闭爪前观测的丢弃/重规划沿用共享逻辑。`complete.json`保留`model=baseline-stack`、周期计数、`target_id=null`、`physical_grasp_success=null`，并新增`first_accepted_close_s`。target的描边、身份、分割、恢复与序列行为未改。
+
+新增／扩展的离线测试覆盖：baseline默认、`--transport-age-aligned`、`--latency-tolerant`计划与target单单目标执行参数一致；目标参数和非单周期在连接前拒绝；真实`InferencePipe`构造的SSH参数与JSON请求含baseline路径／SHA／普通契约／完整块／原始图像键／`rgb_zlib`，不含target字段，错误身份／契约／不完整块仍拒绝；假设备走完接近、成功闭爪、搬运、释放和停止；预测闭爪被新观察推翻时不执行IO，搬运按观察年龄取行而非固定第0行，IO切换后的旧在途结果被丢弃且保留请求阶段。target-pair／target-stack原有断言保留。
+
+本次实际运行：影响范围`tests/bamboo_sorting/runtime/test_joint_smooth.py`与`tests/bamboo_sorting/runtime/test_joint_target_shadow.py`共122项通过；当时最终`make test-aubo-offline`为813项通过、11项跳过、4条警告（28.68秒），无失败。两条纯计划命令已核对：`baseline-stack --transport-age-aligned --max-seconds 120`输出1周期／120秒／0.5秒／0.6秒／250毫秒／`rgb_zlib`；旧trial04快照的target-stack单目标计划除模型、检查点、服务、目标机制字段外，执行参数逐项相同。
+
+**检查脚本修正（2026-10-25）**：CPU假进程复核发现并修复以下验收缺陷。第一，`predict`原先读取`InferencePipe`不存在的`segmentation_checkpoint`属性，会在六次正式预测前抛`AttributeError`；现改为从入口`options`记录请求配置、从`pipe.ready`记录服务实际配置，并确认baseline两者均为空（`target_conditioned=false`、`live_target_seed=null`、`segmentation_checkpoint=null`、`return_action_chunk=true`、worker `target_live=false`）；`predict`在消耗模型调用前核对入口`options`／`plan`的检查点、SHA和服务脚本，`verify`再次核对。第二，原先只在预测前检查时间且`verify`不检查完成状态与预算；现从`predict`入口开始用`SIGALRM`设置硬截止，覆盖本地导入、`load_prepared`、`entry_config`、worker加载、全部预测、目录大小统计、worker关闭和`complete.json`写入；关闭阶段有独立有界超时，且清理异常不会掩盖原始硬超时。预算锚定为脚本常量（300秒／100MB／6预测／2 warmup／8调用／0训练步），`prepared_inputs.json`与`complete.json`都必须匹配常量，篡改预算或扩大`--max-seconds`会在worker启动前拒绝；`verify`拒绝`error.json`、缺失文件、预测数不足、预算/超时标志为假、`hard_timeout_s`或`elapsed_s`超过常量、负`elapsed_s`、`output_bytes`或当前目录超预算、错误模型／服务身份、worker携带target/分割能力及ready不一致的结果。进一步，`verify`会重读并哈希6份冻结PNG、核对来源manifest SHA、冻结selection及状态／帧号；非对象JSON或非对象嵌套字段进入`VERIFY_FAILED`而不是崩溃。`verify.json`始终写最新状态，旧报告归档为`verify_previous_<时间戳>.json`，失败时同时写`verify_failure.json`。2次worker warmup／8次调用是客户端冻结计划，worker内部warmup不能由客户端独立计数；模型身份、契约、完整动作块和图像协议仍逐项检查。新增[假进程测试](../../tests/bamboo_sorting/runtime/test_p2_baseline_entry_check.py)覆盖成功路径、加载／入口准备／预测／关闭超时、扩大或篡改预算、失败／未完成／超预算／负时长、缺失或篡改输入、错误服务／检查点／target／分割worker、非对象记录、重复verify归档，共36项通过；按用户指示本次只改检查脚本及其测试，未重复全量813项回归。该修正阶段尚未执行真实`predict`；随后用户授权的执行结果见下段。
+
+**有限GPU检查实际执行（2026-10-25，已通过）**：用户明确指示“你帮我执行”，范围为既定2次服务预热＋6次冻结保存观察预测及CPU复核。执行前GPU计算进程列表为空；本轮先验证已补充预算冻结、输入核对与收尾逻辑的最新脚本，假进程测试36 passed／5.65秒，没有重复全量回归。只读核对现有远端worker在ready前执行两次合成warmup，每个请求调用一次动作模型；warmup次数来自代码和客户端冻结计划，没有额外独立运行计数器。
+
+实际运行`check_baseline_entry.py --stage predict --confirm-real-gpu --max-seconds 300`，6份预测全部返回且退出码0；随后`--stage verify`退出码0、`passed=true`。输入为p-101／p-102／p-103的episode 0，各取`before10`和`transport_middle`，seed42，均从原始双RGB数据准备；仍是已有开发验证观察，不是新盲测。真实ready确认baseline检查点与已登记SHA一致、契约为`AuboI10JointLegacyTeleopV2`、`target_live=false`、`segmentation_checkpoint=null`；全部输出为有限50×7，六关节与原始预测一致、夹爪按50阈值解码，无目标提示字段。
+
+全流程16.6489秒；6次请求往返最小0.2561秒、中位0.2648秒、最大0.2672秒，包含编码／SSH／服务处理，不是现场观察年龄，也不与其他时间测得的target耗时作因果比较。预测完成时目录5694276字节（约5.69MB），低于100MB预算；新增训练步数0。脚本已关闭自己的worker，结束后再次只读查询GPU，计算进程列表为空。未同步远端代码、替换权重、操作相机／机械臂／夹爪／归位、提交或推送。
+
+产物集中在`artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/`：[实际ready](../../artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/ready.json)、[六份动作预测](../../artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/predictions.jsonl)、[完成记录](../../artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/complete.json)、[离线验收](../../artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/verify.json)、[授权与执行摘要](../../artifacts/capture/stack/joint_stack_train_20261017/p2_baseline_entry_check/execution_check.json)。保留冻结输入及全部真实结果，不重跑prepare／predict覆盖本目录。
+
+结论边界：本地入口、离线检查和原无描边模型的真实加载／保存观察推理已通过。这六份输出不能证明目标服从、抓取成功率或P1抓偏已解决；随后P2真机结果单独记录如下。
+
+**P2首轮配对准备（2026-10-25，未启动现场）**：用户同意进入下一步后，已在`artifacts/live/stack/stack_p2_paired_comparison_20261025/`准备[排程](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/experiment_plan.json)和[空结果表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。首轮为2个新布局、每布局分别指定交叉上层A和独立C、各做baseline／target配对，共4组／8次；每模型先行2组，全部单次周期。具体步骤与命令只维护在[现场手册](README.md#p2首轮配对现场流程)。本轮比较完整部署路线，人工复摆误差及target独有的分割／跟踪差异均须保留，不能仅归因于描边。
+
+实际只执行了3次本地计划模式（baseline、target/A、target/C），用于核对本轮命令及相同的1周期／120秒、年龄对齐和时效宽容设置；共享控制参数逐项一致，baseline无目标输入。target的这两次核对仅读取trial04历史已审核种子，不加载GPU、不连接硬件，也不把旧种子作为新场景执行依据。见[准备核对](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/preparation_check.json)。没有修改运行代码或重跑全量测试，新增8个现场输出路径均未占用；新快照、新种子、现场计划核对及物理结果尚未取得，所有结果留空。只补齐本地准备，未提交或推送。
+
+**P2首轮第1次baseline（2026-10-25，操作者确认单根送达并有邻条扰动）**：`pair_01/01_baseline`已由现场操作者执行。用户反馈“实际抓了A，夹起并完成了搬运动作”，并进一步确认最终“仅A送达并松开”；同时报告带动了下层竹条。结果登记为实际选择A、夹住／单根／送达／预设目标一致均为true，邻条扰动为true（下层B），不把扰动误记为多根送达。用户随后补充确认第一组两次启动前A/C均有下指空间、均可抓，实际k登记为2，来源为操作者确认。原话、确认来源和软件摘要已写入[结果表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。baseline未接收A的指定输入，因此这次是“与预设评价目标一致”，不是指令服从证据。
+
+[运行完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/01_baseline/run/complete.json)显示136份接受预测、1094帧运动指令、1个夹紧—释放周期，`reason=model_suction_cycle_completed`、`failure=null`；[最终状态](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/01_baseline/run/final_state.json)为静止、伺服关闭、夹爪命令0。双路录像各1115帧，录像完成且无记录错误。原日志的`physical_grasp_success=null`保留，物理成功来自操作者确认；本次登记没有逐帧复核录像，不声称独立视觉测量已验证。
+
+用户另认为“夹爪位姿与有描边情况下要差一点”，当时本组target尚未执行，该意见作为主观观察保留，没有量化位姿误差，不能据此判定baseline普遍较差。随后以[本次初始全局图](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/01_baseline/scene_snapshot/global_rgb.png)为参照恢复三根，尤其把A放回并恢复B位置，用`pair_01/02_target`的新快照和人工种子运行target/A；原baseline记录与参数保持。该次登记时完成1/8次、完整配对0/4组，其余未尝试不计失败；后续进展见下段。
+
+`pair_01/02_target`现已完成新归位和静止拍照，快照ID为`2b0a1abe135a471ab93bce15943e54b9`。助手查看新图及baseline初始图，结构仍为两根交叉加左侧独立条，复摆有少量位置／角度差异，未进行量化配准或宣称相同输入。按新图准备[圈选草稿](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/scene_snapshot/selection_draft.json)：A左上至右下的交叉上层、B右上至左下的下层、C左侧独立条，分别1821／1726／1795像素；B扣除A遮挡及1像素边缘，保留两个可见区域，三根互不重叠。[审核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/scene_snapshot/review.html)已预填，确认框未勾选；原页保存在同目录`before_annotation_draft/`，原RGB不改。助手已查看[叠图](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/scene_snapshot/annotation_draft_preview.png)，实际准备入口拒绝未确认草稿；[草稿检查](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/scene_snapshot/annotation_draft_check.json)保留来源与限制。该草稿准备阶段尚无人工导出的`selection.json`，target未启动；此步骤只处理保存图像，没有新增GPU推理或助手硬件调用。
+
+随后用户完成审核导出并反馈“已保存”。实际文件为本轮总目录的`selection .json`（名称含空格），快照ID一致、`human_reviewed=true`，A/B/C掩码与草稿逐像素一致。原字节复制为[本次标准标注](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/scene_snapshot/selection.json)，原导出保留，未删除文件。真实`prepare_live_setup`接受该导出；使用本次新快照和标注生成的[target/A计划](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/run_plan.json)通过，共享控制参数与`01_baseline/run/plan.json`逐项一致，仍为1周期／120秒、预览和运动跟随。核对见[selection_check.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/selection_check.json)。该次本地计划核对结束时尚未启动`run/`，没有执行新的GPU推理或硬件操作；随后现场结果如下。
+
+
+**P2首轮第2次target/A（2026-10-25，对准失败）**：操作者运行`pair_01/02_target`后反馈“不行这次没有抓到，夹爪位姿较好，但是没对准竹条抓歪了”。[完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/run/complete.json)为118份接受预测、1012帧运动指令、1个夹紧—释放周期，`reason=model_suction_cycle_completed`、`failure=null`；[最终状态](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_01/02_target/run/final_state.json)为静止、伺服关闭、夹爪命令0。双路录像各1031帧且完整，原始`physical_grasp_success=null`保持。实际运行计划的共享控制参数与本组baseline一致。
+
+物理夹住／单根／送达按用户明确反馈记为false，软件状态记为正常完成，不能把周期完成算作抓取成功。位姿较好单独记为操作者主观观察，未量化角度、位置或偏差原因。本次实际选择身份、目标一致及邻条扰动尚不明确，保留null，不能仅由命令`target_id=A`填为实际抓对，也不把对准失败直接记为选错对象；用户确认两次均有A/C两个可抓目标，k=2。结果已写入同一[记录表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。本轮登记未逐帧复核录像，没有恢复P1诊断或修改参数。
+
+第一组配对结果为baseline单根送达并扰动B、target对准失败；仅一组且人工复摆有差异，不能宣称某模型整体优于另一模型，或将差异全部归因于描边／数据量。当前完成2/8次、1/4组，下一次按既定顺序使用`pair_02/03_target`，恢复layout_01三根初始布局并重新拍照标注，指定独立条C；后续同组baseline需再次复摆。未追加A重试，其余六次仍未尝试。
+
+
+**P2第二组target/C现场准备（2026-10-25，已审核，待启动）**：`pair_02/03_target`已由用户完成归位和静止拍照，快照ID为`092c6cad2ea142089050bcbdd02df3af`。助手查看本图与layout_01初始图，C仍为左侧独立条，交叉A/B的位置和角度有可见变化；保持同类结构但不视作完全相同输入，后续同组`04_baseline`应优先按本次照片复摆。没有要求额外重拍或修改运行参数。
+
+本图[未确认草稿](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/scene_snapshot/selection_draft.json)按当前图像重新取点，A/B/C分别2223／1741／2105像素，B扣除A遮挡及1像素边缘后为两段，三个区域互不重叠。[审核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/scene_snapshot/review.html)已预填三根并默认选C，确认框未勾选；本次导出名为`selection_pair02_target_C.json`，便于与上一组区分，核对后再规范到本次运行目录的`selection.json`。原页备份保留。助手检查了[叠图](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/scene_snapshot/annotation_draft_preview.png)，真实准备入口拒绝未审核草稿，见[草稿检查](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/scene_snapshot/annotation_draft_check.json)。原始双RGB未改，助手本步骤未新增GPU推理或硬件调用；该草稿准备时尚无人工`selection.json`或target/C运行结果。
+
+用户随后审核导出`selection_pair02_target_C.json`并反馈“已保存”。导出快照ID一致、`human_reviewed=true`，A/B/C掩码与本图草稿逐像素一致，已原字节规范保存为[本次selection.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/scene_snapshot/selection.json)，原导出保留。真实准备入口接受C种子；[本次target/C计划](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/run_plan.json)通过，共享控制参数与冻结P2设置及前两次实际运行逐项一致，仍为1周期／120秒、预览和运动跟随。见[审核与计划核对](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/selection_check.json)。核对仅本地执行，`run/`尚未创建，未新增GPU推理或硬件调用；target/C物理结果仍为空，进度仍为2/8次。
+
+**P2第3次target/C结果与A/C有限离线复核（2026-10-25）**：用户随后运行`pair_02/03_target`，报告“这次抓C……还是抓歪……跟之前抓A一样……往右边偏了一点”，要求检查描边／框。原始[完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/03_target/run/complete.json)为102份接受预测、892帧运动指令、1个指令周期、`failure=null`；双路录像各916帧且完整，最终静止、伺服关闭、夹爪命令0。软件正常完成不等于抓取成功，物理失败写入同一结果表，原始`physical_grasp_success=null`保持。全局与腕部图支持实际针对独立C；目标一致只表示尝试身份，不表示夹住／送达。C本次k及邻条扰动未获明确确认，保持null，不复制第一组的k=2。
+
+本次用户明确要求的排查仅使用保存文件和相关代码，只读核对实际远端服务的RGB解码、描边函数、输入准备及适配器，没有加载模型、运行新的GPU推理或操作硬件。检查入口统一为[review/target_alignment/review.html](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/review.html)，结论与限制见[assessment.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/assessment.json)，逐请求及时间依据见[extracted_evidence.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/extracted_evidence.json)。
+
+- **框与描边**：黄色外框由本地预览层绘制，不是抓取框预测，也不进入模型；远端实际代码把当前掩码的2像素内边界直接置为紫色，无单独平移／旋转。查看A的49份、C的50份接受接近观察，初始审核区域及运行描边均保持在对应竹条上，未见整条轮廓向右错位或跳到邻条。在全程可见下段y=345..375，各帧横截面中点相对首帧变化的中位数均为0..1像素；这只衡量局部时间漂移，不是绝对分割精度。
+- **夹爪与执行**：闭爪前腕部图中，A/C均偏在两指开口左侧，与操作者所说夹爪相对偏右相符。闭爪前最近命令的六轴实测对模型目标最大差分别0.1421°／0.1240°，采样距IO接受约28.5／30.4 ms；支持已经接近模型要求的关节位置，不能单凭此认定指尖误差为零或排除全部执行因素。当前更支持末段动作对准偏差，未确立具体根因。
+- **感知限制**：A部分可见上段间歇漏分（如请求47漏掉、48恢复）；C请求29..49共21次报告自身运动参考点不足，但轮廓仍来自各次当前图像分割，未见向邻条转移。A自身跟踪未失败也出现偏右。这些不稳定可能影响模型，不能称感知完美，也不能把C告警直接定为两次共同失败原因。
+
+复原优先使用每5次保存的同请求JPEG，其余通过录像`source_timestamp`匹配；A只有请求7取晚36.27 ms近邻，C全部接近观察匹配同源时间，闭爪前最后三个观察两次均同源。JPEG／录像有压缩，复原图不冒充无损网络输入逐字节副本。未接受的在途结果不计入49／50份；IO时刻不等于实际手指闭合或夹持。未进行相机／指尖标定，不从二维图像换算毫米或机器人X/Y偏移；也没有证明数据量是唯一原因。此次未移动描边、添加固定向左补偿或修改运行代码。当前3/8次、1/4组配对完成，下一次`04_baseline`以`03_target`初始快照复摆后拍新照片，保持原P2参数；P1训练继续暂停。
+
+**P2第4次baseline与第一布局配对结束（2026-10-25）**：`pair_02/04_baseline`新快照ID为`3f0967912ba5459da964c5dc25cd45d0`，用户在运行前确认A/C均可抓（k=2）。[准备核对](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/04_baseline/preparation_check.json)保留准备时状态；实际计划与其一致，仅在启动时增加固定任务文字。操作者报告抓取上层条并完成搬运，随后明确确认“仅A送达并松开”“B和C都被带动”。因此记录实际选择／夹起A、单根送达成功、邻条B/C扰动；本组预设评价目标C未匹配，但baseline不接收任何C提示，不能将该项称作不服从指令。物理结论来源为操作者确认，本轮未逐帧复核录像；是否仍偏右未获明确反馈。
+
+[原始完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_02/04_baseline/run/complete.json)为132份接受预测、1060帧运动指令、1个指令周期，`reason=model_suction_cycle_completed`、`failure=null`；双路录像各1079帧、完整且无编码错误，最终静止、伺服关闭、夹爪命令0。原始`physical_grasp_success=null`保持，人工结果写入同一[记录表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。当前4/8次、2/4组完成：两次baseline均送达A并扰动邻条，target两次均失败；仅一个布局、少量且有复摆差异的尝试，不建立模型整体优劣或稳定成功率。下一次按原排程准备新layout_02的05_target/A，不追加重试或调参。本轮仅核对本地记录并更新文档，没有新增GPU或硬件调用。
+
+**P2第5次target/A准备（2026-10-25，已审核，待启动）**：`pair_03/05_target`归位通过，新快照ID为`1e1ac161ffad461e994fee76cf246f12`，用户确认A/C均可抓（k=2）。按本图重新取点准备[标注草稿](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/scene_snapshot/selection_draft.json)，A/B/C分别2165／1884／1968像素；B扣除A遮挡及1像素边缘后为两段，区域互不重叠。[审核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/scene_snapshot/review.html)预填三根、默认A，草稿阶段确认框未勾选。助手查看叠图，准备入口拒绝未审核草稿，见[草稿检查记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/scene_snapshot/annotation_draft_check.json)。原审核页留存备份，原双RGB未改。虽然排程编号为layout_02，本图与layout_01相近，主要是小幅位置／角度变化，后续结论需保留布局多样性有限这一限制。
+
+用户随后完成审核导出并反馈“已保存”。`selection_pair03_target_A.json`的快照ID一致、`human_reviewed=true`，三根掩码与草稿逐像素一致，已原字节复制为[本次selection.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/scene_snapshot/selection.json)，原导出保留。真实准备入口接受target/A；[运行计划](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/run_plan.json)与前次target/A相比只有新快照ID及运行时才加入的任务字段差异，共享控制参数与此前P2运行一致。见[审核与计划检查](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/selection_check.json)。仅本地核对，没有新增GPU或硬件调用；`run/`尚未创建，进度仍4/8次。
+
+**P2第5次target/A人工中断（2026-10-25）**：用户运行`pair_03/05_target`后报告“这次还是抓歪，我提前停止了”，进一步明确“没有夹起，目前夹爪为空”“是，上层A，仍向右偏”。本次k=2，实际选择A及目标一致记true，夹起／单根／送达记false，中断记true，邻条扰动未知；目标一致不代表对准成功。结论来源为操作者确认，本轮未对新录像逐帧诊断，也不把前两次独立视觉复核套用为本次已验证。
+
+[完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/run/complete.json)为`reason=operator_interrupt`、218份接受预测、1863帧运动指令、0个完整夹紧—释放周期、`failure=null`；trace记录一次闭爪接受、未见释放阶段命令。[最终状态](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/05_target/run/final_state.json)为静止、伺服关闭、夹爪命令100；用户已确认当前无持物，后续归位入口须按当前状态处理释放。录像清单报告global／grasp分别1889／1888帧，`complete=false`，两路均有`BrokenPipeError`；保留为中断录像记录，未验证完整解码，不据此认定抓歪原因。实际运行计划与准备计划一致，仅增加固定任务文字，原始`physical_grasp_success=null`保持。
+
+结果已写入同一[记录表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。进度5/8指已结束的尝试数，包含本次人工中断，不代表5次完整程序周期或物理成功；已完成配对仍2/4组。下一次按05_target初始快照复摆、拍新照片后执行06_baseline，不追加05重试或修改模型／参数。新摆放与第一布局相近的证据限制保留。本轮只读本地日志并更新记录，没有新增GPU或硬件调用。
+
+**P2第6次baseline准备（2026-10-25，待启动）**：`pair_03/06_baseline`归位前释放的两次DO写入均成功、读回符合释放状态，随后归位通过。新快照ID为`f8a7a6d788764551abd7ac26999ca41b`，夹爪命令0；用户单独确认本次A/C均可抓（k=2）。助手查看05／06初始图：上层A、下层B、独立C结构保持，但交叉A/B的位置与角度有可见复摆差异，未量化配准。[本次计划](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/06_baseline/run_plan.json)与04实际baseline除运行时才加入的固定任务字段外一致，共享控制字段与05实际target一致，见[准备核对](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/06_baseline/preparation_check.json)。baseline不接收A提示或圈选。本轮只读保存文件并本地生成计划，没有新增GPU或硬件调用；运行尚未开始，进度仍5/8次。
+
+**P2第6次baseline结果（2026-10-25，单根送达且轻微扰动）**：用户运行`pair_03/06_baseline`后报告抓取上层竹条、抓住并完成搬运，进一步确认“仅A送达并松开”“轻微扰动”。记录实际选择／夹起A、单根送达成功、邻条扰动true；具体被扰动身份未知，保持null，“轻微”仅为操作者主观定性，未量化位移。本次k=2、实际A与预设评价A一致，但baseline未接收A提示，不称为指定目标服从。本轮未逐帧复核录像，是否仍偏右没有明确反馈。
+
+[完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_03/06_baseline/run/complete.json)为118份接受预测、943帧运动指令、1个完整指令周期，`reason=model_suction_cycle_completed`、`failure=null`；双路录像各964帧、完整且无编码错误，最终静止、伺服关闭、夹爪命令0。实际计划与本地准备一致，仅增加启动时的固定任务文字。原始`physical_grasp_success=null`保持，物理结果按操作者确认写入同一[记录表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。当前6/8次尝试、3/4组配对结束；下一组预设评价C，先07_baseline自行选择，再复摆运行08_target/C。保留相近布局、小样本及复摆差异的限制，不据此建立稳定成功率或模型整体优劣。本轮仅核对本地记录并更新文档，没有新增GPU或硬件调用。
+
+**P2第7次baseline准备（2026-10-25，待启动）**：`pair_04/07_baseline`归位通过，新快照ID为`61d759a8490b444e855c754cbf1c3d60`，夹爪命令0；用户确认本次A/C均可抓（k=2）。助手查看本图与05初始图：A上B下C独立结构一致，交叉条有可见位置／角度复摆差异，未量化配准。后续08_target/C优先按本次07初始照片复摆，再独立拍照审核。[本次计划](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/07_baseline/run_plan.json)与06实际baseline除启动时固定任务字段外一致，共享参数沿用冻结P2设置，见[准备核对](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/07_baseline/preparation_check.json)。C仅为本组预设评价目标，不传入baseline。本轮仅本地检查与保存计划，没有新增GPU或硬件调用；运行未开始，进度仍6/8次。
+
+**P2第7次baseline人工中断（2026-10-25）**：用户运行`pair_04/07_baseline`后报告“没有抓成功……手动停止……偏你的视角偏左”，进一步确认实际针对上层A、没有夹起、当前夹爪为空。记录实际A、夹起／单根／送达false、中断true，邻条扰动未知；本次k=2，实际A与预设评价C不一致，但baseline未接收C提示，不称为不服从指令。左偏为操作者按画面方向描述，没有转换为机器人基座轴或毫米误差，本轮未逐帧复核录像。
+
+[原始完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/07_baseline/run/complete.json)为`operator_interrupt`、138份接受预测、1115帧运动指令、0个完整指令周期、`failure=null`，已记录首次闭爪时钟。[最终状态](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/07_baseline/run/final_state.json)为静止、伺服关闭、夹爪命令100；用户确认夹爪为空，下一步归位入口按当前状态处理释放。录像清单为global／grasp分别1128／1129帧、`complete=false`，两路均报告`BrokenPipeError`；未检查完整解码，不把编码告警当作抓歪根因。运行计划与准备一致，仅增加固定任务文字，原始`physical_grasp_success=null`保持。
+
+结果已记录于同一[结果表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)，进度7/8包含本次中断。baseline四次均针对A，其中三次单根送达、一次向左抓歪；target三次失败中已有向右偏的反馈。这只说明抓偏也发生在无描边路线、报告方向并非统一，未确立共同根因，也不能据此排除target的局部感知问题。剩余08_target/C按07初始图复摆、拍新快照并审核种子，保持原参数，不追加07重试。本轮仅核对本地记录并更新文档，没有新增GPU或硬件调用。
+
+**P2第8次target/C准备与审核（2026-10-25，已完成）**：`pair_04/08_target`归位前释放成功且读回一致，归位通过；新快照ID为`77e18ebc31ae489b88a9bf2c895a6ff0`，夹爪命令0。用户单独确认本次A/C均有下指空间、均可抓（k=2），已写入同一结果表，不回填第3次。助手查看新图及同组07初始图：保持A上B下、C左侧独立的结构，交叉条有可见位置／角度复摆差异，未量化配准。按本图新取点生成[标注草稿](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/scene_snapshot/selection_draft.json)与[审核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/scene_snapshot/review.html)，默认C，B只含遮挡两侧、三根区域互不重叠。叠图已目视核对，草稿阶段确认框未勾选，真实准备入口拒绝未审核草稿；见[草稿检查](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/scene_snapshot/annotation_draft_check.json)。原双RGB及原审核页备份保留。
+
+用户随后导出`selection_pair04_target_C.json`并反馈“已保存”。导出与新快照绑定、`human_reviewed=true`，A/B/C掩码与草稿逐像素一致，已原字节另存为[本次selection.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/scene_snapshot/selection.json)，原导出保留。真实准备入口接受C；[本次运行计划](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/run_plan.json)与03_target/C实际计划仅新快照ID和启动时才加入的任务字段不同，共享控制参数与冻结P2及03／05／07实际运行一致，见[审核与计划检查](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/selection_check.json)。本轮仅本地检查，没有新增GPU或硬件调用；`run/`未创建，进度仍7/8，物理结果仍为空。
+
+**P2第8次target/C结果（2026-10-25，指定C单根送达且无扰动）**：操作者报告“抓的是独立条，抓成功了并完成了搬运”，进一步确认“仅C送达并松开”“没有扰动其他竹条”。本次k=2，记录实际选择／夹起C，目标一致、夹住、单根、送达均true，邻条扰动和人工中断false。物理结果来源为操作者确认，本轮未逐帧复核录像，不能据此声称先前抓偏根因已消除。[完成记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/pair_04/08_target/run/complete.json)为94份接受预测、868帧运动指令、1个完整指令周期，`reason=model_suction_cycle_completed`、`failure=null`；双路录像各888帧、完整且无编码错误，最终静止、伺服关闭、夹爪命令0。实际计划与准备一致，仅增加启动时固定任务文字；原始`physical_grasp_success=null`保持，操作者结果写入同一[记录表](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/trial_records.json)。本轮仅本地记录、汇总与文档更新，没有新增GPU或硬件调用。
+
+**08摆放条件补充（用户随后明确）**：用户表示“这次抓C我还是把C稍微往右边挪了一下才抓到的”，并明确时点为“拍照前已挪动，快照就是挪动后的摆放”。因此本次种子与运行摆放一致，该次右移不属于运行中的人工帮助，也不构成拍照后移动目标；指定C单根送达、无扰动结果及计数保留。操作者报告的方向是画面右侧，位移未量化，尚无已确认的右移前同场景对照，不能直接用07或03照片当作08移动前的精确状态。记录新增`pre_capture_placement_adjustment`；后续重点检验模型对目标位置变化的响应，但“右移导致成功”目前仍是待验证解释。用户同步要求暂缓数据采集，先诊断有／无描边对准差异。
+
+#### P2首轮配对结果
+
+2026-10-25首轮共8次尝试、4组配对结束，包含05／07两次人工中断，不补试覆盖失败。机器计数由[汇总脚本](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/summarize_results.py)从排程、操作者记录及实际运行计划／日志生成，输出[summary.json](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/summary.json)；重算命令只维护在[现场手册](README.md#p2首轮配对现场流程)。全部8次实际计划的共享参数及记录中的模型身份与冻结设置一致，6次正常完成、2次中断；原始物理成功字段均保持null。
+
+| 次数 | 模型 | 预设评价／指定目标 | 实际针对 | 可抓数k | 单根送达并释放 | 邻条扰动 | 运行结束 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 01 | baseline | A（评价） | A | 2 | 是 | B | 正常 |
+| 02 | target | A（指定） | 未知 | 2 | 否，抓歪 | 未知 | 正常 |
+| 03 | target | C（指定） | C | 未知 | 否，向右抓歪 | 未知 | 正常 |
+| 04 | baseline | C（评价） | A | 2 | 是 | B、C | 正常 |
+| 05 | target | A（指定） | A | 2 | 否，向右抓歪 | 未知 | 人工中断 |
+| 06 | baseline | A（评价） | A | 2 | 是 | 轻微，身份未知 | 正常 |
+| 07 | baseline | C（评价） | A | 2 | 否，向左抓歪 | 未知 | 人工中断 |
+| 08 | target | C（指定；拍照前右移） | C | 2 | 是 | 无 | 正常 |
+
+| 本轮计数 | baseline（4次） | target（4次） |
+| --- | --- | --- |
+| 夹住／单根送达 | 各3是、1否、0未知 | 各1是、3否、0未知 |
+| 单根送达且无邻条扰动 | 0是、4否、0未知 | 1是、3否、0未知 |
+| 邻条扰动（独立统计） | 3是、0否、1未知 | 0是、1否、3未知 |
+| 人工中断 | 1是、3否、0未知 | 1是、3否、0未知 |
+| k≥2时实际选择与预设目标一致 | 2是、2否、0未知（4次） | 2是、0否、1未知（3次）；03因k未知排除 |
+
+“单根送达且无扰动”为联合结果：没有送达的尝试记否，其扰动本身仍可未知，不能将该列当作独立扰动率。baseline未接收目标提示，一致性仅为事后与评价目标比较，不称为指令服从；target的“选对”只是尝试身份，05即选对但未抓住，不能与送达混淆。02目标身份未知，不根据命令中的A补写；03虽确认针对C，但k未知，不纳入服从分母。
+
+本轮baseline全部针对交叉上层A，三次单根送达均有扰动；target明确针对A一次、C两次，另一次身份未知，最后一次按指定C完成无扰动抓放。支持“有描边路线能完成指定C抓放、但目前对准可靠性不足”的有限判断，不能将1/4或3/4视作稳定成功率，也不能据此宣布描边无效或有普遍优势。仅两种计划布局且实际相近、人工复摆不完全一致、两路线实际抓取对象及运行机制不同；本轮不能把差异单独归因于描边像素，也不能证明训练数据少是唯一根因。05／07录像清单不完整并报告BrokenPipe，保留原记录，本轮没有重做全片解码或末段诊断。
+
+P2首轮现场在此收官；用户随后调整优先级为先诊断有／无描边对准差异，[四根／六根数据扩充](README.md#四根与六根动作数据扩充)暂缓，接口扩展、新采集和混合训练尚未开始。08拍照前右移C这一条件随结果保留，不改写为运行中人工辅助，也不据单次成功断言固定偏移或因果关系。P1旧训练候选搜索和五堆验证继续暂停、未通过；这8次策略录像保留为评价证据，不直接混入正确示教训练。
+
+#### P2对准差异离线诊断
+
+2026-10-25按用户最新要求，读取全部8次已有日志并提取闭爪前后关键帧；没有相机／机械臂／IO操作、新GPU预测、训练、部署或运行参数修改。沿用[原复核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/review.html#paired-comparison)，新增[机器统计与来源](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/paired_comparison.json)和[CPU复现脚本](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/compare_saved_trials.py)，原始trial记录、`complete.json`及此前提取结果保留。原02／03复核的旧`next_step`已标记为历史，当前不重跑04、不启动采集。
+
+**实际反馈和选行**：468份接受的接近预测、4028条闭爪前运动命令逐条核对，下发7维`target`与其`prediction_index`及`selected_index`指向的完整动作行逐值一致。两路相机／状态有各自时戳，阶段及目标身份元数据检查通过，但没有保存每次无损网络输入字节，不能把元数据匹配当作所有传感器物理同步的证明。25 Hz是伺服发令目标，下面Hz是新的模型预测接受频率；50行是一次预测的未来动作块长度，三者不同。
+
+| 尝试 | 操作者结果 | 新预测Hz | 收到结果时观察年龄中位，ms | 远端目标准备中位，ms | 闭爪最终选中行（从0起） | 闭爪前末命令最大关节跟随差，° |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 01 baseline | A送达，扰动B | 3.11 | 350 | 0 | 2 | 0.1282 |
+| 02 target/A | 未抓住，实际身份未知 | 2.72 | 393 | 41 | 6 | 0.1421 |
+| 03 target/C | 针对C，未抓住 | 2.73 | 388 | 41 | 2 | 0.1240 |
+| 04 baseline | A送达，扰动B/C | 3.15 | 348 | 0 | 8 | 0.1269 |
+| 05 target/A | 针对A，右偏未抓住 | 2.60 | 398 | 42 | 6 | 0.1314 |
+| 06 baseline | A送达，轻微扰动 | 3.12 | 349 | 0 | 5 | 0.1346 |
+| 07 baseline | 针对A，左偏未抓住 | 3.07 | 350 | 0 | 7 | 0.1235 |
+| 08 target/C | C送达，无扰动；拍照前调整 | 2.54 | 422 | 42 | 7 | 0.1310 |
+
+观察年龄为`received_at - min(sensor_times)`，统计截至IO闭合接受前的预测。target的`decode_s`中位约51～53 ms，baseline约9～10 ms；该计时包含目标准备，不只是图像解压。target准备约41～42 ms已包含在`decode_s`内，不能重复相加。实际模型路径中位约96～102 ms，两路线没有同量级差距。target命令的名义行中位13～14，baseline为11～12，说明共享选项相同不等于实际选步相同。
+
+保持已保存动作块不变，仅从首次记录的选行年龄扣除该请求`preparation_s`，02／03／05／08分别48/49、48/50、60/72、43/44份会选不同动作行；逐请求六关节最大目标变化的中位约0.306／0.176／0.189／0.237°。四次最终闭爪行均不变，因为它们已被块中首个闭合边界截住。此项只说明**选行对额外耗时敏感**，不重新生成动作、不模拟更快系统的后续状态，不能当作闭环成败的反事实验证。08成功时观察更旧、新反馈更慢，也反对“目标处理慢必然抓偏”的单因解释；较早路径受延迟累积影响仍未排除。
+
+闭爪等待到位期间，`action_selection.observation_age_s`保留选行时的年龄；不能把它当作IO时仍有这么新的图像。按末命令时刻重新计算，8次最终所用观察实际年龄约393～717 ms，距IO接受另有约28～31 ms。末命令关节跟随差均小于0.15°，支持接近模型要求位置，不等于指尖误差为零。最终被选闭合段连续长度为01/04成功的1/2行、03/05失败的2/1行，而02/07失败是持续闭合；短脉冲也不能单独解释本轮成败。
+
+**摆放、轮廓与模型证据**：新增统一时点-1.0／-0.35／0／+0.3秒双路关键帧及各次最后3份接受观察，源时戳与JPEG／录像替代误差见JSON。最后三份观察的录像替代中，08请求43的全局图取晚27.44 ms近邻，其余同源时间匹配，均有压缩限制。03／08初始审核C掩码在全局`y=320`的中心线横坐标为429.89／435.92像素，在`y=280..360`拟合的轴向相对图像竖直方向为-7.31／-11.22°；不同场景的差为+6.03像素、-3.91°。**这不是08同场景移动前后测量，也不是用户右移量**，不能把角度和其他摆放差异消掉。两次最终模型目标六关节差最大约0.70°，腕部图中的竹条与夹口相对位置不同，支持继续查位置／姿态响应，不证明固定机器人偏置或把像素换算毫米。
+
+02／03此前49／50份全接近掩码复核继续保留；新增查看05／08最后三份叠图，未见整个轮廓整体平移到右侧邻条，但不声称两次全程视觉验收。全部接近日志中，当前选中目标自身跟踪告警在02／03／05／08分别0／21／20／13次；08有告警仍成功，不能仅由告警判失败。A可见区域有拆段／局部漏分，训练中人工审核掩码与推理在线掩码的分布差异仍是候选机制。
+
+已核对保存的最终配置：两组差异只有全局图像特征名，顺序均为全局→腕部，尺寸均640×480、共同补边缩放至512×512；预处理配置在预期特征名替换后相同、后处理配置相同、`train_only_stats.json`逐值相同。训练`JointTargetDataset`和实时描边函数都用5×5腐蚀取2像素内边界、RGB紫色，腕部保持原图；HWC→CHW、数值范围及阶段规则未发现不一致。归一化处理器张量复用此前训练验收／P1核对，不把JSON相同冒充重新核对所有部署张量。实际远端源码检查沿用此前`assessment.json`中的只读记录，本轮没有新SSH，不能只凭当前本地文件宣称部署完全一致。
+
+进一步复算两组既有6023帧预测中每条示教闭爪前10帧至闭爪帧（含两端）：9条×11帧共99个观察，全部为专家定姿。对各帧取六关节最大绝对误差，再按示教等权平均，baseline为0.638°、target为0.647°；target在5/9条更差，方向随示教变化。该结果**只含动作块第0行**，不覆盖实际多用的后续行，不能据此解释成目标模型普遍更差或二者后续行为相同。此前target训练内残差和新摆放泛化退化并存的P1证据仍有效，不把问题改写为只有数据量不足。
+
+| 尚待区分的机制 | 支持证据 | 反证／当前限制 | 最小验证 |
+| --- | --- | --- | --- |
+| 在线轮廓局部质量／训练推理轮廓差异 | A局部漏分拆段、C跟踪告警；训练使用审核轮廓，现场使用当前分割 | 此前02／03未见整体右移；08有13次自身告警仍成功；告警不是像素真值 | 同一保存RGB人工核对接近夹口处的在线边界，必要时将同帧审核／在线轮廓固定对照，不先平移轮廓 |
+| 输入处理或部署错配 | 无损输入未逐次完整保存；远端检查是已有时间点 | 共享配置、颜色、尺寸、相机顺序、训练统计和记录身份未发现不一致 | 若后续结果与旧记录矛盾，再针对具体模块／处理器做只读核对，无需重复大权重SHA |
+| 额外处理改变反馈及选行 | 实际Hz、观察年龄和固定块扣时敏感性均有差异 | 08更慢仍成功；同块四次最终闭爪行扣时均不变 | 先比较同输入、同固定行的完整动作块；之后如仍必要，再另提反馈时序控制变量试验 |
+| 对位置／角度响应不足或收敛到习惯姿态 | 03／08末段姿态接近而夹口相对关系不同；08摆放调整线索 | 位置与角度同时改变，无同场景移动前对照；07 baseline左偏 | 先对同专家观察比较完整块关节误差；P2固定图像的敏感性对照另行限额，不能用不一致图像状态冒充真实重摆 |
+| 两独立权重后续动作生成精度不同 | P1已有target持位残差；P2两路线末段轨迹不同；下述固定观察上层条分组有一致差异 | 总体方向随场景／seed反转，独立条target均值更小；相同训练预算不构成描边单变量消融 | 固定观察对照已完成；下一步优先区分同角色训练内拟合与验证退化 |
+| 实际执行／接触几何因素 | 指尖、工具和接触时点未标定，05腕角与其他次不同 | 八次关节都接近模型目标，暂不支持明显漏执行或动作行混用 | 如需物理定位，再使用获授权的同摆放人工／模型末段对照；当前不加几何补偿 |
+
+**固定专家观察对照（2026-10-25，用户授权后已完成）**：[计划与当前状态](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/fixed_observation_plan.json)保持原9份输入及预算。从既有3个验证堆、9条成功示教各取闭爪前10帧的一份定姿观察，保持双RGB、七维状态、任务、3个seed与模型各自训练输入形式可比；CPU已核对“原图+原审核掩码”与旧target输入、腕部图逐像素一致，状态一致。实际新增9×3＝27次baseline完整50×7预测，复用27份target预测，无在线分割；另2次既有worker热身，共29次新策略调用，一个baseline进程，21.104秒完成，低于600秒预算。worker正常退出、returncode=0，随后只读检查GPU计算进程为空。见[执行记录](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/fixed_observation_execution.json)、[新预测](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/fixed_observation_predictions.jsonl)、[全部对照指标](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/fixed_observation_comparison.json)；没有硬件操作、训练、模型替换或部署改动。
+
+**预先确定的总体分析**：对动作行8～19逐行取六关节相对同一专家动作的最大绝对误差，再求均值，单位度；全部观察的专家关节在0～27行保持范围≤0.01°。该指标测动作生成残差，不是指尖毫米误差或实物成功率。总体baseline为0.6929°、target为0.7164°，baseline在18/27份种子配对更小，但场景p-103及总体seed44方向反转，**没有满足跨场景／seed一致优势的预定判断条件**。
+
+| 组别 | baseline误差均值，° | target误差均值，° | baseline误差更小配对数 |
+| --- | ---: | ---: | ---: |
+| 全部9份观察×3种子 | 0.6929 | 0.7164 | 18/27 |
+| p-101 | 0.4480 | 0.5947 | 7/9 |
+| p-102 | 0.5943 | 0.6818 | 6/9 |
+| p-103 | 1.0364 | 0.8727 | 5/9 |
+
+**按角色的事后探索分析**：以上总体结果产生后，再按原`layout_record.json.roles_by_target_id`映射查看全部上层／下层／独立条分组，未改变主指标、删样本或追加GPU预测。现场P2的A＝上层、B＝下层、C＝独立；验证示教的`s-001`等按实际角色映射，不能按抓取步号直接当A/B/C。
+
+| 角色（每类3份观察×3种子） | baseline误差均值，° | target误差均值，° | baseline误差更小配对数 |
+| --- | ---: | ---: | ---: |
+| 上层条（对应P2 A） | 0.3884 | 0.6647 | 9/9 |
+| 下层条 | 0.9601 | 0.9207 | 6/9 |
+| 独立条（对应P2 C） | 0.7302 | 0.5637 | 3/9 |
+
+上层对应p-101/ep1、p-102/ep0、p-103/ep0，三份观察均值分别baseline→target为0.4062→0.7343°、0.3958→0.7675°、0.3631→0.4923°；每份3个seed方向一致。第一份k=1，后两份k=2，不能把9个seed结果叫9次独立抓取。上层J6分量的平均绝对误差为0.239／0.583°，三个场景均为target更大，但J1/J4等分量也有差异；这提供腕部姿态相关线索，**不能由J6角误差直接推导画面右偏、机器人轴或固定补偿角度**。上层第0行动作最大关节误差均值已为0.354／0.620°，第27行为0.540／1.161°；差异不是仅在实机选到较后行时才出现。
+
+这项检查将上层条的部分问题定位到**正确审核轮廓、专家定姿输入下的条件动作生成残差**：即使没有在线分割、跟踪和观察年龄选行，两个模型也已有上述差异。因此在线轮廓错位或现场延迟不是该离线差异存在的必要条件。它支持继续查A的末段生成精度，却不能证明描边像素本身导致退化、直接解释P2右偏或证明物理修复；两组是独立训练权重，角色分析为事后探索，只有3个验证堆。独立条target均值反而更小，不能将03／08的C失败／成功和A全部归为同一机制。下层及独立条的均值与配对胜负数方向也不完全相同，说明少量大误差会影响总体均值，原始分组全部保留。
+
+**闭合单独报告**：baseline／target首次闭合仅连续1～2行分别8/27、10/27；首次连续3行闭合时机相对专家第10行的绝对偏差中位为0.36／0.40秒，平均为0.366／0.350秒，不能只挑一个统计量宣称时机整体优胜。全部在50行内出现闭合，但闭合出现不证明抓住；超过已核对持位区间的闭合姿态误差按对应未来专家动作计算，不当作定姿区间误差。
+
+**同角色训练内拟合与验证退化的对照现已按后续授权完成**，结果见下文；首轮29次预算与后续11次预算分别记录，不扩大原调用额度。P1旧训练搜索、四根／六根采集及混合训练继续暂停。角色／k分组、逐场景／seed／动作行指标及限制均见原[复核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/review.html#fixed-observation)和JSON；target历史环境无法仅由输入／seed一致证明逐项相同，本轮保留这一复用限制。
+
+**同数据为何仍有精度差异：输入表达与冻结范围核对**。两组实际训练计划均从同一`smolvla_base`目录严格加载，seed=42、30000步、batch=8，训练入口使用相同seed的数据打乱生成器。不能笼统把差异归为随机初始化；但相同初始化和动作真值也不要求图像改变后的梯度相同。baseline学习“原图特征→动作”，target学习“描边改写图特征→动作”，二者不是在同一原图特征上无损增加一个目标坐标。当前输入没有独立掩码通道／目标坐标token；紫色像素是目标条件进入VLA的方式。
+
+保存配置两组均为`freeze_vision_encoder=true`、`train_expert_only=true`、`train_state_proj=true`。本地`smolvlm_with_expert.py:139-147`以及[官方实现](https://github.com/huggingface/lerobot/blob/main/src/lerobot/policies/smolvla/smolvlm_with_expert.py)表明，后一个选项会冻结整个视觉语言主干，包括图像编码部分；动作专家及相应投影学习如何使用这些特征。这是合理的资源受限训练配置，不自动构成错误；冻结视觉主干也不等于图像完全不起作用。不过新描边外观不会通过此次训练调整该主干的特征提取参数，是否适合本任务的细粒度定位需要验证。仅把`freeze_vision_encoder`改false而保持`train_expert_only=true`也不会解除整个VLM的冻结，当前没有修改这些配置。
+
+新增[CPU输入审计](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/outline_input_audit.json)检查27份既有验证观察（闭爪前40／25／10帧）和9份既有训练内观察，共36份掩码；没有模型推理。9份验证末段（前10帧）中，5×5腐蚀所取内边界占目标可见掩码29.4%～39.3%，这些像素被直接改为不透明RGB紫色；这是目标区域内的像素覆盖比例，不是整幅图的覆盖率，更不是信息损失率或分割误差。三类目标的比例相近，上层／下层／独立条均值32.3%／34.7%／32.1%，不能由覆盖量单独解释上层差、独立条较好的结果。训练内上层3份约32.9%～40.1%，同样不能直接推导动作误差。
+
+分割`Mask2Former`、SmolVLA内部的视觉语言主干和动作专家是不同模块：分割输出目标区域；主干将输入图像转成特征；动作专家预测关节动作。上述固定观察对照用的是人工审核轮廓，已经绕过现场分割，因此它的关节误差不能证明分割模型无用。现有P2 baseline四次均针对上层A，target已有指定独立C成功，这说明当前须同时评价“能否表达目标选择”和“选择后是否准确对准”，不能只用一个抓取成功计数或分割轮廓指标替代全部能力；尚未完成同一原图／状态切换A/C条件的严格目标因果验证。
+
+**改良候选及取舍**：保留纯模型产生动作，不把掩码中心换算成机器人位移。用户随后授权按顺序改良；完成训练内检查后，仅1像素候选进入有限配套续训，其余候选仍为备选，未接入运行。
+
+| 候选 | 期望改善 | 代价／验证要求 | 当前建议 |
+| --- | --- | --- | --- |
+| 更细或半透明的描边 | 减少对原始边缘／纹理的改写 | 线更细也可能减弱目标信号；必须配套训练、验证，直接改旧模型推理输入仅是敏感性试验 | 已生成同图候选；本轮只做1像素不透明描边，与已有2像素普通续训比较，不同时叠加半透明变化 |
+| 保留原始双RGB，目标条件单独编码给动作模型 | 让自然图像细节与“选哪根”同时保留 | 需改模型输入或增加小型目标编码模块，工程量更大；不能把新增相机视图当零成本 | 作为结构性备选，避免一开始重写运行链路 |
+| 让少量视觉语言适配参数参与训练 | 学习适应目标提示外观／定位任务 | 新增可训练参数可能过拟合，须核对实际冻结范围和角色／阶段退化 | 仅在证据支持特征适配瓶颈后考虑，不先全面解冻或盲目加步数 |
+
+在9份验证末段图上，1像素候选覆盖目标约14.9%～19.9%；半透明候选保留边界部分原色。对照图从原RGB生成、等比显示、原图和掩码不变，统一见[原复核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/review.html#outline-input-audit)。这项CPU像素审计本身只确认改写程度，不评价模型动作；后续配套训练结果见下文。原运行模型训练时使用2像素不透明描边，不能直接换线后把表现当作公平改良结论。
+
+**训练内上层条检查已授权完成**：[执行记录与逐配对结果](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/upper_training_fit_comparison.json)。p-002/ep4、p-009/ep13、p-010/ep0各一份既有训练观察×3种子，新增baseline 9次预测，复用target 9份训练内及已完成的验证上层结果，另2次既有服务热身；共11次新策略调用、17.25秒，worker正常退出，随后GPU计算进程为空。此诊断训练／分割／硬件／部署为0，原双RGB、原2像素描边及状态已逐值核对。p-002角色结合本节pilot操作者独立条先抓的确认及3张起始图复核，未按编号猜测。
+
+训练内主指标baseline／target为**0.4523／0.5211°，baseline在8/9个种子配对更小**；验证上层复用结果为0.3884／0.6647°。p-002、p-009、p-010三份训练观察的跨种子均值分别为0.3051／0.3727、0.4223／0.5943、0.6297／0.5962°，最后一组方向反转。结果提供训练内残差和更大验证差距的线索，**不支持只有泛化问题，也不支持所有训练姿态一致退化**。训练与验证的摆放并未完全控制，不能由差距直接证明像素遮盖、冻结主干或数据量是根因；1像素后续实验属于候选筛选，不是已确立根因后的必然修复。
+
+**1像素描边配套续训已完成，未通过整体筛选**。用户授权按顺序改良后，从原30000步target检查点只新增一组1像素不透明内边界续训1000步，训练和评价均用1像素；完整40673帧训练源、60条示教、batch=8、seed=42、峰值学习率1e-5、100步warmup、余弦最低比例0.025、新优化器、原冻结范围、均匀损失不变。对照复用P1已有的2像素`uniform`续训1000步结果，**uniform不是无描边baseline**。没有重跑旧训练搜索或同时叠加半透明、采样／监督、视觉解冻变化。训练前的预算与筛选条件保留，单组30分钟上限；实际训练375.77秒，训练及完整6023帧验证、54份末段动作块合计851.97秒，进程正常结束，随后GPU计算进程为空。
+
+18份评价观察从原视频按元数据恢复，重建2像素图与旧保存图逐像素一致、腕图及状态一致，再生成1像素输入。1000个batch的样本身份／顺序、每步学习率、最终模型配置与旧`uniform`逐项一致，依赖版本及模型实现沿用旧对照隔离副本；冻结范围没有改变。候选原始RGB、动作真值、归一化与padding不改，搬运仍为原双RGB。严格保存重载同输入预测逐值一致，完整验证与两份参考的状态／真值／源索引／帧顺序一致。仅新目录保存候选及代码快照，未覆盖远端部署源码、服务、原数据或检查点；本地新增1像素审计复用兼容不改变冻结实验的训练路径。
+
+| 验证分组（各角色3份观察×3seed） | 原2像素target，° | 2像素普通续训，° | 1像素续训，° |
+| --- | ---: | ---: | ---: |
+| 上层条 | 0.6647 | 0.5749 | 0.5070 |
+| 下层条 | 0.9207 | 0.7974 | 0.9025 |
+| 独立条 | 0.5637 | 0.6322 | 0.6616 |
+| 全部验证观察 | 0.7164 | 0.6682 | 0.6904 |
+
+主指标沿用行8～19逐行最大六关节误差均值。上层1像素比原target低23.7%、比同预算普通续训低11.8%，三个场景均值和三个seed均值均改善，满足预定上层改善条件；但尚未达到无描边baseline原验证上层0.3884°，且下层比普通续训增加13.2%，超过预定10%退化限额。**训练内上层反而由原target／普通续训的0.5211／0.4788°增至0.6812°**；训练全部角色也由0.4067／0.3896°增至0.4802°，不能把结果描述为稳定提升拟合精度或通用修复。
+
+闭合与释放另算：27份验证动作块的首次闭合1～2行短脉冲由普通续训7/27增至1像素12/27，首次连续3行闭合时机绝对偏差均值0.3022→0.3348秒，全部仍有连续3行闭合。完整验证中，专家9个释放切换时刻的首行动作正确数1/9→0/9，**这是单帧切换召回，不能解释为9次物理释放失败**；9个闭合切换时刻两者首行召回均0/9。专家释放前后各5帧共99帧的夹爪正确率89.90%→88.89%。搬运3025帧六关节平均MAE为0.19431→0.19514°，释放窗口关节MAE为0.19004→0.18947°，均通过预定5%关节退化限额；这不能抵消角色和夹爪退化。2998帧接近、3025帧搬运、99帧释放窗口按同一专家记录划分，阈值未按候选结果调整。
+
+结果统一见[原复核页](../../artifacts/live/stack/stack_p2_paired_comparison_20261025/review/target_alignment/review.html#thin-outline)、完整比较及逐门槛筛选。相关CPU测试58项通过；候选仅为离线实验，不部署、不自动接入旧运行。`--target-outline-width-px`默认2，显式1会在输入和检查点记录不同契约，旧运行适配器拒绝混用；删除该显式选项即仍走原2像素路径，原检查点可直接保留使用。
+
+**后续取舍（最新决定）**：1000步仅检验从旧2像素权重出发的短适配。用户决定清理旧候选，从同一SmolVLA预训练基座进行30000步1像素正式对照，保持原数据、冻结范围及优化配置；准备完成后已获明确授权并启动，独立目标输入结构继续暂停。参数与执行状态见[README](README.md#1像素描边正式训练)。
+
+本轮所有所列关键帧解码成功，05／07原录像清单仍不完整且有BrokenPipe，未做全片解码验收；恢复图是有损JPEG／录像，不是无损线上输入副本。原物理结果来源及未知项保持：02实际身份未知、03的k未知、08拍照前调整后成功。未把左右方向转换为机器人轴、像素转换为毫米、IO接受转换为真实夹持证明，未新增固定偏移或控制功能。
 
 ### 第三轮B抓空与成功下层示教对照
 

@@ -71,6 +71,7 @@ class ContinuousState:
     motion: object = None
     future: object = None
     goal: object = None
+    goal_arrived: bool = False
     pending_suction: bool = False
     last_observation: object = None
     trajectory: object = None
@@ -92,6 +93,8 @@ class ContinuousState:
     last_servo_sent_at: object = None
     target_misses: int = 0
     recovery_after: object = None
+    baseline_close_time: object = None
+    request_phase: object = None
     deadline: float = 0.0
     next_tick: float = 0.0
     last_tick: float = 0.0
@@ -176,6 +179,8 @@ def setup_continuous(state):
         state.motion_tracker = TargetMotionReferences(initial_rgb,
             {t["target_id"]: decode_mask(t["mask_png"]) for t in state.target_seed["visible_targets"]})
     if state.target_mode:
+        if args.observe_after_arrival:
+            print("本轮到位后观察：接受时按原规则选定一行并冻结，到位后再拍图预测；原新鲜度与超时限制保留。", flush=True)
         if state.sequence:
             print(f'目标顺序：{" → ".join(state.sequence)}；每次释放后自动归位再抓下一根，最后一根结束后停止。', flush=True)
         else:
@@ -247,8 +252,14 @@ def infer(state, index, observed_state, images, metadata=None):
         log(state.trace, {"target_motion": {"index": index, "target_input": metadata, "reference": motion}})
         if metadata["phase"] == "approach":
             extra["target_motion"] = motion
-    result = (state.pipe.predict(index, observed_state, images, codec="rgb_zlib", target_input=metadata, **extra)
-              if state.target_mode else state.pipe.predict(index, observed_state, images))
+    if state.target_mode:
+        result = state.pipe.predict(index, observed_state, images, codec="rgb_zlib", target_input=metadata, **extra)
+    elif state.config["lossless_images"]:
+        # baseline-stack shares the target path's lossless images and full chunk
+        # without sending any target metadata.
+        result = state.pipe.predict(index, observed_state, images, codec="rgb_zlib")
+    else:
+        result = state.pipe.predict(index, observed_state, images)
     if index % 5 == 0:
         import cv2
         for name, img in images.items():
@@ -291,9 +302,12 @@ def run_targets(state):
         if future_ready and state.discard_pending_result:
             state.future = None
             state.discard_pending_result = False
-            log(state.trace, {"index": state.inflight_index, "discarded_prediction": result,
+            discarded = {"index": state.inflight_index, "discarded_prediction": result,
                 "reason": "observation_precedes_suction_change",
-                "observed_state": state.observed_state, "sensor_times": state.sensor_times})
+                "observed_state": state.observed_state, "sensor_times": state.sensor_times}
+            if state.args.model == "baseline-stack":
+                discarded["request_phase"] = state.request_phase
+            log(state.trace, discarded)
         if state.future is not None and future_ready:
             state.future = None
             accept_prediction(state, result)
@@ -303,8 +317,10 @@ def run_targets(state):
                 break
             if outcome == "switch":
                 continue
-        if state.future is None and (not state.pending_suction
-                                     or (config["approach"] and state.held_suction == 0)):
+        ready_to_observe = ((state.goal is None or state.goal_arrived)
+                            if config["observe_after_arrival"] else
+                            (not state.pending_suction or (config["approach"] and state.held_suction == 0)))
+        if state.future is None and ready_to_observe:
             request_observation(state)
     if state.sent == 0:
         state.reason = "no_motion"
@@ -313,6 +329,7 @@ def run_targets(state):
 def handle_target_missing(state, exc):
     """Stop, save evidence and decide whether a fresh observation may recover."""
     state.goal = None
+    state.goal_arrived = False
     state.pending_suction = False
     state.trajectory = None
     state.last_observation = None
@@ -357,16 +374,21 @@ def accept_prediction(state, result):
     """Validate one received prediction and apply its action-selection rules."""
     config = state.config
     previous_pending_target = state.goal.copy() if config["approach"] and state.pending_suction else None
-    log(state.trace, {"index": state.inflight_index, "task": state.task,
-        "observed_state": state.observed_state, "sensor_times": state.sensor_times,
-        "prediction": result, "received_at": time.perf_counter()})
+    trace = {"index": state.inflight_index, "task": state.task,
+             "observed_state": state.observed_state, "sensor_times": state.sensor_times,
+             "prediction": result, "received_at": time.perf_counter()}
+    if state.args.model == "baseline-stack":
+        trace["request_phase"] = state.request_phase
+    log(state.trace, trace)
     candidate = result["action"]
     if config["approach"]:
         # InferencePipe already checked and normalized the full chunk.
         state.active_chunk = result["action_chunk"]
         state.active_times = list(state.sensor_times)
+        request_phase = (result.get("target_input", {}).get("phase") if state.target_mode
+                         else state.request_phase)
         state.active_transport = (state.args.transport_age_aligned
-                                  and result.get("target_input", {}).get("phase") == "transport")
+                                  and request_phase == "transport")
         state.selection = None
         if state.held_suction == 0:
             candidate, state.selection = select_approach_action(
@@ -381,6 +403,7 @@ def accept_prediction(state, result):
         max_prediction_age=config["max_prediction_age"], max_camera_skew=config["max_camera_skew"])
     state.predictions += 1
     state.goal = accepted
+    state.goal_arrived = False
     state.last_observation = min(state.sensor_times)
     if state.preview is not None:
         state.preview.publish(images=state.images, evidence=result["target_evidence"],
@@ -410,7 +433,10 @@ def command_goal(state):
         raise TimeoutError(f'no fresh prediction within {config["max_without_prediction"] * 1000:.0f} ms')
     if state.pending_suction and time.perf_counter() - state.last_observation > 1.5:
         raise TimeoutError("suction transition target not reached within 1.5 seconds")
-    if (config["approach"] and state.active_chunk is not None
+    if (config["observe_after_arrival"]
+            and time.perf_counter() - state.last_observation > config["max_prediction_age"]):
+        raise TimeoutError("frozen goal observation expired")
+    if (not config["observe_after_arrival"] and config["approach"] and state.active_chunk is not None
             and (state.held_suction == 0 or state.active_transport) and not state.pending_suction):
         select_action = select_approach_action if state.held_suction == 0 else select_transport_action
         candidate, new_selection = select_action(state.active_chunk, state.active_times, time.perf_counter())
@@ -456,18 +482,26 @@ def command_goal(state):
     if config["approach"]:
         command_record.update(prediction_index=state.prediction_id, action_selection=state.selection,
             suction_target_frozen=state.pending_suction)
+    if config["observe_after_arrival"]:
+        command_record.update(target_frozen_until_arrival=True,
+            goal_observation_age_s=time.perf_counter() - state.last_observation)
     log(state.commands, command_record)
-    if (state.pending_suction
-            and max(abs(a - b) for a, b in zip(state.goal[:6], state.current_state[:6])) < .15
-            and max(abs(v) for v in state.trajectory.v) < .3):
+    at_goal = (max(abs(a - b) for a, b in zip(state.goal[:6], state.current_state[:6])) < .15
+               and max(abs(v) for v in state.trajectory.v) < .3)
+    if config["observe_after_arrival"] and at_goal and not state.goal_arrived:
+        state.goal_arrived = True
+        log(state.trace, {"goal_arrived": {"prediction_index": state.prediction_id,
+            "time": time.perf_counter(), "target": state.goal,
+            "state": state.current_state, "velocity": state.trajectory.v.copy()}})
+    if state.pending_suction and at_goal:
         # Goal is held while switching IO; no averaging of discrete suction.
         state.suction.is_suction_on = state.held_suction == 100
         try:
             state.suction._control_suction_based_on_gripper(state.goal[-1])
         finally:
             log(state.trace, {"suction": state.suction.last_gripper_command_trace})
+        accepted_at = time.perf_counter()
         if state.target_mode:
-            accepted_at = time.perf_counter()
             state.target_session.accept_command(dict(zip(JOINT_FIELDS, state.goal, strict=True)),
                 accepted_monotonic_s=accepted_at)
             log(state.trace, {"target_phase_command": {"action": state.goal,
@@ -477,6 +511,13 @@ def command_goal(state):
             if state.preview is not None:
                 state.preview.publish(target_id=state.current_target_id, phase="transport",
                     status="gripper command accepted; waiting for next observation", jpeg=None)
+        elif state.args.model == "baseline-stack" and state.goal[-1] == 100 and state.baseline_close_time is None:
+            # Only a successfully accepted close command starts transport;
+            # predicted or planned rows never update this clock.
+            state.baseline_close_time = accepted_at
+            log(state.trace, {"baseline_transport_start": {
+                "accepted_monotonic_s": accepted_at, "source": "accepted_close_command",
+                "target_id": None}})
         previous_suction = state.held_suction
         state.held_suction = state.goal[-1]
         state.pending_suction = False
@@ -543,6 +584,7 @@ def switch_target(state):
     state.pipe = InferencePipe(worker_output, task=state.task,
         **{**next_options, "request_timeout_s": state.config["inference_timeout_s"]})
     state.goal = None
+    state.goal_arrived = False
     state.pending_suction = False
     state.last_observation = None
     state.trajectory = None
@@ -588,6 +630,8 @@ def request_observation(state):
             state.observed_state, state.images, state.metadata)
     else:
         state.metadata = None
+        state.request_phase = (("transport" if is_transport(state.sensor_times[0], state.baseline_close_time)
+                                else "approach") if state.args.model == "baseline-stack" else None)
         state.future = state.pool.submit(partial(infer, state), state.inflight_index,
             state.observed_state, state.images)
 
@@ -634,8 +678,11 @@ def finalize_continuous(state):
             "completed_target_ids": state.sequence[:state.completed_cycles]} if state.sequence else {}),
         "approach_age_aligned": state.config["approach"],
         "transport_age_aligned": state.args.transport_age_aligned,
+        "observe_after_arrival": state.config["observe_after_arrival"],
         "requested_suction_cycles": state.config["expected_cycles"],
         "completed_suction_cycles": state.completed_cycles,
+        **({"first_accepted_close_s": state.baseline_close_time}
+           if state.args.model == "baseline-stack" else {}),
         "failure": state.failure, "suction_cycle_commanded": state.cycle,
         "physical_grasp_success": None, "video": state.video_result})
     print(f"结束：{state.reason}，记录：{state.output.resolve()}", flush=True)

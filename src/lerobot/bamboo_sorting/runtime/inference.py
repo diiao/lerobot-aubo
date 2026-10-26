@@ -24,7 +24,12 @@ class InferencePipe:
     def __init__(self, output, *, fast_matmul=False, bf16=False, cuda_graph=False, task=None,
                  remote_root=LEGACY_REMOTE_ROOT, checkpoint=None, expected_sha256=LEGACY_MODEL_SHA,
                  inference_script=None, return_action_chunk=False, request_timeout_s=2.,
-                 target_conditioned=False, pythonpath=None, live_target_seed=None, segmentation_checkpoint=None):
+                 target_conditioned=False, pythonpath=None, live_target_seed=None, segmentation_checkpoint=None,
+                 target_outline_width_px=2):
+        if type(target_outline_width_px) is not int or target_outline_width_px not in (1, 2):
+            raise ValueError('target outline width must be 1 or 2 pixels')
+        if target_outline_width_px != 2 and not target_conditioned:
+            raise ValueError('thin outline requires a target-conditioned checkpoint')
         if (live_target_seed is None) != (segmentation_checkpoint is None):
             raise ValueError('live target seed and segmentation checkpoint must be provided together')
         if live_target_seed is not None and not target_conditioned:
@@ -40,7 +45,7 @@ class InferencePipe:
         self.contract = joint_contract_record()
         if target_conditioned:
             from ..policy.joint_target_policy import target_policy_contract_record
-            self.contract = target_policy_contract_record()
+            self.contract = target_policy_contract_record(outline_width_px=target_outline_width_px)
         deployment = 'joint_live_bf16_20260922' if bf16 else 'joint_live_matmul_20260922'
         script = 'joint_inference_stdio.py'
         if cuda_graph:
@@ -61,6 +66,8 @@ class InferencePipe:
             args.append('--return-action-chunk')
         if target_conditioned:
             args.append('--target-conditioned')
+            if target_outline_width_px != 2:
+                args.extend(['--target-outline-width-px', str(target_outline_width_px)])
         if live_target_seed is not None:
             args.extend(['--target-segmentation-checkpoint', str(segmentation_checkpoint)])
         if task is not None:
@@ -83,6 +90,7 @@ class InferencePipe:
                 raise ValueError('segmentation checkpoint mismatch')
             if live_target_seed and live_target_seed.get('motion_tracking') and ready.get('target_motion_available') is not True:
                 raise ValueError('inference worker does not support target motion references')
+            self.ready = ready
         except BaseException:
             self.close()
             raise

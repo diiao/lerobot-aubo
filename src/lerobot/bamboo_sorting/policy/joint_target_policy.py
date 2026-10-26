@@ -17,8 +17,8 @@ from .smolvla_joint_adapter import SmolVLAJointOfflineAdapter
 from ..joint_stack_metadata import stack_metadata, successful_target_outcome
 
 
-def target_policy_contract_record():
-    record = target_contract_record()
+def target_policy_contract_record(*, outline_width_px=2):
+    record = target_contract_record(outline_width_px=outline_width_px)
     record['schema_version'] = 'AuboI10JointTargetApproach'
     record['target_conditioning'].update(
         phase_rule='outline until global RGB timestamp exceeds first accepted close timestamp; then raw RGB until reset',
@@ -34,9 +34,10 @@ def is_transport(global_time, accepted_close_time):
     return accepted_close_time is not None and global_time > accepted_close_time
 
 
-def prepare_policy_images(images, mask, annotation, *, frame_id, target_id, transport):
+def prepare_policy_images(images, mask, annotation, *, frame_id, target_id, transport, outline_width_px=2):
     if not transport:
-        result = prepare_target_images(images, mask, annotation or {}, frame_id=frame_id, target_id=target_id)
+        result = prepare_target_images(images, mask, annotation or {}, frame_id=frame_id, target_id=target_id,
+                                       outline_width_px=outline_width_px)
     else:
         if not frame_id or not target_id:
             raise ValueError('frame and target identity required')
@@ -46,7 +47,7 @@ def prepare_policy_images(images, mask, annotation, *, frame_id, target_id, tran
                 raise ValueError(f'invalid RGB image: {name}')
         result = {'images': {TARGET_IMAGE_KEY: images['global_rgb'].copy(),
                              'grasp_rgb': images['grasp_rgb'].copy()}, 'preview_only': False}
-    result.update(contract=target_policy_contract_record(), target_input={
+    result.update(contract=target_policy_contract_record(outline_width_px=outline_width_px), target_input={
         'frame_id': frame_id, 'target_id': target_id, 'phase': 'transport' if transport else 'approach'})
     return result
 
@@ -92,6 +93,11 @@ class SmolVLAJointTargetOfflineAdapter(SmolVLAJointOfflineAdapter):
                 or not metadata.get('frame_id') or not metadata.get('target_id')):
             raise ValueError('prepared target input and explicit phase contract required')
         return super().__call__(frame)
+
+
+class SmolVLAJointThinTargetOfflineAdapter(SmolVLAJointTargetOfflineAdapter):
+    """Explicit one-pixel adapter; live workers must opt into its contract."""
+    contract_record = staticmethod(lambda: target_policy_contract_record(outline_width_px=1))
 
 
 def read_visible_mask(path):
@@ -170,7 +176,9 @@ def prepare_target_source(record, annotation_path):
 
 class JointTargetDataset:
     """Lazy view over original LeRobot samples; state/actions/padding untouched."""
-    def __init__(self, dataset, frames):
+    def __init__(self, dataset, frames, *, outline_width_px=2):
+        target_policy_contract_record(outline_width_px=outline_width_px)
+        self.outline_width_px = outline_width_px
         self.dataset = dataset
         self.frames = {(f['episode_index'], f['frame_index']): f for f in frames}
         if len(self.frames) != len(frames) or len(dataset) != len(frames):
@@ -193,7 +201,8 @@ class JointTargetDataset:
         annotation = spec['annotation']
         mask = None if annotation is None else read_visible_mask(annotation['mask_path'])
         result = prepare_policy_images(images, mask, annotation, frame_id=spec['frame_id'],
-                                       target_id=spec['target_id'], transport=spec['transport'])
+                                       target_id=spec['target_id'], transport=spec['transport'],
+                                       outline_width_px=self.outline_width_px)
         output = dict(raw)
         original = output.pop('observation.images.global_rgb')
         # Preserve decoded pixels exactly outside the boundary and the entire wrist image.

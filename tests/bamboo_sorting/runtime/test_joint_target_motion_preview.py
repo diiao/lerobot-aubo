@@ -304,12 +304,21 @@ def test_neighbor_and_selected_partial_masks_use_only_current_foreground(flow_fa
         with pytest.raises(TargetForegroundMissing,match='no current foreground: C'):prepare('C')
 
 
-def test_preview_same_frame_does_not_mutate_model_inputs_or_retain_transport_box():
+@pytest.mark.parametrize('outline_width_px', [1,2])
+def test_preview_same_frame_does_not_mutate_model_inputs_or_retain_transport_box(monkeypatch,outline_width_px):
     rgb,mask=textured();images={'global_rgb':rgb,'grasp_rgb':np.zeros_like(rgb)}
-    evidence=dict(phase='approach',target_id='B',mask_png=encode_mask(mask))
+    evidence=dict(phase='approach',target_id='B',mask_png=encode_mask(mask),target_outline_width_px=outline_width_px)
+    encoded=[];imencode=cv2.imencode
+    def capture(extension,image,*args):
+        encoded.append(image.copy())
+        return imencode(extension,image,*args)
+    monkeypatch.setattr(cv2,'imencode',capture)
     before=rgb.copy();packet=render_packet(images,evidence,index=7,sensor_times=[10,11,12])
     assert packet['pixels']==mask.sum() and packet['source_time']==10
     assert np.array_equal(rgb,before)
+    # One pixel inside the display box is unmarked for 1px, magenta for 2px.
+    expected=before[200,281] if outline_width_px==1 else np.array([255,0,255],np.uint8)
+    np.testing.assert_array_equal(encoded[0][200,281,::-1],expected)
     transport=render_packet(images,dict(phase='transport',target_id='B',mask_png=None),index=8,sensor_times=[12,13,14])
     assert transport['pixels']==0
     for p in [packet,transport]:

@@ -213,7 +213,9 @@ def test_stack_single_confirmation_derives_target_fields(tmp_path):
     assert summary['unknown_outcome_episodes'] == [2]
 
 
-@pytest.mark.parametrize('changes', [{'pick_step': True}, {'pick_step': 7}, {'available_target_count': 0}, {'available_target_count': 4}])
+@pytest.mark.parametrize('changes', [{'pick_step': True}, {'pick_step': 0}, {'pick_step': -1}, {'pick_step': 1.5},
+                                     {'available_target_count': 0}, {'available_target_count': 7},
+                                     {'available_target_count': True}])
 def test_stack_metadata_rejected_before_recording(tmp_path, changes):
     session = _session(tmp_path)
     session.prepare_episode = lambda i: dict(scene_id='p-001', target_id='s-001', split='train',
@@ -221,6 +223,36 @@ def test_stack_metadata_rejected_before_recording(tmp_path, changes):
     with pytest.raises(ValueError, match='integer'):
         session.episode_frame_observer()
     assert not session.attempts
+
+
+@pytest.mark.parametrize('strips', [4, 6])
+def test_stack_retries_beyond_six_keep_target_identity_and_unknown_outcomes(tmp_path, strips):
+    from lerobot.bamboo_sorting.joint_stack_metadata import confirmed_target_outcome
+    session = _session(tmp_path)
+    session.prepare_episode = lambda i: dict(scene_id='p-021', target_id=f's-{i//2+1:03}', split='train',
+                                             pick_step=i+1, available_target_count=strips-i//2)
+    session.outcome_provider = lambda i: dict(human_outcome='single_success' if i % 2 else 'empty',
+        target_outcome=confirmed_target_outcome('single_success' if i % 2 else 'empty'))
+    for index in range(2 * strips):
+        _, dataset = _record_one(tmp_path, session.episode_frame_observer())
+        dataset.num_episodes = index
+        session.save_episode(dataset=dataset, episode_index=index)
+    session.on_dataset_finalize_success(dataset=dataset, recorded_episode_count=2 * strips)
+    records = json.loads((tmp_path/'evidence/session.json').read_text())['attempts']
+    assert [r['metadata']['pick_step'] for r in records] == list(range(1, 2 * strips + 1))
+    for failed, success in zip(records[::2], records[1::2], strict=True):
+        assert failed['metadata']['target_id'] == success['metadata']['target_id']
+        assert all(value is None for value in failed['target_outcome'].values())
+        assert success['target_outcome']['held'] is True
+
+
+def test_stack_integer_prompt_allows_attempts_beyond_object_count(monkeypatch, capsys):
+    entry = _entry()
+    answers = iter(['0', '12', '7', '6'])
+    monkeypatch.setattr('builtins.input', lambda prompt: next(answers))
+    assert entry.bounded_integer('attempt') == 12
+    assert entry.bounded_integer('available', high=6) == 6
+    assert '1～6' in capsys.readouterr().out
 
 
 def test_stack_rerecord_does_not_consume_step_but_saved_duplicate_is_rejected(tmp_path):

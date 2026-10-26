@@ -90,6 +90,46 @@ def test_complete_episode_training_runtime_parity_and_action_padding(tmp_path):
     assert TargetInputSession('next_strip').accepted_close_time is None
 
 
+def test_thin_candidate_preserves_raw_details_supervision_and_transport(tmp_path):
+    record, path, _ = bound_capture(tmp_path)
+    frames = prepare_target_source(record, path)['target_frames']
+    raw = [sample(i) for i in range(5)]
+    standard = JointTargetDataset(raw, frames)
+    thin = JointTargetDataset(raw, frames, outline_width_px=1)
+    first = raw[0]['observation.images.global_rgb']
+    standard_changed = (standard[0]['observation.images.target_global_rgb'] != first).any(dim=0)
+    thin_changed = (thin[0]['observation.images.target_global_rgb'] != first).any(dim=0)
+    assert thin_changed.any() and torch.all(~thin_changed | standard_changed)
+    assert thin_changed.sum() < standard_changed.sum()
+    for i in range(5):
+        for key in ('observation.state', 'action', 'action_is_pad', 'observation.images.grasp_rgb'):
+            assert torch.equal(thin[i][key], raw[i][key])
+    for i in (3, 4):
+        assert torch.equal(thin[i]['observation.images.target_global_rgb'], raw[i]['observation.images.global_rgb'])
+    assert target_policy_contract_record()['target_conditioning']['encoding'] == 'inner mask boundary, 2 pixels, RGB magenta [255,0,255]'
+    assert target_policy_contract_record(outline_width_px=1) != target_policy_contract_record()
+
+
+def test_thin_candidate_adapter_rejects_wrong_input_contract():
+    from lerobot.bamboo_sorting.policy.joint_target_policy import SmolVLAJointThinTargetOfflineAdapter
+    old = target_policy_contract_record()
+    thin = target_policy_contract_record(outline_width_px=1)
+    with pytest.raises(ValueError, match='contract'):
+        SmolVLAJointTargetOfflineAdapter(None, None, None, contract=thin)
+    with pytest.raises(ValueError, match='contract'):
+        SmolVLAJointThinTargetOfflineAdapter(None, None, None, contract=old)
+    policy = Mock(config=make_joint_smolvla_config(target_conditioned=True))
+    policy.predict_action_chunk.return_value = torch.zeros(1, 50, 7)
+    adapter = SmolVLAJointThinTargetOfflineAdapter(policy, lambda x: x, lambda x: x, contract=thin)
+    frame = {'observation.state': np.zeros(7, np.float32), 'task': JOINT_TASK,
+             'target_contract': thin, 'target_input': {'phase': 'approach', 'frame_id': '0', 'target_id': 'a'},
+             **{f'observation.images.{k}': np.zeros((480, 640, 3), np.uint8) for k in ('target_global_rgb', 'grasp_rgb')}}
+    assert adapter(frame).shape == (50, 7)
+    frame['target_contract'] = old
+    with pytest.raises(ValueError, match='contract'):
+        adapter(frame)
+
+
 def test_stack_target_metadata_bound_to_capture_and_wrong_target_excluded(tmp_path):
     record, path, _ = bound_capture(tmp_path)
     session_path = tmp_path/'evidence/session.json'

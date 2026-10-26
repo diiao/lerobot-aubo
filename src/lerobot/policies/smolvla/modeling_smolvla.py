@@ -65,7 +65,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.rtc.modeling_rtc import RTCProcessor
 from lerobot.policies.smolvla.action_padding import restore_action_padding
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
-from lerobot.policies.smolvla.losses import holding_action_loss, masked_action_loss
+from lerobot.policies.smolvla.losses import masked_action_loss
 from lerobot.policies.smolvla.relative_xyz import (
     RAW_TCP_KEY,
     RELATIVE_XYZ,
@@ -364,8 +364,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         return self.config.rtc_config is not None and self.config.rtc_config.enabled
 
     def forward(
-        self, batch: dict[str, Tensor], noise=None, time=None, reduction: str = "mean", action_loss_weights=None,
-        *, holding_pair_mask=None, holding_loss_coefficient=0.0, gripper_loss_weights=None,
+        self, batch: dict[str, Tensor], noise=None, time=None, reduction: str = "mean",
     ) -> dict[str, Tensor]:
         """Do a full training forward pass to compute the loss.
 
@@ -376,9 +375,6 @@ class SmolVLAPolicy(PreTrainedPolicy):
             reduction: How to reduce the loss. Options:
                 - "mean": Return scalar mean loss (default, backward compatible)
                 - "none": Return per-sample losses of shape (batch_size,) for RA-BC weighting
-            holding_pair_mask: Expert adjacent-row labels, used only with a positive holding coefficient.
-            holding_loss_coefficient: Optional clean-action increment loss for six absolute joints.
-            gripper_loss_weights: Independent alternative redistributing only the seventh coordinate.
         """
         if self.config.adapt_to_pi_aloha:
             batch[OBS_STATE] = self._pi_aloha_decode_state(batch[OBS_STATE])
@@ -396,25 +392,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         elif legacy_pad is not None and not torch.equal(actions_is_pad, legacy_pad):
             raise ValueError("Conflicting action padding masks")
         loss_dict = {}
-        if not math.isfinite(holding_loss_coefficient) or holding_loss_coefficient < 0:
-            raise ValueError("holding_loss_coefficient must be finite and nonnegative")
-        holding_enabled = holding_loss_coefficient > 0
-        if holding_enabled or gripper_loss_weights is not None:
-            if self.config.action_feature.shape[0] != 7 or self.config.action_representation != "absolute":
-                raise ValueError("hold/close objectives require 7D absolute joint actions")
-            if action_loss_weights is not None or self.config.execution_loss_fraction is not None:
-                raise ValueError("hold/close candidates require the uniform base objective")
-            if holding_enabled and gripper_loss_weights is not None:
-                raise ValueError("evaluate holding and closure candidates separately")
-        if holding_enabled:
-            if holding_pair_mask is None:
-                raise ValueError("holding objective requires expert holding_pair_mask")
-            losses, estimated_actions = self.model.forward(
-                images, img_masks, lang_tokens, lang_masks, state, actions, noise, time,
-                return_action_estimate=True,
-            )
-        else:
-            losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
+        losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
         loss_dict["losses_after_forward"] = losses.clone().mean().item()
 
         per_sample_loss = masked_action_loss(
@@ -423,24 +401,8 @@ class SmolVLAPolicy(PreTrainedPolicy):
             actions_is_pad,
             execution_horizon=self.config.n_action_steps,
             execution_loss_fraction=self.config.execution_loss_fraction,
-            timestep_weights=action_loss_weights,
-            gripper_weights=gripper_loss_weights,
         )
         loss_dict["losses_after_rm_padding"] = per_sample_loss.detach().mean().item()
-        if action_loss_weights is not None or holding_enabled or gripper_loss_weights is not None:
-            loss_dict["uniform_valid_loss"] = masked_action_loss(
-                losses, self.config.action_feature.shape[0], actions_is_pad
-            ).detach().mean().item()
-        if holding_enabled:
-            holding = holding_action_loss(estimated_actions, actions, holding_pair_mask, actions_is_pad)
-            per_sample_loss = per_sample_loss + holding_loss_coefficient * holding
-            loss_dict["holding_loss"] = holding.detach().mean().item()
-            loss_dict["scaled_holding_loss"] = holding_loss_coefficient * loss_dict["holding_loss"]
-        if gripper_loss_weights is not None:
-            loss_dict["gripper_weighted_loss"] = masked_action_loss(
-                losses[..., 6:7], 1, actions_is_pad, timestep_weights=gripper_loss_weights,
-            ).detach().mean().item()
-
         if reduction == "none":
             # Return per-sample losses (B,) by averaging over time and action dims
             loss_dict["loss"] = per_sample_loss.mean().item()
@@ -809,8 +771,7 @@ class VLAFlowMatching(nn.Module):
 
     def forward(
         self, images, img_masks, lang_tokens, lang_masks, state, actions, noise=None, time=None,
-        *, return_action_estimate=False,
-    ) -> Tensor | tuple[Tensor, Tensor]:
+    ) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
@@ -844,10 +805,6 @@ class VLAFlowMatching(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
         losses = F.mse_loss(u_t, v_t, reduction="none")
-        if return_action_estimate:
-            # t is flow noise time, shared across action rows, not trajectory time.
-            # This differentiable one-step estimate is only a training surrogate.
-            return losses, x_t - time_expanded * v_t
         return losses
 
     def sample_actions(

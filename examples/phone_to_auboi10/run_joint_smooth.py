@@ -9,9 +9,11 @@ import signal
 import sys
 
 from lerobot.bamboo_sorting.model_profiles import (
-    BOTH_ORDERS_APPROACH_SCRIPT, BOTH_ORDERS_CHECKPOINT, BOTH_ORDERS_INFERENCE_SCRIPT,
-    BOTH_ORDERS_MODEL_SHA, BOTH_ORDERS_REMOTE_ROOT, LEGACY_MODEL_SHA as MODEL_SHA,
-    MIXED_CHECKPOINT, MIXED_INFERENCE_SCRIPT, MIXED_MODEL_SHA, MIXED_REMOTE_ROOT,
+    BASELINE_STACK_CHECKPOINT, BASELINE_STACK_INFERENCE_SCRIPT, BASELINE_STACK_MODEL_SHA,
+    BASELINE_STACK_PYTHONPATH, BOTH_ORDERS_APPROACH_SCRIPT, BOTH_ORDERS_CHECKPOINT,
+    BOTH_ORDERS_INFERENCE_SCRIPT, BOTH_ORDERS_MODEL_SHA, BOTH_ORDERS_REMOTE_ROOT,
+    LEGACY_MODEL_SHA as MODEL_SHA, MIXED_CHECKPOINT, MIXED_INFERENCE_SCRIPT, MIXED_MODEL_SHA,
+    MIXED_REMOTE_ROOT, TARGET_STACK_REMOTE_ROOT,
 )
 from lerobot.bamboo_sorting.policy.joint_target_policy import TargetInputSession
 from lerobot.bamboo_sorting.runtime.continuous import MAX_TARGET_REOBSERVATIONS, execute_continuous
@@ -22,19 +24,24 @@ from lerobot.bamboo_sorting.runtime.joint_smooth import (
 )
 from lerobot.bamboo_sorting.runtime.station import CAMERA_SET, RPC_TIMEOUT_MS
 
-__all__ = ['BOTH_ORDERS_MODEL_SHA', 'CAMERA_SET', 'DT', 'MIXED_MODEL_SHA', 'MODEL_SHA', 'main']
+__all__ = ['BASELINE_STACK_CHECKPOINT', 'BASELINE_STACK_MODEL_SHA',
+           'BOTH_ORDERS_MODEL_SHA', 'CAMERA_SET', 'DT', 'MIXED_MODEL_SHA', 'MODEL_SHA', 'main']
 
 
 def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path)
-    p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders','target-pair','target-stack'),default='legacy-single')
+    p.add_argument('--model',choices=('legacy-single','mixed-double','mixed-both-orders','target-pair','target-stack','baseline-stack'),default='legacy-single')
     p.add_argument('--target-snapshot',type=Path,help='Reviewed seed snapshot; only its target selection is reused')
     p.add_argument('--target-selections',type=Path,help='Human-reviewed visible target selection JSON bound to the snapshot')
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
+    p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
+                   help='target-stack: 1 selects the new thin-outline final and isolated worker; default 2 keeps the original model')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
+    p.add_argument('--observe-after-arrival',action='store_true',
+                   help='target-stack trial: freeze the selected model row; request the next observation only after arrival, keeping existing age/watchdog limits')
     p.add_argument('--paired-target-separation',action='store_true',
                    help='Explicit target-pair trial: separate current foreground using both reviewed target references')
     p.add_argument('--multi-target-separation',action='store_true',
@@ -51,8 +58,22 @@ def parse_args(argv=None):
                    help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
     target_mode=args.model in ('target-pair','target-stack')
+    stack=args.model in ('target-stack','baseline-stack')
+    if args.target_outline_width_px != 2 and args.model != 'target-stack':
+        p.error('--target-outline-width-px 1 requires target-stack')
+    if args.model=='baseline-stack':
+        forbidden=[name for name,value in (
+            ('--target-snapshot',args.target_snapshot),('--target-selections',args.target_selections),
+            ('--target-id',args.target_id),('--target-sequence',args.target_sequence),
+            ('--target-preview',args.target_preview),('--track-target-motion',args.track_target_motion),
+            ('--paired-target-separation',args.paired_target_separation),
+            ('--multi-target-separation',args.multi_target_separation)) if value]
+        if forbidden:p.error(f'baseline-stack does not use target options: {", ".join(forbidden)}')
+        if args.cycles is not None and args.cycles!=1:
+            p.error('baseline-stack runs exactly one command cycle')
     if args.target_preview and not target_mode:p.error('--target-preview requires a target model')
     if args.track_target_motion and args.model!='target-stack':p.error('--track-target-motion requires target-stack')
+    if args.observe_after_arrival and args.model!='target-stack':p.error('--observe-after-arrival requires target-stack')
     sequence=args.target_sequence
     if sequence:
         if args.model!='target-stack' or args.target_id:
@@ -67,19 +88,20 @@ def parse_args(argv=None):
         p.error('--multi-target-separation requires a target model and excludes --paired-target-separation')
     if args.paired_target_separation and not target_mode:
         p.error('--paired-target-separation requires --model target-pair')
-    if args.transport_age_aligned and not target_mode:
-        p.error('--transport-age-aligned requires a target model')
+    if args.transport_age_aligned and not (target_mode or stack):
+        p.error('--transport-age-aligned requires a target model or baseline-stack')
     if args.cycles is not None and args.cycles<1:p.error('--cycles must be a positive integer')
     if args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds<=0):
         p.error('--max-seconds must be finite and positive')
     inference_timeout_s=args.inference_timeout_s if args.inference_timeout_s is not None else (5. if args.latency_tolerant else 2.)
     if not math.isfinite(inference_timeout_s) or inference_timeout_s<=0:
         p.error('--inference-timeout-s must be finite and positive')
-    if args.latency_tolerant and not (args.model=='mixed-both-orders' or target_mode):
-        p.error('--latency-tolerant requires mixed-both-orders or a target model')
-    approach=args.approach_age_aligned or target_mode
-    if approach and not (args.model=='mixed-both-orders' or target_mode):p.error('--approach-age-aligned requires mixed-both-orders or a target model')
-    mixed=args.model in ('mixed-double','mixed-both-orders') or target_mode
+    if args.latency_tolerant and not (args.model in ('mixed-both-orders','baseline-stack') or target_mode):
+        p.error('--latency-tolerant requires mixed-both-orders, a target model or baseline-stack')
+    approach=args.approach_age_aligned or target_mode or args.model=='baseline-stack'
+    if approach and not (args.model in ('mixed-both-orders','baseline-stack') or target_mode):
+        p.error('--approach-age-aligned requires mixed-both-orders, a target model or baseline-stack')
+    mixed=args.model in ('mixed-double','mixed-both-orders','baseline-stack') or target_mode
     return args,sequence,target_mode,approach,mixed,inference_timeout_s,p
 
 
@@ -96,6 +118,8 @@ def resolve_targets(args, sequence, target_mode, parser):
             setup_options={'multi_separation':True}
         if args.model=='target-stack':
             setup_options['model']='target-stack'
+            if args.target_outline_width_px == 1:
+                setup_options['outline_width_px']=1
         if args.track_target_motion:
             setup_options['motion_tracking']=True
         if sequence:
@@ -112,21 +136,22 @@ def resolve_targets(args, sequence, target_mode, parser):
 
 def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeout_s, target_options):
     """Derive timing/limit settings and remote worker options from the mode."""
-    expected_cycles=len(sequence) if sequence else (args.cycles if args.cycles is not None else (2 if mixed and not target_mode else 1))
-    max_seconds=args.max_seconds if args.max_seconds is not None else (360 if mixed and not target_mode else 120)
+    stack=args.model in ('target-stack','baseline-stack')
+    expected_cycles=len(sequence) if sequence else (args.cycles if args.cycles is not None else (2 if mixed and not (target_mode or stack) else 1))
+    max_seconds=args.max_seconds if args.max_seconds is not None else (360 if mixed and not (target_mode or stack) else 120)
     servo_command_time=.08 if mixed else DT
     max_camera_age_ms=250 if mixed else 100
-    max_prediction_age=.5 if args.model=='mixed-both-orders' or target_mode else MAX_PREDICTION_AGE
+    max_prediction_age=.5 if args.model in ('mixed-both-orders','baseline-stack') or target_mode else MAX_PREDICTION_AGE
     max_without_prediction=MAX_WITHOUT_PREDICTION
     max_camera_skew=MAX_CAMERA_SKEW
     max_control_gap=.35
     max_state_age=.1
     if args.latency_tolerant:
-        max_prediction_age=1.5 if target_mode else .75
-        max_without_prediction=1.5 if target_mode else 1.
-        if not target_mode or args.model=='target-stack':
+        max_prediction_age=1.5 if (target_mode or stack) else .75
+        max_without_prediction=1.5 if (target_mode or stack) else 1.
+        if not (target_mode or stack) or args.model in ('target-stack','baseline-stack'):
             max_camera_age_ms=400;max_camera_skew=.3
-        if args.model=='target-stack':
+        if args.model in ('target-stack','baseline-stack'):
             max_control_gap=.7;max_state_age=.25
     model_sha=MIXED_MODEL_SHA if mixed else MODEL_SHA
     pipe_options=({'remote_root':MIXED_REMOTE_ROOT,'checkpoint':MIXED_CHECKPOINT,
@@ -137,6 +162,12 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         pipe_options={'remote_root':BOTH_ORDERS_REMOTE_ROOT,'checkpoint':BOTH_ORDERS_CHECKPOINT,
                       'expected_sha256':model_sha,'inference_script':BOTH_ORDERS_INFERENCE_SCRIPT}
         if approach:pipe_options.update(inference_script=BOTH_ORDERS_APPROACH_SCRIPT,return_action_chunk=True)
+    if args.model=='baseline-stack':
+        model_sha=BASELINE_STACK_MODEL_SHA
+        pipe_options={'remote_root':TARGET_STACK_REMOTE_ROOT,'checkpoint':BASELINE_STACK_CHECKPOINT,
+                      'expected_sha256':model_sha,'inference_script':BASELINE_STACK_INFERENCE_SCRIPT,
+                      'pythonpath':BASELINE_STACK_PYTHONPATH,'target_conditioned':False,
+                      'live_target_seed':None,'segmentation_checkpoint':None,'return_action_chunk':True}
     if target_mode:
         pipe_options=target_options
         model_sha=target_options['expected_sha256']
@@ -146,7 +177,8 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         max_without_prediction=max_without_prediction,max_camera_skew=max_camera_skew,
         max_control_gap=max_control_gap,max_state_age=max_state_age,mixed=mixed,
         model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
-        approach=approach)
+        approach=approach,lossless_images=target_mode or args.model=='baseline-stack',
+        observe_after_arrival=args.observe_after_arrival)
 
 
 def build_plan(args, sequence, target_mode, target_seed, target_options, config):
@@ -173,6 +205,11 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
           'suction_writes':True,'max_seconds':max_seconds,'automatic_home':False,'automatic_release':False,
           'startup_release_if_unset':'operator_confirmed',
           'servo_disable_confirmation_timeout_s':1.0,'video_recording':{'enabled':True,'fps':25,'directory':'videos'}}
+    if args.model=='baseline-stack':
+        plan.update(checkpoint=BASELINE_STACK_CHECKPOINT,inference_script=BASELINE_STACK_INFERENCE_SCRIPT,
+            inference_pythonpath=BASELINE_STACK_PYTHONPATH,target_conditioned=False,
+            target_input='none; raw global_rgb and grasp_rgb only',image_codec='rgb_zlib',
+            transport_phase_source='first accepted close command clock; bound to each request at capture')
     if target_mode:
         plan.update(target_id=args.target_id,seed_snapshot_id=target_seed['snapshot_id'],
             checkpoint=target_options.get('checkpoint'),inference_script=target_options.get('inference_script'),
@@ -183,6 +220,7 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                                 if args.paired_target_separation else 'fresh segmentation plus reviewed-seed association; stop on failure'),
             target_phase_source='first accepted close command; never prediction',
             segmentation_checkpoint=target_options['segmentation_checkpoint'])
+        plan['target_outline_width_px']=args.target_outline_width_px
     if sequence:
         plan.update(target_sequence=sequence,automatic_home=len(sequence)>1,
                     homing_between_targets_only=True,max_seconds_scope='per_target',
@@ -192,6 +230,12 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
         plan.update(empty_target_reobservations_per_target=MAX_TARGET_REOBSERVATIONS,
             empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
+    plan['observe_after_arrival']=args.observe_after_arrival
+    if args.observe_after_arrival:
+        plan.update(mode='observe_after_arrival_continuous_servo',
+            action_selection=plan['action_selection']+'_at_receipt_then_frozen',
+            pending_suction_policy='hold_selected_goal_until_arrival_before_next_observation',
+            arrival_joint_tolerance_deg=.15,arrival_trajectory_speed_deg_s=.3)
     if args.track_target_motion:
         plan['target_motion_support_policy']='diagnostic_only'
         plan['target_motion_search_radius_px']=LIVE_MOTION_RADIUS_PX

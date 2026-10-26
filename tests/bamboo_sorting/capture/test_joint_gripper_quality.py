@@ -105,8 +105,8 @@ def test_suction_coordinate_receives_gradient_and_padding_does_not():
     torch.testing.assert_close(restored[..., 7:], torch.full_like(restored[..., 7:], .5))
 
 
-@pytest.mark.parametrize("stack_mode", [False, True])
-def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_path, stack_mode):
+@pytest.mark.parametrize("stack_fields", [None, (1, 2), (7, 6), (12, 4)])
+def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_path, stack_fields):
     """Real record loop, normalization stats and video files; fake hardware only."""
     import av
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -120,9 +120,10 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     from lerobot.scripts.lerobot_record import record_loop, finalize_recorded_dataset
 
     robot, session, entry = _robot(), _session(tmp_path), _entry()
-    if stack_mode:
-        session.prepare_episode = lambda i: dict(scene_id='p-001', target_id='s-001', split='train',
-                                                 pick_step=1, available_target_count=2)
+    if stack_fields:
+        pick_step, available = stack_fields
+        session.prepare_episode = lambda i: dict(scene_id='p-021', target_id='s-006', split='train',
+                                                 pick_step=pick_step, available_target_count=available)
         session.outcome_provider = lambda i: dict(human_outcome='single_success', target_outcome=dict(
             target_matched=True, held=True, single_strip=True, delivered=True, neighbor_disturbed=False))
     del robot._control_softpaws_based_on_gripper  # Exercise the actual driver suction implementation.
@@ -194,7 +195,7 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     assert relocated["gripper_quality_passed"] and relocated["source_dataset_root"] == str(dataset.root)
     with pytest.raises(ValueError, match="matching finalized"):
         audit_joint_dataset(moved, tmp_path / "evidence", source_dataset_root=tmp_path / "foreign")
-    if stack_mode:
+    if stack_fields:
         from lerobot.bamboo_sorting.capture.target_review import (
             approach_manifest, extract_images, prepare_capture_check, write,
         )
@@ -203,7 +204,7 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
         assert all(v['decoded_frames'] == 6 for v in capture_report['videos'])
         annotations, _ = approach_manifest(dataset.root, tmp_path/'evidence')
         ep = annotations['episodes'][0]
-        assert ep['pick_step'] == 1 and ep['available_target_count'] == 2
+        assert ep['pick_step'] == pick_step and ep['available_target_count'] == available
         folder = tmp_path/'evidence/target_annotations'
         folder.mkdir()
         for name in ('images', 'masks', 'outlines'):

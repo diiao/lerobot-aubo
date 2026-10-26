@@ -15,14 +15,16 @@ TARGET_FRAME_SCHEMA = "aubo_joint_target_frame"
 TARGET_IMAGE_KEY = "target_global_rgb"
 
 
-def target_contract_record():
+def target_contract_record(*, outline_width_px=2):
+    if type(outline_width_px) is not int or outline_width_px not in (1, 2):
+        raise ValueError("target outline width must be 1 or 2 pixels")
     contract = joint_contract_record()
     contract.update(
         schema_version="AuboI10JointTargetOutline",
         image_keys=[TARGET_IMAGE_KEY, "grasp_rgb"],
         target_conditioning={
             "source": "current global RGB and same-frame visible target mask",
-            "encoding": "inner mask boundary, 2 pixels, RGB magenta [255,0,255]",
+            "encoding": f"inner mask boundary, {outline_width_px} {'pixel' if outline_width_px == 1 else 'pixels'}, RGB magenta [255,0,255]",
             "identity": "stable target_id within one pick; instance IDs are frame-local",
             "unavailable_target": "reject input; never reuse previous mask or choose a replacement",
         },
@@ -69,7 +71,8 @@ def compare_target_instances(instance_map, segments, reference):
             "best": best, "candidates": candidates}
 
 
-def prepare_target_images(images, visible_mask, annotation, *, frame_id, target_id, allow_draft=False):
+def prepare_target_images(images, visible_mask, annotation, *, frame_id, target_id, allow_draft=False,
+                          outline_width_px=2):
     """Build a distinct two-image input; legacy models must not consume it.
 
     frame_id must identify the RGB frame used to produce the mask. target_id is
@@ -88,17 +91,19 @@ def prepare_target_images(images, visible_mask, annotation, *, frame_id, target_
         raise ValueError("target unavailable: do not reuse a previous mask")
     if annotation.get("reviewed") is not True and not allow_draft:
         raise ValueError("target annotation requires review")
-    prepared = outline_target_images(images, visible_mask)
+    prepared = outline_target_images(images, visible_mask, outline_width_px=outline_width_px)
     return {
-        "contract": target_contract_record(),
+        "contract": target_contract_record(outline_width_px=outline_width_px),
         "images": prepared,
         "target": copy.deepcopy(annotation),
         "preview_only": annotation.get("reviewed") is not True,
     }
 
 
-def outline_target_images(images, visible_mask):
+def outline_target_images(images, visible_mask, *, outline_width_px=2):
     """Pixel renderer only; callers must establish same-frame target provenance."""
+    if type(outline_width_px) is not int or outline_width_px not in (1, 2):
+        raise ValueError("target outline width must be 1 or 2 pixels")
     for name in ("global_rgb", "grasp_rgb"):
         image = images.get(name)
         if not isinstance(image, np.ndarray) or image.dtype != np.uint8 or image.shape != (480, 640, 3):
@@ -107,7 +112,8 @@ def outline_target_images(images, visible_mask):
             or visible_mask.shape != (480, 640) or not visible_mask.any()):
         raise ValueError("visible target mask must be nonempty bool [480,640]")
     mask = visible_mask.astype(np.uint8)
-    interior = cv2.erode(mask, np.ones((5, 5), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    size = 2*outline_width_px+1
+    interior = cv2.erode(mask, np.ones((size, size), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
     boundary = visible_mask & (interior == 0)
     marked = images["global_rgb"].copy()
     marked[boundary] = (255, 0, 255)

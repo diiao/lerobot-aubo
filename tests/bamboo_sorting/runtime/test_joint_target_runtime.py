@@ -15,17 +15,31 @@ def inputs():
     return mask,seed,frame
 
 
-def test_fresh_mask_render_matches_training_without_forging_review():
+@pytest.mark.parametrize('outline_width_px', [1, 2])
+@pytest.mark.parametrize('multi', [False, True])
+def test_fresh_mask_render_matches_training_without_forging_review(outline_width_px, multi):
     mask,seed,frame=inputs()
+    if multi:
+        seed.update(target_selection_mode='multi_foreground', visible_targets=[
+            dict(target_id='A',mask_png=seed['mask_png']),
+            dict(target_id='B',mask_png=seed['excluded_mask_png'])])
     fresh=np.roll(mask,2,axis=1)
-    session=FreshTargetInputs(seed,lambda rgb:(fresh.astype(np.uint16),[dict(mask_id=1,class_id=1)]))
+    session=FreshTargetInputs(seed,lambda rgb:(fresh.astype(np.uint16),[dict(mask_id=1,class_id=1)]),
+                             outline_width_px=outline_width_px)
     value,evidence=session.prepare(frame,dict(frame_id='new',target_id='A',phase='approach'))
     expected=prepare_target_images({key:frame['observation.images.'+key] for key in ('global_rgb','grasp_rgb')},
         fresh,dict(schema='aubo_joint_target_frame',frame_id='new',target_id='A',status='visible',reviewed=True),
-        frame_id='new',target_id='A')
+        frame_id='new',target_id='A',outline_width_px=outline_width_px)
     assert np.array_equal(value['observation.images.target_global_rgb'],expected['images']['target_global_rgb'])
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    assert value['target_contract'] == target_policy_contract_record(outline_width_px=outline_width_px)
+    assert evidence.get('target_outline_width_px',2) == outline_width_px
     assert evidence['human_reviewed'] is False and evidence['association']['reviewed'] is False
     assert evidence['source']=='same_frame_segmentation'
+    transport,_=session.prepare(frame,dict(frame_id='transport',target_id='A',phase='transport'))
+    assert transport['target_contract']==value['target_contract']
+    np.testing.assert_array_equal(transport['observation.images.target_global_rgb'],
+                                  frame['observation.images.global_rgb'])
 
 
 def test_lost_target_never_reuses_seed_or_recovers_implicitly():

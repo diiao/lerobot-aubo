@@ -47,9 +47,13 @@ def main():
     p.add_argument('--return-action-chunk',action='store_true',help='Include the full 50-step prediction')
     p.add_argument('--target-conditioned', action='store_true',
                    help='Require AuboI10JointTargetApproach checkpoint and already prepared target inputs')
+    p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
+                   help='Match the target checkpoint contract and fresh-mask renderer')
     p.add_argument('--target-segmentation-checkpoint', type=Path,
                    help='Live target mode: segment fresh raw RGB and associate an explicitly reviewed seed')
     args=p.parse_args()
+    if args.target_outline_width_px != 2 and not args.target_conditioned:
+        p.error('thin outline requires --target-conditioned')
     if args.target_segmentation_checkpoint and not args.target_conditioned:
         p.error('live target segmentation requires --target-conditioned')
     # Reject shared GPU occupancy; never kill, wait for, or modify other jobs.
@@ -74,9 +78,11 @@ def main():
         from lerobot.bamboo_sorting.runtime.joint_target_runtime import TargetForegroundMissing
         if args.target_conditioned:
             from lerobot.bamboo_sorting.policy.joint_target_policy import (
-                SmolVLAJointTargetOfflineAdapter, target_policy_contract_record,
+                SmolVLAJointTargetOfflineAdapter, SmolVLAJointThinTargetOfflineAdapter, target_policy_contract_record,
             )
-            contract_record, adapter_class = target_policy_contract_record, SmolVLAJointTargetOfflineAdapter
+            contract_record = lambda: target_policy_contract_record(outline_width_px=args.target_outline_width_px)
+            adapter_class = (SmolVLAJointThinTargetOfflineAdapter if args.target_outline_width_px == 1
+                             else SmolVLAJointTargetOfflineAdapter)
         else:
             contract_record, adapter_class = joint_contract_record, SmolVLAJointOfflineAdapter
         image_keys = adapter_class.image_keys
@@ -129,7 +135,8 @@ def main():
                 if req.get('target_contract') != contract_record():
                     raise ValueError('live target contract mismatch')
                 if live_inputs is None:
-                    live_inputs = FreshTargetInputs(req.get('target_seed', {}), segmenter)
+                    live_inputs = FreshTargetInputs(req.get('target_seed', {}), segmenter,
+                                                   outline_width_px=args.target_outline_width_px)
                 elif req.get('target_seed') != live_inputs.seed:
                     raise ValueError('target seed changed within live session')
                 frame, target_evidence = live_inputs.prepare(frame, req.get('target_input'),

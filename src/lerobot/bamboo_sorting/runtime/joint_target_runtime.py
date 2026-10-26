@@ -60,7 +60,9 @@ class FrozenStripSegmenter:
 
 
 class FreshTargetInputs:
-    def __init__(self, seed, segmenter):
+    def __init__(self, seed, segmenter, *, outline_width_px=2):
+        self.contract = target_policy_contract_record(outline_width_px=outline_width_px)
+        self.outline_width_px = outline_width_px
         if (seed.get('schema') != 'joint_target_live_seed' or seed.get('human_reviewed') is not True
                 or not seed.get('snapshot_id') or not seed.get('target_id')):
             raise ValueError('explicit reviewed target seed required')
@@ -125,6 +127,8 @@ class FreshTargetInputs:
         evidence = dict(frame_id=self.last_frame, target_id=self.target_id, phase=metadata['phase'],
                         human_reviewed=False, seed_snapshot_id=self.seed['snapshot_id'],
                         target_selection_mode=self.selection_mode)
+        if self.outline_width_px != 2:
+            evidence['target_outline_width_px'] = self.outline_width_px
         motion_masks = None
         if self.seed.get('motion_tracking') and not transport:
             if (self.selection_mode != 'multi_foreground' or not isinstance(motion_reference, dict)
@@ -188,9 +192,9 @@ class FreshTargetInputs:
                                     if support[t] < (.5 if t in failures else .25)]
                     evidence['motion_reference'].update(current_foreground_support=support,
                         support_policy='diagnostic_only', insufficient_support_targets=insufficient)
-                prepared = outline_target_images(images, mask)
+                prepared = outline_target_images(images, mask, outline_width_px=self.outline_width_px)
                 return {'observation.state':frame['observation.state'], 'task':frame['task'],
-                        'target_contract':target_policy_contract_record(), 'target_input':dict(metadata),
+                        'target_contract':self.contract, 'target_input':dict(metadata),
                         **{'observation.images.'+name:value for name,value in prepared.items()}}, evidence
             mask, association = self.tracker.step(self.index, instances, segments)
             if mask is None:
@@ -198,7 +202,7 @@ class FreshTargetInputs:
             # Diagnostic only for supervised trials: preserve the complete fresh
             # mask and report overlap, without rejecting or hiding contamination.
             conflict = int(np.count_nonzero(mask & self.excluded_mask))
-            prepared = outline_target_images(images, mask)
+            prepared = outline_target_images(images, mask, outline_width_px=self.outline_width_px)
             evidence.update(source='same_frame_segmentation', association=association, mask_png=encode_mask(mask),
                             association_geometry_limits_enforced=self.tracker.enforce_geometry_limits,
                             association_match_thresholds_enforced=self.tracker.enforce_match_thresholds,
@@ -210,6 +214,6 @@ class FreshTargetInputs:
                             other_reviewed_target_overlap_px=conflict)
         evidence['preparation_s'] = time.perf_counter() - started
         result = {'observation.state': frame['observation.state'], 'task': frame['task'],
-                  'target_contract': target_policy_contract_record(), 'target_input': dict(metadata),
+                  'target_contract': self.contract, 'target_input': dict(metadata),
                   **{'observation.images.' + name: value for name, value in prepared.items()}}
         return result, evidence

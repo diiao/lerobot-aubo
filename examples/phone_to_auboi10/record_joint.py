@@ -19,7 +19,7 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
 from lerobot.bamboo_sorting.capture.aubo_joint_capture import JointCaptureSession, write_joint_json
 from lerobot.bamboo_sorting.capture.fresh_frames import read_fresh_c0_observation
 from lerobot.bamboo_sorting.capture.homing import return_to_normal_start
-from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_PICK_STEP, confirmed_target_outcome
+from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_TARGET_COUNT, confirmed_target_outcome
 from lerobot.bamboo_sorting.capture.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
 )
@@ -33,7 +33,7 @@ def parse_args(argv=None):
     parser.add_argument("--target-demonstrations", action="store_true",
                         help="Record selected object identity; preserve raw RGB, annotate approach masks offline")
     parser.add_argument("--stack-demonstrations", action="store_true",
-                        help="Target demonstrations from a three-strip pile; record pick step and available target count")
+                        help="Target demonstrations from piles of up to six strips; record saved attempt number and available target count")
     parser.add_argument("--split", choices=("train", "validation", "test"), required=True)
     parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET,
                         help="original-global: original camera (default); wide-global: optional new 1080p camera")
@@ -79,12 +79,12 @@ def required_text(prompt):
         print("这一项不能为空，请输入内容后再按回车。")
 
 
-def bounded_integer(prompt, low=1, high=3):
+def bounded_integer(prompt, low=1, high=None):
     while True:
         value = input(prompt).strip()
-        if value.isdigit() and low <= int(value) <= high:
+        if value.isdigit() and int(value) >= low and (high is None or int(value) <= high):
             return int(value)
-        print(f"请输入 {low}～{high} 的整数。")
+        print(f"请输入不小于 {low} 的整数。" if high is None else f"请输入 {low}～{high} 的整数。")
 
 
 def main(argv=None):
@@ -196,9 +196,10 @@ def main(argv=None):
                 if args.stack_demonstrations:
                     target_metadata.update(
                         pick_step=bounded_integer(
-                            f"本堆第几次录制抓取（1～{MAX_STACK_PICK_STEP}，失败也占一次；重录未保存条不递增）：",
-                            high=MAX_STACK_PICK_STEP),
-                        available_target_count=bounded_integer("当前可选且可下指的上层条数（1～3）："))
+                            "本堆已保存抓取尝试序号（正整数，失败也占一次；重录未保存条不递增）："),
+                        available_target_count=bounded_integer(
+                            f"当前可选且可下指的上层条数（1～{MAX_STACK_TARGET_COUNT}，按现场实际填写）：",
+                            high=MAX_STACK_TARGET_COUNT))
             else:
                 placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
             listener, _ = init_keyboard_listener(events)
