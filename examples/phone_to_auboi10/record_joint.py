@@ -70,11 +70,14 @@ class IdentityAction:
         pass
 
 
-def required_text(prompt):
-    """Retry empty metadata without inventing or copying a scene identity."""
+def required_text(prompt, numeric_prefix=None):
+    """Retry empty metadata; expand numeric stack IDs only when requested."""
     while True:
         value = input(prompt).strip()
         if value:
+            if numeric_prefix is not None and value.isdecimal():
+                value = f"{numeric_prefix}-{int(value):03d}"
+                print(f"使用编号：{value}")
             return value
         print("这一项不能为空，请输入内容后再按回车。")
 
@@ -183,13 +186,16 @@ def main(argv=None):
                 listener.stop()
                 listener = None
             print(f"\n准备第 {index + 1}/{args.num_episodes} 条；数据划分：{args.split}")
-            scene = required_text("堆编号（例如 p-001，本堆抓走后继续沿用，不恢复摆放）：" if args.stack_demonstrations
-                                  else "场景编号（例如 t-001，同一摆放保持同一编号，不跨训练/验证/测试）：")
+            scene = required_text("堆编号（可只填数字，如 28→p-028；本堆继续沿用，不恢复摆放）：" if args.stack_demonstrations
+                                  else "场景编号（例如 t-001，同一摆放保持同一编号，不跨训练/验证/测试）：",
+                                  numeric_prefix="p" if args.stack_demonstrations else None)
             placement = ""
             target_metadata = {}
             if args.target_demonstrations:
                 target_metadata = {
-                    "target_id": required_text("本条示教的目标ID（例如 s-001，整条过程不换目标）："),
+                    "target_id": required_text("本条示教的目标ID（可只填数字，如 1→s-001；整条过程不换目标）：" if args.stack_demonstrations
+                                               else "本条示教的目标ID（例如 s-001，整条过程不换目标）：",
+                                               numeric_prefix="s" if args.stack_demonstrations else None),
                     "target_description": "",
                     "target_annotation_status": "pending_offline_review",
                 }
