@@ -12,7 +12,7 @@ from PIL import Image
 
 from ..aubo_joint_contract import GRIPPER_INDEX
 from ..file_io import read_json as read, write_json as write, write_text_atomic as write_text
-from ..joint_stack_metadata import stack_metadata
+from ..joint_stack_metadata import reviewed_stack_metadata
 from ..policy.joint_target_policy import is_transport
 
 
@@ -151,7 +151,7 @@ def approach_manifest(dataset, evidence):
         if len(frames) != check[ep]["approach_frames"] or close_frame != check[ep]["close_frame"]:
             raise ValueError("phase recomputation disagrees with capture check")
         episodes.append({"episode_index": ep, "scene_id": fields["scene_id"],
-                         **stack_metadata(fields),
+                         **reviewed_stack_metadata(dataset, evidence, ep, fields),
                          **({"target_outcome": capture["target_outcome"]} if "target_outcome" in capture else {}),
                          "target_id": fields["target_id"], "reviewed": False,
                          "target_description": fields.get("target_description", ""),

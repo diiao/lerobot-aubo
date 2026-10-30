@@ -4,6 +4,9 @@ These fields describe operator observations, never robot IO proof. Legacy
 captures without stack fields remain valid and are not silently relabeled.
 """
 
+import json
+from pathlib import Path
+
 STACK_FIELDS = ("pick_step", "available_target_count")
 MAX_STACK_TARGET_COUNT = 6
 OUTCOME_FIELDS = ("target_matched", "held", "single_strip", "delivered", "neighbor_disturbed")
@@ -22,6 +25,46 @@ def stack_metadata(metadata):
         if key == "available_target_count" and value > MAX_STACK_TARGET_COUNT:
             raise ValueError(f"{key} must be an integer from 1 to {MAX_STACK_TARGET_COUNT}")
     return {key: metadata[key] for key in STACK_FIELDS}
+
+
+def reviewed_stack_metadata(dataset_root, evidence_root, episode_index, metadata):
+    """Read confirmed count overlays for offline consumers; never rewrite capture.
+
+    Corrections already written to session/sidecars need no second overlay.
+    Dataset and episode identify a correction; scene/target/step guard identity.
+    """
+    stack = stack_metadata(metadata)
+    path = Path(evidence_root) / "recording_review/metadata_corrections.json"
+    if not stack or not path.exists():
+        return stack
+    report = json.loads(path.read_text())
+    if report.get("schema") != "aubo_joint_operator_confirmed_metadata_corrections":
+        raise ValueError("unsupported stack metadata corrections")
+    applied = []
+    for correction in report["corrections"]:
+        if correction["episode_index"] != episode_index:
+            continue
+        if correction.get("status") == "applied_to_saved_sidecar_and_session":
+            continue
+        if Path(correction["dataset_root"]).resolve() != Path(dataset_root).resolve():
+            continue
+        if (correction.get("status") != "operator_confirmed"
+                or correction.get("field") != "available_target_count"
+                or any(correction.get(key) != metadata.get(key)
+                       for key in ("scene_id", "target_id", "pick_step"))
+                or metadata["available_target_count"] != correction["original_value"]
+                or applied):
+            raise ValueError("stack metadata correction identity/value mismatch or duplicate")
+        stack["available_target_count"] = correction["confirmed_value"]
+        stack_metadata({**metadata, **stack})
+        # Keep the declared source identity when evidence is staged remotely.
+        # A relocation changes the reader's path, not the correction's origin.
+        origin = (Path(correction["source_record"]).parent / "recording_review/metadata_corrections.json"
+                  if correction.get("source_record") else path.resolve())
+        applied.append({**correction, "correction_file": str(origin)})
+    if applied:
+        stack["metadata_corrections"] = applied
+    return stack
 
 
 def validate_stack_sequence(records):

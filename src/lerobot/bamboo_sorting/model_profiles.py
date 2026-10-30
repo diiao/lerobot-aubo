@@ -50,6 +50,8 @@ TARGET_STACK_SEGMENTATION_CHECKPOINT = (
 TARGET_STACK_REMOTE_ROOT = '/home/rentao/program/lerobot-aubo-joint-stack'
 TARGET_STACK_CHECKPOINT = TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_target_smolvla/final'
 TARGET_STACK_MODEL_SHA = 'c45fdeb1d36f71749008357956b6f3ca90a042e7c8e049a99d307204363fb0e9'
+TARGET_STACK_THREE_FOUR_CHECKPOINT = TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_three_four_target_smolvla/final'
+TARGET_STACK_THREE_FOUR_MODEL_SHA = '80bde54859448a867da08bc377c0b5a83d421f60e2c2808b9afcd2bc771489a0'
 TARGET_STACK_SERVICE_ROOT = TARGET_STACK_REMOTE_ROOT + '/artifacts/joint_stack_live_service'
 TARGET_STACK_PYTHONPATH = (
     TARGET_STACK_REMOTE_ROOT + '/src:/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/deps'

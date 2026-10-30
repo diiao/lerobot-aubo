@@ -132,7 +132,8 @@ def verify_dataset(dataset, evidence, folder, spec):
               "episodes": list(counts.values()), "frames": len(view),
               "excluded_episode_indices": [ep["episode_index"] for ep in spec["episodes"]
                                            if ep["episode_index"] not in counts],
-              "stack_summary": stack_audit["stack_summary"] if stack_audit else None,
+              "stack_summary": prepared["stack_summary"] if stack_audit else None,
+              "target_episode_metadata": prepared["target_episode_metadata"],
               "source_dataset_root": str(dataset), "annotation_path": str(folder / "annotations.json"),
               "prepare_target_source_passed": True, "real_lerobot_dataset_backend": "pyav",
               "all_approach_images_match_annotation_source": True,

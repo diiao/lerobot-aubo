@@ -216,7 +216,7 @@ def test_paired_target_plan_selects_isolated_service_without_hardware(monkeypatc
     assert '/paired_foreground/' not in default_options['inference_script']
 
 
-@pytest.mark.parametrize('count', [1, 2, 3])
+@pytest.mark.parametrize('count', [1, 2, 3, 4])
 @pytest.mark.parametrize('model', ['target-pair', 'target-stack'])
 def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch, capsys, tmp_path, count, model):
     m = load_entry(monkeypatch)
@@ -364,6 +364,44 @@ def test_baseline_stack_accepts_one_cycle_without_target_files(monkeypatch,capsy
     assert m.main(['--model','baseline-stack','--cycles','1'])==0
     plan=json.loads(capsys.readouterr().out)
     assert plan['requested_suction_cycles']==1 and plan['max_seconds']==120
+
+
+def test_three_four_stack_selects_new_weights_with_existing_control_and_worker(monkeypatch,capsys,tmp_path):
+    m=load_entry(monkeypatch)
+    from lerobot.bamboo_sorting import model_profiles as profiles
+    from lerobot.bamboo_sorting.runtime import live_setup
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',
+        snapshot_id='three-four',execution_eligible=False)))
+    labels=tmp_path/'selection.json'
+    labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection',snapshot_id='three-four',
+        human_reviewed=True,targets=[dict(target_id=t,polygons=[[[x,100],[x+20,100],[x+20,400],[x,400]]])
+                                    for t,x in [('A',100),('B',200),('C',300)]])))
+    args=['--model','target-stack','--target-snapshot',str(tmp_path),'--target-selections',str(labels),
+          '--target-id','A','--target-preview','--track-target-motion','--transport-age-aligned',
+          '--latency-tolerant','--max-seconds','600']
+    assert m.main(args)==0
+    original=json.loads(capsys.readouterr().out)
+    assert m.main([*args,'--target-stack-model','three-four'])==0
+    mixed=json.loads(capsys.readouterr().out)
+    assert {k for k in mixed if mixed[k]!=original.get(k)}=={
+        'checkpoint','checkpoint_sha256','target_stack_model'}
+    assert mixed['checkpoint']==profiles.TARGET_STACK_THREE_FOUR_CHECKPOINT
+    assert mixed['checkpoint_sha256']==profiles.TARGET_STACK_THREE_FOUR_MODEL_SHA
+    assert mixed['requested_suction_cycles']==1 and not mixed['automatic_home']
+    assert mixed['observe_after_arrival'] is False
+    seed,options=live_setup.prepare_live_setup(tmp_path,labels,'A',model='target-stack',
+                                             multi_separation=True,stack_model='three-four')
+    assert len(seed['visible_targets'])==3
+    assert options['pythonpath']==profiles.TARGET_STACK_PYTHONPATH
+    for extra in [['--model','baseline-stack'],['--model','target-pair'],
+                  ['--model','target-stack','--target-outline-width-px','1']]:
+        with pytest.raises(SystemExit):m.parse_args([*extra,'--target-stack-model','three-four'])
+    with pytest.raises(ValueError,match='requires target-stack with 2px'):
+        live_setup.prepare_live_setup(tmp_path,labels,'A',model='target-stack',
+                                     multi_separation=True,stack_model='three-four',outline_width_px=1)
 
 
 def test_thin_stack_plan_selects_complete_profile_without_changing_control(monkeypatch,capsys,tmp_path):

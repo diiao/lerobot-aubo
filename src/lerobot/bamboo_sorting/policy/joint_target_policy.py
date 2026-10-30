@@ -14,7 +14,7 @@ import numpy as np
 from ..aubo_joint_contract import GRIPPER_INDEX, joint_command
 from .joint_target import TARGET_IMAGE_KEY, prepare_target_images, target_contract_record
 from .smolvla_joint_adapter import SmolVLAJointOfflineAdapter
-from ..joint_stack_metadata import stack_metadata, successful_target_outcome
+from ..joint_stack_metadata import reviewed_stack_metadata, stack_summary, successful_target_outcome
 
 
 def target_policy_contract_record(*, outline_width_px=2):
@@ -124,13 +124,19 @@ def prepare_target_source(record, annotation_path):
     annotations = {a['episode_index']: a for a in episodes}
     if len(annotations) != len(episodes):
         raise ValueError('duplicate target episode')
-    prepared = []
+    prepared, episode_metadata = [], []
     for ep in record['episodes']:
         capture, labels = saved[ep], annotations.get(ep, {})
-        stack = stack_metadata(capture['metadata'])
+        stack = reviewed_stack_metadata(record['source_dataset_root'], record['evidence_root'],
+                                        ep, capture['metadata'])
         if stack and (any(labels.get(k) != v for k, v in stack.items())
                       or not successful_target_outcome(capture.get('target_outcome'))):
             raise ValueError(f'episode {ep}: stack metadata or successful target outcome mismatch')
+        if labels.get('metadata_corrections', []) != stack.get('metadata_corrections', []):
+            raise ValueError(f'episode {ep}: stack metadata correction provenance mismatch')
+        episode_metadata.append({'episode_index': ep, **capture['metadata'], **stack,
+                                 'human_outcome': capture.get('human_outcome'),
+                                 'target_outcome': capture.get('target_outcome')})
         target = capture['metadata'].get('target_id')
         if (not target or labels.get('target_id') != target
                 or labels.get('scene_id') != capture['metadata']['scene_id']
@@ -171,7 +177,9 @@ def prepare_target_source(record, annotation_path):
             raise ValueError('target sidecar must contain exactly the approach frames')
     if len(prepared) != record['frames']:
         raise ValueError('target annotation frame count mismatch')
-    return {**record, 'target_annotations': str(path), 'target_frames': prepared}
+    return {**record, 'target_annotations': str(path), 'target_frames': prepared,
+            'target_episode_metadata': episode_metadata,
+            'stack_summary': stack_summary(episode_metadata)}
 
 
 class JointTargetDataset:

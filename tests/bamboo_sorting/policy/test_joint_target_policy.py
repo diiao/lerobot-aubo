@@ -151,6 +151,115 @@ def test_stack_target_metadata_bound_to_capture_and_wrong_target_excluded(tmp_pa
         prepare_target_source(record, path)
 
 
+def corrected_stack_capture(tmp_path):
+    record, path, _ = bound_capture(tmp_path)
+    session_path = tmp_path / 'evidence/session.json'
+    session = json.loads(session_path.read_text())
+    capture = session['attempts'][0]
+    capture['metadata'].update(pick_step=2, available_target_count=1)
+    capture['target_outcome'] = dict(target_matched=True, held=True, single_strip=True,
+                                     delivered=True, neighbor_disturbed=None)
+    capture['human_outcome'] = 'single_success'
+    session_path.write_text(json.dumps(session))
+    correction = dict(dataset_root=record['source_dataset_root'], episode_index=0,
+                      scene_id='pilot_001', target_id='strip_a', pick_step=2,
+                      field='available_target_count', original_value=1, confirmed_value=2,
+                      status='operator_confirmed', confirmation_source='synthetic operator confirmation')
+    correction_path = tmp_path / 'evidence/recording_review/metadata_corrections.json'
+    correction_path.parent.mkdir()
+    correction_path.write_text(json.dumps(dict(
+        schema='aubo_joint_operator_confirmed_metadata_corrections', corrections=[correction])))
+    return record, path, session_path, capture, correction_path, correction
+
+
+def test_prepare_and_export_use_same_count_overlay_without_rewriting_capture(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from lerobot.bamboo_sorting.capture.target_review import approach_manifest
+
+    record, path, session_path, capture, correction_path, correction = corrected_stack_capture(tmp_path)
+    dataset = tmp_path / 'dataset'
+    (dataset / 'meta/episodes/chunk-000').mkdir(parents=True)
+    (dataset / 'data/chunk-000').mkdir(parents=True)
+    record['source_dataset_root'] = str(dataset)
+    correction['dataset_root'] = str(dataset)
+    correction_path.write_text(json.dumps(dict(
+        schema='aubo_joint_operator_confirmed_metadata_corrections', corrections=[correction])))
+    key = 'videos/observation.images.global_rgb/'
+    meta = dict(episode_index=0, length=5, dataset_from_index=0,
+                **{'data/chunk_index': 0, 'data/file_index': 0,
+                   key+'chunk_index': 0, key+'file_index': 0,
+                   key+'from_timestamp': 0., key+'to_timestamp': .2})
+    pq.write_table(pa.Table.from_pylist([meta]), dataset / 'meta/episodes/chunk-000/file-000.parquet')
+    pq.write_table(pa.Table.from_pylist([dict(episode_index=0, frame_index=i, index=i, timestamp=i*.04)
+                                        for i in range(5)]), dataset / 'data/chunk-000/file-000.parquet')
+    evidence = session_path.parent
+    (evidence / 'capture_check.json').write_text(json.dumps(dict(
+        episodes=[dict(episode_index=0, approach_frames=3, close_frame=1)])))
+    original = session_path.read_bytes()
+    spec, inference = approach_manifest(dataset, evidence)
+    labels = spec['episodes'][0]
+    assert labels['available_target_count'] == 2 and len(inference['samples']) == 3
+    assert labels['metadata_corrections'][0]['original_value'] == 1
+    labels['reviewed'] = True
+    for frame in labels['frames']:
+        frame.update(reviewed=True, status='visible', mask_path='mask.png')
+    path.write_text(json.dumps(spec))
+    prepared = prepare_target_source(record, path)
+    assert prepared['stack_summary']['target_choice_eligible_episodes'] == [0]
+    assert prepared['target_episode_metadata'][0]['metadata_corrections'] == labels['metadata_corrections']
+    assert session_path.read_bytes() == original
+    labels.pop('metadata_corrections')
+    path.write_text(json.dumps(spec))
+    with pytest.raises(ValueError, match='stack metadata'):
+        prepare_target_source(record, path)
+
+
+@pytest.mark.parametrize('damage', ['target_id', 'original_value', 'duplicate', 'confirmed_value'])
+def test_invalid_count_overlay_is_rejected(tmp_path, damage):
+    from lerobot.bamboo_sorting.joint_stack_metadata import reviewed_stack_metadata
+    record, _, _, capture, correction_path, correction = corrected_stack_capture(tmp_path)
+    corrections = [correction]
+    if damage == 'target_id': correction['target_id'] = 'other'
+    elif damage == 'original_value': correction['original_value'] = 3
+    elif damage == 'confirmed_value': correction['confirmed_value'] = 7
+    else: corrections.append(dict(correction))
+    correction_path.write_text(json.dumps(dict(
+        schema='aubo_joint_operator_confirmed_metadata_corrections', corrections=corrections)))
+    with pytest.raises(ValueError):
+        reviewed_stack_metadata(record['source_dataset_root'], record['evidence_root'], 0, capture['metadata'])
+
+
+def test_count_overlay_is_scoped_and_written_back_corrections_are_not_reapplied(tmp_path):
+    from lerobot.bamboo_sorting.joint_stack_metadata import reviewed_stack_metadata
+    record, _, _, capture, correction_path, correction = corrected_stack_capture(tmp_path)
+    fields = capture['metadata']
+    assert reviewed_stack_metadata('/another/dataset', record['evidence_root'], 0, fields)['available_target_count'] == 1
+    assert reviewed_stack_metadata(record['source_dataset_root'], record['evidence_root'], 1, fields)['available_target_count'] == 1
+    correction.pop('dataset_root')  # Actual written-back records have no dataset_root.
+    correction['status'] = 'applied_to_saved_sidecar_and_session'
+    correction_path.write_text(json.dumps(dict(
+        schema='aubo_joint_operator_confirmed_metadata_corrections', corrections=[correction], applied=True)))
+    fields['available_target_count'] = 2
+    assert reviewed_stack_metadata(record['source_dataset_root'], record['evidence_root'], 0, fields) == dict(
+        pick_step=2, available_target_count=2)
+
+
+def test_count_overlay_provenance_survives_remote_evidence_relocation(tmp_path):
+    import shutil
+    from lerobot.bamboo_sorting.joint_stack_metadata import reviewed_stack_metadata
+    record, _, _, capture, correction_path, correction = corrected_stack_capture(tmp_path)
+    correction['source_record'] = str(correction_path.parent.parent / 'episode-0000.json')
+    correction_path.write_text(json.dumps(dict(
+        schema='aubo_joint_operator_confirmed_metadata_corrections', corrections=[correction])))
+    relocated = tmp_path / 'remote/evidence'
+    shutil.copytree(correction_path.parent.parent, relocated)
+    original = reviewed_stack_metadata(record['source_dataset_root'], record['evidence_root'], 0, capture['metadata'])
+    staged = reviewed_stack_metadata(record['source_dataset_root'], relocated, 0, capture['metadata'])
+    assert original == staged
+    assert staged['metadata_corrections'][0]['correction_file'] == str(correction_path)
+
+
 @pytest.mark.parametrize('damage', ['missing', 'wrong_frame', 'wrong_target', 'draft', 'source'])
 def test_target_preflight_rejects_unbound_or_unreviewed_masks(tmp_path, damage):
     record, path, _ = bound_capture(tmp_path)

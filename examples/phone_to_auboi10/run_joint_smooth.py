@@ -36,7 +36,9 @@ def parse_args(argv=None):
     p.add_argument('--target-selections',type=Path,help='Human-reviewed visible target selection JSON bound to the snapshot')
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
-                   help='target-stack: 1 selects the new thin-outline final and isolated worker; default 2 keeps the original model')
+                   help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
+    p.add_argument('--target-stack-model',choices=('original','three-four'),default='original',
+                   help='target-stack: explicitly select the three+four-strip 60000-step 2px model; default keeps the original model')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
@@ -61,6 +63,8 @@ def parse_args(argv=None):
     stack=args.model in ('target-stack','baseline-stack')
     if args.target_outline_width_px != 2 and args.model != 'target-stack':
         p.error('--target-outline-width-px 1 requires target-stack')
+    if args.target_stack_model != 'original' and (args.model != 'target-stack' or args.target_outline_width_px != 2):
+        p.error('--target-stack-model three-four requires target-stack with --target-outline-width-px 2')
     if args.model=='baseline-stack':
         forbidden=[name for name,value in (
             ('--target-snapshot',args.target_snapshot),('--target-selections',args.target_selections),
@@ -118,6 +122,8 @@ def resolve_targets(args, sequence, target_mode, parser):
             setup_options={'multi_separation':True}
         if args.model=='target-stack':
             setup_options['model']='target-stack'
+            if args.target_stack_model != 'original':
+                setup_options['stack_model']=args.target_stack_model
             if args.target_outline_width_px == 1:
                 setup_options['outline_width_px']=1
         if args.track_target_motion:
@@ -229,6 +235,8 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
     if args.model=='target-stack':
         plan.update(empty_target_reobservations_per_target=MAX_TARGET_REOBSERVATIONS,
             empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
+        if args.target_stack_model != 'original':
+            plan['target_stack_model']=args.target_stack_model
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
     plan['observe_after_arrival']=args.observe_after_arrival
     if args.observe_after_arrival:
