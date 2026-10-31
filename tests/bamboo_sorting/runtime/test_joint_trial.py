@@ -620,6 +620,50 @@ def test_observe_reuses_state_without_refreshing_its_timestamp(max_camera_age_ms
     assert ages==[max_camera_age_ms,max_camera_age_ms]
 
 
+def test_pending_camera_pair_is_not_consumed_or_sent_as_an_observation():
+    import numpy as np
+    from types import SimpleNamespace
+    m=load_entry();s=m.ReadOnlyStation()
+    image=np.zeros((480,640,3),dtype=np.uint8)
+    stamps={'global_rgb':10.02,'grasp_rgb':10.02}
+    s.cameras={name:SimpleNamespace(read_latest_with_timestamp=lambda name=name,**kw:(image,stamps[name]))
+               for name in stamps}
+    snapshot=([*START_DEG,0],[.2,-.5,.3],10.)
+    kwargs=dict(require_stationary=False,state_snapshot=snapshot,max_camera_age_ms=400)
+    s.observe(**kwargs)
+    with pytest.raises(ValueError,match='repeated camera frame'):
+        s.observe(**kwargs)  # Default callers retain fail-fast behavior.
+    for advanced in ('global_rgb','grasp_rgb'):
+        s.previous={'global_rgb':10.02,'grasp_rgb':10.02}
+        stamps.update(global_rgb=10.02,grasp_rgb=10.02);stamps[advanced]=10.06
+        assert s.observe(**kwargs,allow_pending_frames=True) is None
+        assert s.previous=={'global_rgb':10.02,'grasp_rgb':10.02}
+        stamps.update(global_rgb=10.06,grasp_rgb=10.06)
+        state,images,times=s.observe(**kwargs,allow_pending_frames=True)
+        assert times==[10.06,10.06,10.] and state==snapshot[0]
+        assert s.previous=={'global_rgb':10.06,'grasp_rgb':10.06}
+
+
+@pytest.mark.parametrize('failure',['stale','backwards','schema','thread'])
+def test_pending_camera_does_not_hide_other_camera_errors(failure):
+    import numpy as np
+    from types import SimpleNamespace
+    m=load_entry();s=m.ReadOnlyStation();image=np.zeros((480,640,3),dtype=np.uint8)
+    s.previous={'global_rgb':10.,'grasp_rgb':10.}
+    def second(**kw):
+        assert kw['max_age_ms']==400
+        if failure=='stale':raise TimeoutError('latest frame is too old')
+        if failure=='thread':raise RuntimeError('read thread is not running')
+        return (image[:1] if failure=='schema' else image), (9.9 if failure=='backwards' else 10.04)
+    s.cameras={'global_rgb':SimpleNamespace(read_latest_with_timestamp=lambda **kw:(image,10.)),
+               'grasp_rgb':SimpleNamespace(read_latest_with_timestamp=second)}
+    error={'stale':TimeoutError,'backwards':ValueError,'schema':ValueError,'thread':RuntimeError}[failure]
+    with pytest.raises(error):
+        s.observe(require_stationary=False,state_snapshot=([*START_DEG,0],[.2,-.5,.3],10.),
+                  max_camera_age_ms=400,allow_pending_frames=True)
+    assert s.previous=={'global_rgb':10.,'grasp_rgb':10.}
+
+
 @pytest.mark.parametrize('corruption',[None,'id','checkpoint','target','frame','phase','snapshot','mode','nonempty','ordinary_error'])
 def test_empty_target_pipe_requires_matching_typed_evidence(monkeypatch,corruption):
     import io

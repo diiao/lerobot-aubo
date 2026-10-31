@@ -72,6 +72,7 @@ class ContinuousState:
     future: object = None
     goal: object = None
     goal_arrived: bool = False
+    observation_after: float | None = None
     pending_suction: bool = False
     last_observation: object = None
     trajectory: object = None
@@ -179,7 +180,9 @@ def setup_continuous(state):
         state.motion_tracker = TargetMotionReferences(initial_rgb,
             {t["target_id"]: decode_mask(t["mask_png"]) for t in state.target_seed["visible_targets"]})
     if state.target_mode:
-        if args.observe_after_arrival:
+        if args.execution_paced:
+            print("本轮按执行进度重观察：只取模型第0行，到位及IO确认后等待新帧；保留原限速、新鲜度与超时限制。", flush=True)
+        elif args.observe_after_arrival:
             print("本轮到位后观察：接受时按原规则选定一行并冻结，到位后再拍图预测；原新鲜度与超时限制保留。", flush=True)
         if state.sequence:
             print(f'目标顺序：{" → ".join(state.sequence)}；每次释放后自动归位再抓下一根，最后一根结束后停止。', flush=True)
@@ -190,7 +193,7 @@ def setup_continuous(state):
         if args.multi_target_separation:
             print("本轮启用多实例可见种子分离；目标为空时停伺服，target-stack每根最多3次新观测重试，其他错误停止。", flush=True)
         if args.track_target_motion:
-            print("实验性目标运动跟随：RGB运动更新参考，再核对当前分割；身份或前景支持不足时停止。", flush=True)
+            print("实验性目标运动跟随：跟踪失败时保留上次参考，前景支持不足仅作诊断；目标当前像素为空时停稳重观察。请在预览中复核感知提示。", flush=True)
         if args.transport_age_aligned:
             print("本轮搬运按观察年龄取步；保留首次释放边界，到达目标后才松爪。", flush=True)
     print("加载模型、连接相机；尚未发送运动。", flush=True)
@@ -330,6 +333,7 @@ def handle_target_missing(state, exc):
     """Stop, save evidence and decide whether a fresh observation may recover."""
     state.goal = None
     state.goal_arrived = False
+    state.observation_after = None
     state.pending_suction = False
     state.trajectory = None
     state.last_observation = None
@@ -390,7 +394,12 @@ def accept_prediction(state, result):
         state.active_transport = (state.args.transport_age_aligned
                                   and request_phase == "transport")
         state.selection = None
-        if state.held_suction == 0:
+        if config.get("execution_paced"):
+            # Wall-clock image age is not executed trajectory progress. Keep
+            # the model's complete first joint/IO row, including in transport.
+            candidate = state.active_chunk[0]
+            state.selection = {"selected_index": 0, "mode": "execution_paced_first_action"}
+        elif state.held_suction == 0:
             candidate, state.selection = select_approach_action(
                 state.active_chunk, state.active_times, time.perf_counter())
         elif state.active_transport:
@@ -404,6 +413,7 @@ def accept_prediction(state, result):
     state.predictions += 1
     state.goal = accepted
     state.goal_arrived = False
+    state.observation_after = None
     state.last_observation = min(state.sensor_times)
     if state.preview is not None:
         state.preview.publish(images=state.images, evidence=result["target_evidence"],
@@ -490,6 +500,8 @@ def command_goal(state):
                and max(abs(v) for v in state.trajectory.v) < .3)
     if config["observe_after_arrival"] and at_goal and not state.goal_arrived:
         state.goal_arrived = True
+        if config.get("execution_paced"):
+            state.observation_after = time.perf_counter()
         log(state.trace, {"goal_arrived": {"prediction_index": state.prediction_id,
             "time": time.perf_counter(), "target": state.goal,
             "state": state.current_state, "velocity": state.trajectory.v.copy()}})
@@ -501,6 +513,8 @@ def command_goal(state):
         finally:
             log(state.trace, {"suction": state.suction.last_gripper_command_trace})
         accepted_at = time.perf_counter()
+        if config.get("execution_paced"):
+            state.observation_after = accepted_at
         if state.target_mode:
             state.target_session.accept_command(dict(zip(JOINT_FIELDS, state.goal, strict=True)),
                 accepted_monotonic_s=accepted_at)
@@ -585,6 +599,7 @@ def switch_target(state):
         **{**next_options, "request_timeout_s": state.config["inference_timeout_s"]})
     state.goal = None
     state.goal_arrived = False
+    state.observation_after = None
     state.pending_suction = False
     state.last_observation = None
     state.trajectory = None
@@ -609,12 +624,25 @@ def switch_target(state):
 def request_observation(state):
     """Capture a fresh observation and enqueue one prediction."""
     config = state.config
-    state.observed_state, state.images, state.sensor_times = state.station.observe(
+    observation = state.station.observe(
         require_stationary=False,
         state_snapshot=(state.current_state, state.current_tcp, state.current_stamp),
-        max_camera_age_ms=config["max_camera_age_ms"])
+        max_camera_age_ms=config["max_camera_age_ms"],
+        **({"allow_pending_frames": True} if config.get("execution_paced") else {}))
+    if observation is None:
+        log(state.trace, {"waiting_for_new_camera_frame": {
+            "time": time.perf_counter(), "after": state.observation_after}})
+        return
+    state.observed_state, state.images, state.sensor_times = observation
     if time.perf_counter() - min(state.sensor_times) > config["max_camera_age_ms"] / 1000:
         raise ValueError("stale input at capture")
+    if (config.get("execution_paced") and state.observation_after is not None
+            and min(state.sensor_times) <= state.observation_after):
+        # A fresh-enough cached image may still precede arrival or IO. Keep
+        # servicing the bounded servo; the existing watchdog bounds this wait.
+        log(state.trace, {"waiting_for_post_arrival_observation": {
+            "after": state.observation_after, "sensor_times": state.sensor_times}})
+        return
     if state.recovery_after is not None and min(state.sensor_times) <= state.recovery_after:
         if time.perf_counter() - state.recovery_after > config["max_without_prediction"]:
             raise TimeoutError("no post-stop observation for target recovery")
@@ -676,9 +704,10 @@ def finalize_continuous(state):
         "predictions": state.predictions, "model": state.args.model, "target_id": state.args.target_id,
         **({"target_sequence": state.sequence, "current_target_id": state.current_target_id,
             "completed_target_ids": state.sequence[:state.completed_cycles]} if state.sequence else {}),
-        "approach_age_aligned": state.config["approach"],
+        "approach_age_aligned": state.config["approach"] and not state.config.get("execution_paced", False),
         "transport_age_aligned": state.args.transport_age_aligned,
         "observe_after_arrival": state.config["observe_after_arrival"],
+        "execution_paced": state.config.get("execution_paced", False),
         "requested_suction_cycles": state.config["expected_cycles"],
         "completed_suction_cycles": state.completed_cycles,
         **({"first_accepted_close_s": state.baseline_close_time}

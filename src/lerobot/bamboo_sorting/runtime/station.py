@@ -105,22 +105,36 @@ class ReadOnlyStation:
             raise ValueError(f'unknown suction output pair: {pins}')
         return q + [suction], tcp[:3], ts
 
-    def observe(self, *, require_stationary=True, state_snapshot=None, max_camera_age_ms=100):
+    def observe(self, *, require_stationary=True, state_snapshot=None, max_camera_age_ms=100,
+                allow_pending_frames=False):
+        """Read once; optionally return None if a camera has not advanced yet.
+
+        This never blocks for a new frame or accepts a repeated observation.
+        Camera age/schema and backwards timestamps still raise immediately.
+        """
         if state_snapshot is not None and require_stationary:
             raise ValueError('state reuse only applies to moving observations')
         images = {}
         times = []
+        pending = False
         for name in ('global_rgb', 'grasp_rgb'):
             image, stamp = self.cameras[name].read_latest_with_timestamp(max_age_ms=max_camera_age_ms)
             if stamp <= self.previous.get(name, -1):
-                raise ValueError(f'repeated camera frame: {name}')
+                if allow_pending_frames and stamp == self.previous.get(name):
+                    pending = True
+                else:
+                    raise ValueError(f'repeated camera frame: {name}')
             if image.shape != (480, 640, 3) or str(image.dtype) != 'uint8':
                 raise ValueError('camera schema mismatch')
             images[name] = image.copy()
             times.append(stamp)
-            self.previous[name] = stamp
+        if pending:
+            return None
         state, tcp, stamp = state_snapshot if state_snapshot is not None else self.current(
             require_stationary=require_stationary)
+        # Commit the pair together. A pending second camera must not consume
+        # the first camera's frame and make the next attempt reject it.
+        self.previous.update(zip(('global_rgb', 'grasp_rgb'), times))
         times.append(stamp)
         return state, images, times
 

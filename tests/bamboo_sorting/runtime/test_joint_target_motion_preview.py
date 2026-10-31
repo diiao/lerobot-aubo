@@ -6,7 +6,7 @@ import pytest
 
 from lerobot.bamboo_sorting.perception.joint_target_motion import TargetMotionReferences, _InsufficientMotionPoints
 from lerobot.bamboo_sorting.runtime.joint_target_runtime import FreshTargetInputs, encode_mask, decode_mask
-from lerobot.bamboo_sorting.runtime.joint_target_preview import render_packet
+from lerobot.bamboo_sorting.runtime.joint_target_preview import perception_notice, render_packet
 
 
 def textured():
@@ -324,3 +324,26 @@ def test_preview_same_frame_does_not_mutate_model_inputs_or_retain_transport_box
     for p in [packet,transport]:
         image=cv2.imdecode(np.frombuffer(base64.b64decode(p['jpeg']),np.uint8),1)
         assert image.shape==(480,1280,3)
+
+
+def test_preview_exposes_selected_target_perception_degradation_and_clears_on_transport():
+    evidence=dict(phase='approach',target_id='A',motion_reference=dict(
+        failures={'A':'insufficient consistent motion points'},
+        insufficient_support_targets=['A'],current_foreground_support={'A':.38753}),
+        separation=dict(merged_instances=[dict(targets=['A','B'])]))
+    notice,attention=perception_notice(evidence)
+    assert attention
+    assert '跟踪失败' in notice and '沿用旧参考' in notice
+    assert '前景支持不足' in notice and '拆分' in notice and '38.8%' in notice
+    assert '非识别准确率' in notice
+    assert perception_notice({**evidence,'phase':'transport'})==('',False)
+
+
+def test_preview_does_not_attribute_other_targets_degradation_to_selected_target():
+    notice,attention=perception_notice(dict(phase='approach',target_id='A',
+        motion_reference=dict(failures={'C':'no points'},insufficient_support_targets=['C'],
+                              current_foreground_support={'A':.9}),
+        separation=dict(merged_instances=[dict(targets=['B','C'])])))
+    assert not attention
+    assert '跟踪失败' not in notice and '前景支持不足' not in notice and '拆分' not in notice
+    assert '尚未逐像素确认' in notice and '90.0%' in notice

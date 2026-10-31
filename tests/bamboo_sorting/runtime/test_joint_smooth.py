@@ -243,7 +243,7 @@ def test_multi_target_plan_uses_explicit_service_for_remaining_pile(monkeypatch,
         assert '/multi_foreground/' in options['inference_script']
         assert options['segmentation_checkpoint'] == joint_target_live_setup.SEGMENTATION_CHECKPOINT
     FreshTargetInputs(seed, forbidden)  # No segmenter call at construction, including last remaining strip.
-    args = ['--model', model, '--target-snapshot', str(tmp_path), '--target-selections', str(labels),
+    args = ['--model', model, '--target-stack-model', 'original', '--target-snapshot', str(tmp_path), '--target-selections', str(labels),
             '--target-id', 's-001']
     if model == 'target-pair':
         args.append('--multi-target-separation')
@@ -382,16 +382,33 @@ def test_three_four_stack_selects_new_weights_with_existing_control_and_worker(m
     args=['--model','target-stack','--target-snapshot',str(tmp_path),'--target-selections',str(labels),
           '--target-id','A','--target-preview','--track-target-motion','--transport-age-aligned',
           '--latency-tolerant','--max-seconds','600']
-    assert m.main(args)==0
+    assert m.main([*args,'--target-stack-model','original'])==0
     original=json.loads(capsys.readouterr().out)
     assert m.main([*args,'--target-stack-model','three-four'])==0
     mixed=json.loads(capsys.readouterr().out)
+    assert m.main(args)==0
+    assert json.loads(capsys.readouterr().out)==mixed
     assert {k for k in mixed if mixed[k]!=original.get(k)}=={
         'checkpoint','checkpoint_sha256','target_stack_model'}
     assert mixed['checkpoint']==profiles.TARGET_STACK_THREE_FOUR_CHECKPOINT
     assert mixed['checkpoint_sha256']==profiles.TARGET_STACK_THREE_FOUR_MODEL_SHA
     assert mixed['requested_suction_cycles']==1 and not mixed['automatic_home']
     assert mixed['observe_after_arrival'] is False
+    paced_args=[a for a in args if a!='--transport-age-aligned']
+    assert m.main(paced_args)==0
+    unpaced=json.loads(capsys.readouterr().out)
+    assert m.main([*paced_args,'--execution-paced'])==0
+    paced=json.loads(capsys.readouterr().out)
+    assert paced['execution_paced'] and paced['observe_after_arrival']
+    assert paced['action_selection']=='first_model_row_until_arrival'
+    assert {k for k in paced if paced[k]!=unpaced.get(k)}=={
+        'mode','action_selection','pending_suction_policy','observe_after_arrival',
+        'arrival_joint_tolerance_deg','arrival_trajectory_speed_deg_s',
+        'execution_paced','observation_boundary'}
+    for extra in (['--model','baseline-stack'], ['--model','target-pair'],
+                  ['--model','target-stack','--transport-age-aligned'],
+                  ['--model','target-stack','--approach-age-aligned']):
+        with pytest.raises(SystemExit):m.parse_args([*extra,'--execution-paced'])
     seed,options=live_setup.prepare_live_setup(tmp_path,labels,'A',model='target-stack',
                                              multi_separation=True,stack_model='three-four')
     assert len(seed['visible_targets'])==3
@@ -700,6 +717,10 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('target-stack',1,False,False,'arrival'),
     ('target-stack',1,'hung',False,'arrival'),
     ('target-stack',1,'arrival_unreachable',False,'arrival'),
+    ('target-stack',1,False,False,'paced'),
+    ('target-stack',1,'hung',False,'paced'),
+    ('target-stack',1,'arrival_unreachable',False,'paced'),
+    ('target-stack',1,'frames_pending',False,'paced'),
     ('target-stack',3,False,False,'sequence'),
     ('target-stack',3,False,False,'sequence_motion_preview'),
     ('target-stack',3,'home_failure',False,'sequence'),
@@ -715,8 +736,10 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     motion_preview=approach=='sequence_motion_preview'
     if motion_preview:approach='sequence'
     baseline_replan=model=='baseline-stack' and approach=='baseline_replan'
-    arrival_test=approach=='arrival'
+    paced_test=approach=='paced'
+    arrival_test=approach in ('arrival','paced')
     arrival_events=[]
+    pending_frame_observations=[]
     original_log=m.continuous.log
     def capture_log(handle,value):
         if 'goal_arrived' in value:arrival_events.append(value['goal_arrived'])
@@ -802,6 +825,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             state_reads[0]+=1
             return state.copy(),[.2,-.5,.3],clock[0]
         def observe(self,**kw):
+            if paced_test:
+                assert kw['allow_pending_frames']
+                if requests and (not pending_frame_observations or inference_error=='frames_pending'):
+                    pending_frame_observations.append(clock[0])
+                    return None
             assert kw['max_camera_age_ms']==(400 if latency_test and model!='target-pair' else (100 if model=='legacy-single' else 250))
             if 'state_snapshot' in kw:
                 assert kw['state_snapshot'][0][-1]==state[-1]
@@ -1027,10 +1055,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         argv+=['--target-snapshot','snapshot','--target-selections','labels']
         argv+=['--target-sequence','A','B','C'] if sequence_test else ['--target-id','A']
     if expected_cycles!=(1 if model in ('legacy-single','baseline-stack') else 2):argv+=['--cycles',str(expected_cycles)]
-    if approach:argv.append('--approach-age-aligned')
+    if approach and not paced_test:argv.append('--approach-age-aligned')
     if latency_test:argv.append('--latency-tolerant')
     if arrival_test:argv.append('--observe-after-arrival')
-    if transport_test:argv.append('--transport-age-aligned')
+    if paced_test:argv.append('--execution-paced')
+    if transport_test and not paced_test:argv.append('--transport-age-aligned')
     if motion_preview:
         argv[argv.index('--target-snapshot')+1]=str(tmp_path/'snapshot')
         argv.extend(['--track-target-motion','--target-preview'])
@@ -1046,13 +1075,30 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
             assert len({tuple(c['target']) for c in group})==1
             assert len({c['action_selection']['selected_index'] for c in group if c['action_selection']})<=1
         assert not any('pending_suction_replanned' in row for row in rows)
+        if paced_test:
+            assert complete['execution_paced'] and not complete['approach_age_aligned']
+            predictions={r['index']:r for r in rows if 'prediction' in r}
+            for c in commands:
+                assert c['target']==predictions[c['prediction_index']]['prediction']['action_chunk'][0]
+                if c['action_selection']:assert c['action_selection']['selected_index']==0
+            barrier=None
+            for r in rows:
+                if 'goal_arrived' in r:barrier=r['goal_arrived']['time']
+                if 'target_phase_command' in r:barrier=r['target_phase_command']['accepted_monotonic_s']
+                if 'prediction' in r and barrier is not None:
+                    assert min(r['sensor_times'])>barrier
+            # The fake camera deliberately returns pre-arrival frames first.
+            if not inference_error:
+                assert any('waiting_for_post_arrival_observation' in r for r in rows)
+                assert any('waiting_for_new_camera_frame' in r for r in rows)
+                assert pending_frame_observations
         assert all(max(abs(a-b) for a,b in zip(e['target'][:6],e['state'][:6]))<.15
                    and max(abs(v) for v in e['velocity'])<.3 for e in arrival_events)
         if inference_error:
             assert result==1 and not complete['suction_cycle_commanded']
             assert 'no fresh prediction within 1500 ms' in complete['failure']
             assert not any(kind=='suction' for kind,_ in events)
-            assert len(requests)==(1 if inference_error=='arrival_unreachable' else 2)
+            assert len(requests)==(1 if inference_error in ('arrival_unreachable','frames_pending') else 2)
         else:
             assert result==0 and complete['suction_cycle_commanded']
             assert [value for kind,value in events if kind=='suction']==[100,0]

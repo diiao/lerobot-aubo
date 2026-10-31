@@ -37,13 +37,15 @@ def parse_args(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
                    help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
-    p.add_argument('--target-stack-model',choices=('original','three-four'),default='original',
-                   help='target-stack: explicitly select the three+four-strip 60000-step 2px model; default keeps the original model')
+    p.add_argument('--target-stack-model',choices=('original','three-four'),default=None,
+                   help='target-stack 2px defaults to the three+four-strip 60000-step model; original selects the earlier model')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
     p.add_argument('--observe-after-arrival',action='store_true',
                    help='target-stack trial: freeze the selected model row; request the next observation only after arrival, keeping existing age/watchdog limits')
+    p.add_argument('--execution-paced',action='store_true',
+                   help='target-stack trial: execute model row 0, then require post-arrival observations; implies --observe-after-arrival and excludes --transport-age-aligned')
     p.add_argument('--paired-target-separation',action='store_true',
                    help='Explicit target-pair trial: separate current foreground using both reviewed target references')
     p.add_argument('--multi-target-separation',action='store_true',
@@ -59,8 +61,16 @@ def parse_args(argv=None):
     p.add_argument('--approach-age-aligned',action='store_true',
                    help='Experimental mixed-both-orders approach: age-align open-gripper targets; retain full pick/place cycles')
     args=p.parse_args(argv)
+    if args.target_stack_model is None:
+        args.target_stack_model = ('three-four' if args.model == 'target-stack'
+                                   and args.target_outline_width_px == 2 else 'original')
     target_mode=args.model in ('target-pair','target-stack')
     stack=args.model in ('target-stack','baseline-stack')
+    if args.execution_paced:
+        if args.model != 'target-stack':p.error('--execution-paced requires target-stack')
+        if args.transport_age_aligned or args.approach_age_aligned:
+            p.error('--execution-paced excludes age-aligned action selection')
+        args.observe_after_arrival=True
     if args.target_outline_width_px != 2 and args.model != 'target-stack':
         p.error('--target-outline-width-px 1 requires target-stack')
     if args.target_stack_model != 'original' and (args.model != 'target-stack' or args.target_outline_width_px != 2):
@@ -184,7 +194,7 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         max_control_gap=max_control_gap,max_state_age=max_state_age,mixed=mixed,
         model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
         approach=approach,lossless_images=target_mode or args.model=='baseline-stack',
-        observe_after_arrival=args.observe_after_arrival)
+        observe_after_arrival=args.observe_after_arrival,execution_paced=args.execution_paced)
 
 
 def build_plan(args, sequence, target_mode, target_seed, target_options, config):
@@ -244,6 +254,10 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
             action_selection=plan['action_selection']+'_at_receipt_then_frozen',
             pending_suction_policy='hold_selected_goal_until_arrival_before_next_observation',
             arrival_joint_tolerance_deg=.15,arrival_trajectory_speed_deg_s=.3)
+    plan['execution_paced']=args.execution_paced
+    if args.execution_paced:
+        plan.update(action_selection='first_model_row_until_arrival',
+            observation_boundary='all_sensor_times_after_arrival_and_accepted_io')
     if args.track_target_motion:
         plan['target_motion_support_policy']='diagnostic_only'
         plan['target_motion_search_radius_px']=LIVE_MOTION_RADIUS_PX

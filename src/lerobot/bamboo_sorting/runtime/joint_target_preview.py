@@ -15,10 +15,30 @@ from ..mask_codec import decode_mask
 
 PAGE = '''<!doctype html><meta charset="utf-8"><title>AUBO 目标预测预览</title>
 <style>body{background:#15191e;color:#eee;font:18px sans-serif;margin:24px}img{max-width:100%;border:1px solid #555}.old{color:#ffb45a}small{color:#bbb}</style>
-<h2>模型输入与目标轮廓</h2><p id="status">等待预测</p><img id="frame"><p><small>左：该次预测的全局图像，紫色为模型输入轮廓，黄色框仅用于显示。右：同次请求腕部图像。<br>这是最近一次预测的观测，不是无延迟摄像头画面。搬运阶段模型使用原图，不保留接近阶段的框。此页面不发送运动命令。</small></p>
+<h2>模型输入与目标轮廓</h2><p id="status">等待预测</p><p id="perception"></p><img id="frame"><p><small>左：该次预测的全局图像，紫色为模型输入轮廓，黄色框仅用于显示。右：同次请求腕部图像。<br>这是最近一次预测的观测，不是无延迟摄像头画面。搬运阶段模型使用原图，不保留接近阶段的框。此页面不发送运动命令。</small></p>
 <script>
-async function refresh(){let controller=new AbortController();let timer=setTimeout(()=>controller.abort(),1500);try{let r=await fetch('/snapshot',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error(r.status);let d=await r.json();let s=document.getElementById('status');s.className=(d.age_ms>1500?'old':'');s.textContent=`目标 ${d.target_id||'-'} · ${d.phase||'-'} · ${d.status} · 预测 ${d.index??'-'} · 图像年龄 ${d.age_ms==null?'-':Math.round(d.age_ms)} ms · 目标 ${d.pixels??'-'} 像素`;let im=document.getElementById('frame');if(d.jpeg){im.src='data:image/jpeg;base64,'+d.jpeg;im.hidden=false}else{im.hidden=true}}catch(e){let s=document.getElementById('status');s.className='old';s.textContent='预览已断开，画面为旧记录；请查看运行终端'}finally{clearTimeout(timer);setTimeout(refresh,250)}}refresh();
+async function refresh(){let controller=new AbortController();let timer=setTimeout(()=>controller.abort(),1500);try{let r=await fetch('/snapshot',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error(r.status);let d=await r.json();let s=document.getElementById('status');s.className=(d.age_ms>1500?'old':'');s.textContent=`目标 ${d.target_id||'-'} · ${d.phase||'-'} · ${d.status} · 预测 ${d.index??'-'} · 图像年龄 ${d.age_ms==null?'-':Math.round(d.age_ms)} ms · 目标 ${d.pixels??'-'} 像素`;let p=document.getElementById('perception');p.textContent=d.perception_note||'';p.className=d.perception_attention?'old':'';let im=document.getElementById('frame');if(d.jpeg){im.src='data:image/jpeg;base64,'+d.jpeg;im.hidden=false}else{im.hidden=true}}catch(e){let s=document.getElementById('status');s.className='old';s.textContent='预览已断开，画面为旧记录；请查看运行终端'}finally{clearTimeout(timer);setTimeout(refresh,250)}}refresh();
 </script>'''
+
+
+def perception_notice(evidence):
+    """Surface selected-target diagnostics without certifying mask quality."""
+    if evidence['phase'] != 'approach':
+        return '', False
+    target = evidence['target_id']
+    motion = evidence.get('motion_reference', {})
+    notes = []
+    if target in motion.get('failures', {}):
+        notes.append('运动跟踪失败，沿用旧参考')
+    if target in motion.get('insufficient_support_targets', []):
+        notes.append('前景支持不足')
+    if any(target in item['targets'] for item in evidence.get('separation', {}).get('merged_instances', [])):
+        notes.append('交叉实例已拆分，需复核身份')
+    attention = bool(notes)
+    support = motion.get('current_foreground_support', {}).get(target)
+    if support is not None:
+        notes.append(f'参考覆盖 {support:.1%}（非识别准确率）')
+    return '自动分割轮廓，尚未逐像素确认' + ('；' + '；'.join(notes) if notes else ''), attention
 
 
 def render_packet(images, evidence, *, index, sensor_times, status='prediction accepted'):
@@ -40,8 +60,10 @@ def render_packet(images, evidence, *, index, sensor_times, status='prediction a
                             [cv2.IMWRITE_JPEG_QUALITY, 85])
     if not ok:
         raise ValueError('preview encoding failed')
+    notice, attention = perception_notice(evidence)
     return dict(target_id=evidence['target_id'], phase=phase, index=index,
         source_time=min(sensor_times[:2]), status=status, pixels=pixels,
+        perception_note=notice, perception_attention=attention,
         jpeg=base64.b64encode(jpeg).decode('ascii'))
 
 
