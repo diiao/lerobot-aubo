@@ -25,7 +25,7 @@ class InferencePipe:
                  remote_root=LEGACY_REMOTE_ROOT, checkpoint=None, expected_sha256=LEGACY_MODEL_SHA,
                  inference_script=None, return_action_chunk=False, request_timeout_s=2.,
                  target_conditioned=False, pythonpath=None, live_target_seed=None, segmentation_checkpoint=None,
-                 target_outline_width_px=2):
+                 target_outline_width_px=2, remote_python=LEGACY_REMOTE_PYTHON, expected_precision_contract=None):
         if type(target_outline_width_px) is not int or target_outline_width_px not in (1, 2):
             raise ValueError('target outline width must be 1 or 2 pixels')
         if target_outline_width_px != 2 and not target_conditioned:
@@ -55,7 +55,7 @@ class InferencePipe:
         script_path = inference_script or f'{remote_root}/artifacts/{deployment}/{script}'
         checkpoint_path = checkpoint or f'{remote_root}/outputs/joint_legacy_v2_run01/final'
         args = ['env', f'PYTHONPATH={pythonpath or remote_root + "/src"}', 'HF_HUB_OFFLINE=1', 'TRANSFORMERS_OFFLINE=1',
-                'HF_HUB_DISABLE_TELEMETRY=1', 'WANDB_MODE=disabled', LEGACY_REMOTE_PYTHON,
+                'HF_HUB_DISABLE_TELEMETRY=1', 'WANDB_MODE=disabled', remote_python,
                 '-u', str(script_path), '--checkpoint', str(checkpoint_path),
                 '--expected-sha256', self.expected_sha256]
         if fast_matmul:
@@ -80,6 +80,8 @@ class InferencePipe:
                 raise ValueError('inference identity mismatch')
             if bool(ready.get('bf16', False)) != bf16:
                 raise ValueError('inference precision mismatch')
+            if expected_precision_contract is not None and ready.get('precision_contract') != expected_precision_contract:
+                raise ValueError('inference precision contract mismatch')
             if task is not None and ready.get('task') != task:
                 raise ValueError('inference task mismatch')
             if return_action_chunk and ready.get('action_chunk_available') is not True:

@@ -37,8 +37,8 @@ def parse_args(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
                    help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
-    p.add_argument('--target-stack-model',choices=('original','three-four'),default=None,
-                   help='target-stack 2px defaults to the three+four-strip 60000-step model; original selects the earlier model')
+    p.add_argument('--target-stack-model',choices=('original','three-four','pi05-29000','pi05-fp32-128'),default=None,
+                   help='2px defaults to three-four SmolVLA; pi05-29000 selects the old best; pi05-fp32-128 selects the FP32 diagnostic candidate')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
@@ -55,6 +55,8 @@ def parse_args(argv=None):
     p.add_argument('--cycles',type=int,help='Stop after this many close/open command cycles; defaults to the model setting')
     p.add_argument('--inference-timeout-s',type=float,
                    help='Wait for a model response; does not relax observation age or servo watchdog limits')
+    p.add_argument('--motion-limit-scale',type=float,choices=(1.,2.),default=1.,
+                   help='target-stack trial: 2 doubles joint speed/acceleration and TCP speed limits to 10 deg/s, 40 deg/s2, 0.10 m/s; default 1 preserves existing limits')
     p.add_argument('--max-seconds',type=float,help='Maximum run duration, or per-target duration with --target-sequence; completion stops earlier')
     p.add_argument('--latency-tolerant',action='store_true',
                    help='Target models: 1.5 s prediction age/watchdog; target-stack also: 400 ms camera age, 300 ms skew, 700 ms control gap, 250 ms state age; mixed-both-orders: 750 ms / 1 s and 400 ms / 300 ms; all: 5 s response wait')
@@ -66,6 +68,8 @@ def parse_args(argv=None):
                                    and args.target_outline_width_px == 2 else 'original')
     target_mode=args.model in ('target-pair','target-stack')
     stack=args.model in ('target-stack','baseline-stack')
+    if args.motion_limit_scale!=1. and args.model!='target-stack':
+        p.error('--motion-limit-scale 2 requires target-stack')
     if args.execution_paced:
         if args.model != 'target-stack':p.error('--execution-paced requires target-stack')
         if args.transport_age_aligned or args.approach_age_aligned:
@@ -74,7 +78,7 @@ def parse_args(argv=None):
     if args.target_outline_width_px != 2 and args.model != 'target-stack':
         p.error('--target-outline-width-px 1 requires target-stack')
     if args.target_stack_model != 'original' and (args.model != 'target-stack' or args.target_outline_width_px != 2):
-        p.error('--target-stack-model three-four requires target-stack with --target-outline-width-px 2')
+        p.error(f'--target-stack-model {args.target_stack_model} requires target-stack with --target-outline-width-px 2')
     if args.model=='baseline-stack':
         forbidden=[name for name,value in (
             ('--target-snapshot',args.target_snapshot),('--target-selections',args.target_selections),
@@ -194,6 +198,7 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         max_control_gap=max_control_gap,max_state_age=max_state_age,mixed=mixed,
         model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
         approach=approach,lossless_images=target_mode or args.model=='baseline-stack',
+        motion_limit_scale=args.motion_limit_scale,
         observe_after_arrival=args.observe_after_arrival,execution_paced=args.execution_paced)
 
 
@@ -207,7 +212,10 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
           'pending_suction_policy':'continue_inference_while_open' if config['approach'] else 'accept_fresh_inflight_before_io',
           'checkpoint_sha256':config['model_sha'],'requested_suction_cycles':expected_cycles,
           'camera_set_sha256':hashlib.sha256(CAMERA_SET.read_bytes()).hexdigest(),'control_hz':1/DT,
-          'joint_speed_deg_s':MAX_SPEED,'joint_acceleration_deg_s2':MAX_ACCEL,'tcp_speed_m_s':MAX_TCP_SPEED,
+          'motion_limit_scale':config['motion_limit_scale'],
+          'joint_speed_deg_s':MAX_SPEED*config['motion_limit_scale'],
+          'joint_acceleration_deg_s2':MAX_ACCEL*config['motion_limit_scale'],
+          'tcp_speed_m_s':MAX_TCP_SPEED*config['motion_limit_scale'],
           'max_prediction_delta_deg':None,'max_prediction_delta_m':None,
           'max_servo_tracking_error_deg':MAX_TRACKING_ERROR_DEG,
           'latency_tolerant':args.latency_tolerant,
@@ -247,6 +255,13 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
             empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
         if args.target_stack_model != 'original':
             plan['target_stack_model']=args.target_stack_model
+        if args.target_stack_model in ('pi05-29000','pi05-fp32-128'):
+            plan.update(inference_python=target_options['remote_python'],
+                        inference_pythonpath=target_options['pythonpath'],
+                        inference_precision='checkpoint bfloat16/float32; no additional autocast')
+            if args.target_stack_model == 'pi05-fp32-128':
+                plan.update(inference_precision='FP32 expert weights; BF16 autocast from saved precision contract',
+                            inference_precision_contract=target_options['expected_precision_contract'])
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
     plan['observe_after_arrival']=args.observe_after_arrival
     if args.observe_after_arrival:

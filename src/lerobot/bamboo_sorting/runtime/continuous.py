@@ -21,7 +21,7 @@ from ..aubo_joint_contract import JOINT_FIELDS, finite_vector, require_joint_tar
 from ..policy.joint_target_policy import TargetInputSession, is_transport
 from .inference import InferencePipe
 from .joint_smooth import (
-    DT, MAX_ACCEL, MAX_SPEED, MAX_TRACKING_ERROR_DEG, SmoothTrajectory,
+    DT, MAX_TRACKING_ERROR_DEG, SmoothTrajectory,
     select_approach_action, select_transport_action, validate_prediction, workspace,
 )
 from .joint_target_runtime import TargetForegroundMissing
@@ -180,8 +180,11 @@ def setup_continuous(state):
         state.motion_tracker = TargetMotionReferences(initial_rgb,
             {t["target_id"]: decode_mask(t["mask_png"]) for t in state.target_seed["visible_targets"]})
     if state.target_mode:
+        print(f"本轮限速：关节 {state.plan['joint_speed_deg_s']:g}°/秒，"
+              f"加速度 {state.plan['joint_acceleration_deg_s2']:g}°/秒²，"
+              f"末端 {state.plan['tcp_speed_m_s']:g} 米/秒。", flush=True)
         if args.execution_paced:
-            print("本轮按执行进度重观察：只取模型第0行，到位及IO确认后等待新帧；保留原限速、新鲜度与超时限制。", flush=True)
+            print("本轮按执行进度重观察：只取模型第0行，到位及IO确认后等待新帧；使用上述限速，保留原新鲜度与超时限制。", flush=True)
         elif args.observe_after_arrival:
             print("本轮到位后观察：接受时按原规则选定一行并冻结，到位后再拍图预测；原新鲜度与超时限制保留。", flush=True)
         if state.sequence:
@@ -424,7 +427,7 @@ def accept_prediction(state, result):
     state.prediction_deadline = state.last_observation + config["max_without_prediction"]
     state.pending_suction = state.goal[-1] != state.held_suction
     if not state.owned:
-        state.trajectory = SmoothTrajectory(state.current_state[:6])
+        state.trajectory = SmoothTrajectory(state.current_state[:6], limit_scale=config['motion_limit_scale'])
         state.owned = True
         state.servo._require_zero(state.motion.setServoMode(True), "enable servo")
         state.servo._wait_servo(True)
@@ -480,8 +483,8 @@ def command_goal(state):
     if (config["mixed"] and state.last_servo_sent_at is not None
             and command_started_at - state.last_servo_sent_at > config["max_control_gap"]):
         raise TimeoutError(f'servo command gap exceeded {config["max_control_gap"] * 1000:.0f} ms')
-    state.servo._require_zero(state.motion.servoJoint([math.radians(x) for x in q], math.radians(MAX_ACCEL),
-        math.radians(MAX_SPEED), config["servo_command_time"], 0., 200.), "servoJoint")
+    state.servo._require_zero(state.motion.servoJoint([math.radians(x) for x in q], math.radians(state.trajectory.max_accel),
+        math.radians(state.trajectory.max_speed), config["servo_command_time"], 0., 200.), "servoJoint")
     state.last_servo_sent_at = command_started_at
     state.sent += 1
     command_record = {"time": time.perf_counter(), "state": state.current_state, "command": q,

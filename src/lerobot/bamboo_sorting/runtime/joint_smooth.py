@@ -93,7 +93,12 @@ class SmoothTrajectory:
     Model targets remain in the log. Only intermediate servo references are
     generated here. All position and derivative units are degrees and seconds.
     """
-    def __init__(self,q):
+    def __init__(self,q,*,limit_scale=1.):
+        if isinstance(limit_scale,bool) or limit_scale not in (1.,2.):
+            raise ValueError('motion limit scale must be 1 or 2')
+        self.max_speed=MAX_SPEED*limit_scale
+        self.max_accel=MAX_ACCEL*limit_scale
+        self.max_tcp_speed=MAX_TCP_SPEED*limit_scale
         self.q=list(finite_vector(q,6,'initial joints'));self.v=[0.]*6
 
     def advance(self,target,fk):
@@ -101,23 +106,23 @@ class SmoothTrajectory:
         old=self.q;previous_v=self.v
         velocity=[]
         for q,v,g in zip(old,previous_v,target):
-            accel=max(-MAX_ACCEL,min(MAX_ACCEL,64*(g-q)-16*v))
-            velocity.append(max(-MAX_SPEED,min(MAX_SPEED,v+accel*DT)))
+            accel=max(-self.max_accel,min(self.max_accel,64*(g-q)-16*v))
+            velocity.append(max(-self.max_speed,min(self.max_speed,v+accel*DT)))
         candidate=[q+v*DT for q,v in zip(old,velocity)]
         old_tcp=fk(old);new_tcp=fk(candidate)
         distance=math.dist(old_tcp,new_tcp)
-        if distance>MAX_TCP_SPEED*DT:
+        if distance>self.max_tcp_speed*DT:
             # Scaling the desired velocity toward zero can over-decelerate an
             # axis that has already used its acceleration allowance. Instead,
             # form a braking velocity reachable from previous_v in ONE tick.
             # Every convex blend with the desired velocity preserves the joint
             # speed and acceleration bounds (both endpoints satisfy them).
             peak=max(abs(v) for v in previous_v)
-            braking_scale=max(0.,1.-MAX_ACCEL*DT/peak) if peak else 0.
+            braking_scale=max(0.,1.-self.max_accel*DT/peak) if peak else 0.
             braking=[v*braking_scale for v in previous_v]
             candidate=[q+v*DT for q,v in zip(old,braking)]
             new_tcp=fk(candidate)
-            if math.dist(old_tcp,new_tcp)>MAX_TCP_SPEED*DT:
+            if math.dist(old_tcp,new_tcp)>self.max_tcp_speed*DT:
                 raise ValueError('no TCP-safe braking candidate within acceleration bound')
             desired=velocity
             velocity=braking
@@ -130,14 +135,14 @@ class SmoothTrajectory:
                 trial_v=[b+blend*(d-b) for b,d in zip(braking,desired)]
                 trial_q=[q+v*DT for q,v in zip(old,trial_v)]
                 trial_tcp=fk(trial_q)
-                if math.dist(old_tcp,trial_tcp)<=MAX_TCP_SPEED*DT:
+                if math.dist(old_tcp,trial_tcp)<=self.max_tcp_speed*DT:
                     low=blend
                     velocity,candidate,new_tcp=trial_v,trial_q,trial_tcp
                 else:
                     high=blend
-        if max(abs(a-b) for a,b in zip(velocity,previous_v))>MAX_ACCEL*DT+1e-8:
+        if max(abs(a-b) for a,b in zip(velocity,previous_v))>self.max_accel*DT+1e-8:
             raise ValueError('TCP limiting cannot preserve acceleration bound')
-        if math.dist(old_tcp,new_tcp)>MAX_TCP_SPEED*DT+1e-7:
+        if math.dist(old_tcp,new_tcp)>self.max_tcp_speed*DT+1e-7:
             raise ValueError('TCP command speed exceeds limit')
         workspace(new_tcp)
         self.q,self.v=candidate,velocity

@@ -1168,12 +1168,13 @@ class PI05Policy(PreTrainedPolicy):
                 # Convert [B, C, H, W] to [B, H, W, C] for processing
                 img = img.permute(0, 2, 3, 1)
 
+            # The float resize helper expects [-1, 1] and pads with -1 (black).
+            # Normalize first so padding is not subsequently transformed to -3.
+            img = img * 2.0 - 1.0
+
             # from openpi preprocess_observation_pytorch: Resize with padding if needed
             if img.shape[1:3] != self.config.image_resolution:
                 img = resize_with_pad_torch(img, *self.config.image_resolution)
-
-            # Normalize from [0,1] to [-1,1] as expected by siglip
-            img = img * 2.0 - 1.0
 
             # from openpi preprocess_observation_pytorch: Convert back to [B, C, H, W] format if it was originally channels-first
             if is_channels_first:

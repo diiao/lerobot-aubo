@@ -23,6 +23,16 @@ from ..model_profiles import (
     TARGET_STACK_THIN_SERVICE_ROOT,
     TARGET_STACK_THREE_FOUR_CHECKPOINT,
     TARGET_STACK_THREE_FOUR_MODEL_SHA,
+    TARGET_STACK_PI05_CHECKPOINT,
+    TARGET_STACK_PI05_MODEL_SHA,
+    TARGET_STACK_PI05_PYTHONPATH,
+    TARGET_STACK_PI05_REMOTE_PYTHON,
+    TARGET_STACK_PI05_REMOTE_ROOT,
+    TARGET_STACK_PI05_SERVICE_ROOT,
+    TARGET_STACK_PI05_FP32_CHECKPOINT,
+    TARGET_STACK_PI05_FP32_MODEL_SHA,
+    TARGET_STACK_PI05_FP32_INFERENCE_SCRIPT,
+    TARGET_STACK_PI05_FP32_PYTHONPATH,
 )
 from ..perception.target_seed import reviewed_masks
 from ..mask_codec import encode_mask
@@ -43,10 +53,10 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
         raise ValueError('target outline width must be 1 or 2 pixels')
     if outline_width_px == 1 and model != 'target-stack':
         raise ValueError('thin outline checkpoint requires target-stack')
-    if stack_model not in ('original', 'three-four'):
+    if stack_model not in ('original', 'three-four', 'pi05-29000', 'pi05-fp32-128'):
         raise ValueError('unknown stack model')
     if stack_model != 'original' and (model != 'target-stack' or outline_width_px != 2):
-        raise ValueError('three-four checkpoint requires target-stack with 2px outline')
+        raise ValueError(f'{stack_model} checkpoint requires target-stack with 2px outline')
     if model == 'target-stack' and not multi_separation:
         raise ValueError('stack model requires visible seeds for all remaining strips')
     if motion_tracking and (model != 'target-stack' or not multi_separation):
@@ -103,4 +113,19 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
         if stack_model == 'three-four':
             options.update(checkpoint=TARGET_STACK_THREE_FOUR_CHECKPOINT,
                            expected_sha256=TARGET_STACK_THREE_FOUR_MODEL_SHA)
+        if stack_model == 'pi05-29000':
+            options.update(remote_root=TARGET_STACK_PI05_REMOTE_ROOT,
+                           remote_python=TARGET_STACK_PI05_REMOTE_PYTHON,
+                           checkpoint=TARGET_STACK_PI05_CHECKPOINT, expected_sha256=TARGET_STACK_PI05_MODEL_SHA,
+                           inference_script=TARGET_STACK_PI05_SERVICE_ROOT + '/joint_inference_stdio.py',
+                           pythonpath=TARGET_STACK_PI05_PYTHONPATH)
+        if stack_model == 'pi05-fp32-128':
+            from ..policy.pi05_joint_adapter import FP32_EXPERT_PRECISION
+            options.update(remote_root=TARGET_STACK_PI05_REMOTE_ROOT,
+                           remote_python=TARGET_STACK_PI05_REMOTE_PYTHON,
+                           checkpoint=TARGET_STACK_PI05_FP32_CHECKPOINT,
+                           expected_sha256=TARGET_STACK_PI05_FP32_MODEL_SHA,
+                           inference_script=TARGET_STACK_PI05_FP32_INFERENCE_SCRIPT,
+                           pythonpath=TARGET_STACK_PI05_FP32_PYTHONPATH,
+                           expected_precision_contract=dict(FP32_EXPERT_PRECISION))
     return seed, options

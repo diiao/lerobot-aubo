@@ -24,6 +24,12 @@ def test_trajectory_bounded_with_target_reversal_and_convergence():
     assert t.q==pytest.approx([-1]*6,abs=.001)
 
 
+@pytest.mark.parametrize('scale',[0.,-1.,3.,float('nan'),float('inf'),True])
+def test_trajectory_rejects_unsupported_limit_scale(scale):
+    with pytest.raises(ValueError,match='motion limit scale'):
+        SmoothTrajectory([0]*6,limit_scale=scale)
+
+
 def test_prediction_distance_separate_from_controller_limits():
     state=[-57.65431566565926,-.6645925301704693,117.42801944969176,29.636383572763556,90.66313814689934,-182.15161343663397,0]
     action=[-56.643585205078125,-.3033311367034912,117.9039306640625,29.727054595947266,90.61083221435547,-181.3079376220703,0]
@@ -421,6 +427,77 @@ def test_three_four_stack_selects_new_weights_with_existing_control_and_worker(m
                                      multi_separation=True,stack_model='three-four',outline_width_px=1)
 
 
+@pytest.mark.parametrize('stack_model',['pi05-29000','pi05-fp32-128'])
+def test_pi05_sequence_keeps_controller_and_uses_independent_worker_for_every_target(monkeypatch,tmp_path,stack_model):
+    m=load_entry(monkeypatch)
+    from lerobot.bamboo_sorting import model_profiles as profiles
+    from lerobot.bamboo_sorting.runtime import inference as inf
+    (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',
+        snapshot_id='recorded',execution_eligible=False)))
+    labels=tmp_path/'selection.json'
+    labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection',snapshot_id='recorded',
+        human_reviewed=True,targets=[dict(target_id=t,polygons=[[[x,100],[x+20,100],[x+20,400],[x,400]]])
+                                    for t,x in [('A',100),('B',200),('C',300)]])))
+    argv=['--model','target-stack','--target-snapshot',str(tmp_path),'--target-selections',str(labels),
+          '--target-sequence','A','B','C','--target-preview','--track-target-motion',
+          '--transport-age-aligned','--latency-tolerant','--max-seconds','600']
+    def resolve(extra):
+        args,sequence,target_mode,approach,mixed,timeout,parser=m.parse_args(argv+extra)
+        _,seed,options,setups=m.resolve_targets(args,sequence,target_mode,parser)
+        config=m.resolve_config(args,sequence,target_mode,approach,mixed,timeout,options)
+        return m.build_plan(args,sequence,target_mode,seed,options,config),config,setups
+    old,old_config,_=resolve([])
+    plan,config,setups=resolve(['--target-stack-model',stack_model])
+    changed = {
+        'checkpoint','checkpoint_sha256','target_stack_model','inference_script',
+        'inference_python','inference_pythonpath','inference_precision'}
+    if stack_model=='pi05-fp32-128':changed.add('inference_precision_contract')
+    assert {k for k in plan if plan[k]!=old.get(k)} == changed
+    assert {k for k in config if config[k]!=old_config.get(k)} == {'model_sha','pipe_options'}
+    doubled,doubled_config,_=resolve(['--target-stack-model',stack_model,'--motion-limit-scale','2'])
+    assert {k:v for k,v in doubled.items() if v!=plan.get(k)} == {
+        'motion_limit_scale':2.,'joint_speed_deg_s':10.,'joint_acceleration_deg_s2':40.,'tcp_speed_m_s':.1}
+    assert {k for k in doubled_config if doubled_config[k]!=config.get(k)} == {'motion_limit_scale'}
+    assert config['motion_limit_scale']==1.
+    for extra in (['--motion-limit-scale','2'],['--model','target-stack','--motion-limit-scale','3']):
+        with pytest.raises(SystemExit):m.parse_args(extra)
+    assert plan['target_sequence']==['A','B','C'] and plan['remaining_targets_by_pick']==[['A','B','C'],['B','C'],['C']]
+    assert plan['requested_suction_cycles']==3 and plan['homing_between_targets_only']
+    launched=[]
+    class Process:
+        def __init__(self,command,**kw):launched.append(command);self.stdin=io.StringIO()
+        def wait(self,timeout):pass
+    monkeypatch.setattr(inf.subprocess,'Popen',Process)
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    fp32=stack_model=='pi05-fp32-128'
+    checkpoint=profiles.TARGET_STACK_PI05_FP32_CHECKPOINT if fp32 else profiles.TARGET_STACK_PI05_CHECKPOINT
+    sha=profiles.TARGET_STACK_PI05_FP32_MODEL_SHA if fp32 else profiles.TARGET_STACK_PI05_MODEL_SHA
+    pythonpath=profiles.TARGET_STACK_PI05_FP32_PYTHONPATH if fp32 else profiles.TARGET_STACK_PI05_PYTHONPATH
+    ready=dict(ready=True,checkpoint_sha256=sha,
+        contract=target_policy_contract_record(),action_chunk_available=True,target_live=True,
+        target_motion_available=True,segmentation_checkpoint=profiles.TARGET_STACK_SEGMENTATION_CHECKPOINT)
+    if fp32:ready['precision_contract']=plan['inference_precision_contract']
+    monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:ready)
+    for index,(seed,options) in enumerate(setups):
+        assert options['checkpoint']==checkpoint
+        assert options['remote_python']==profiles.TARGET_STACK_PI05_REMOTE_PYTHON
+        assert options['pythonpath']==pythonpath
+        assert [t['target_id'] for t in seed['visible_targets']]==['A','B','C'][index:]
+        pipe=inf.InferencePipe(tmp_path,**options)
+        pipe.close()
+    assert len(launched)==3
+    for command in launched:
+        assert profiles.TARGET_STACK_PI05_REMOTE_PYTHON in command[-1]
+        assert profiles.LEGACY_REMOTE_PYTHON not in command[-1]
+        assert '--bf16' not in command[-1]
+    if fp32:
+        monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:{**ready,'precision_contract':None})
+        with pytest.raises(ValueError,match='precision contract mismatch'):
+            inf.InferencePipe(tmp_path,**setups[0][1])
+    for extra in [['--model','target-pair'],['--model','target-stack','--target-outline-width-px','1']]:
+        with pytest.raises(SystemExit):m.parse_args([*extra,'--target-stack-model',stack_model])
+
+
 def test_thin_stack_plan_selects_complete_profile_without_changing_control(monkeypatch,capsys,tmp_path):
     m=load_entry(monkeypatch)
     from lerobot.bamboo_sorting import model_profiles as profiles
@@ -722,6 +799,8 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('target-stack',1,'arrival_unreachable',False,'paced'),
     ('target-stack',1,'frames_pending',False,'paced'),
     ('target-stack',3,False,False,'sequence'),
+    ('target-stack',3,False,False,'sequence_double_limits'),
+    ('target-stack',3,'next_failure',False,'sequence_double_limits'),
     ('target-stack',3,False,False,'sequence_motion_preview'),
     ('target-stack',3,'home_failure',False,'sequence'),
     ('target-stack',3,'next_failure',False,'sequence'),
@@ -733,6 +812,8 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     from lerobot.robots.aubo_i10 import aubo_i10
     m=load_entry(monkeypatch);clock=[10.];events=[];state=[*START_DEG,0];enabled=[False]
     target_metadata=[]
+    limit_scale=2. if approach=='sequence_double_limits' else 1.
+    if limit_scale==2.:approach='sequence'
     motion_preview=approach=='sequence_motion_preview'
     if motion_preview:approach='sequence'
     baseline_replan=model=='baseline-stack' and approach=='baseline_replan'
@@ -771,9 +852,10 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     sequence_failure=inference_error in ('home_failure','next_failure') or recovery_case
     empty_requests=[];b_requests=[];recovery_starts=[]
     original_trajectory=m.continuous.SmoothTrajectory
-    def trajectory(q):
+    def trajectory(q,**kwargs):
         if empty_requests:recovery_starts.append(list(q))
-        return original_trajectory(q)
+        assert kwargs['limit_scale']==limit_scale
+        return original_trajectory(q,**kwargs)
     monkeypatch.setattr(m.continuous,'SmoothTrajectory',trajectory)
     original_save=m.continuous.save_target_failure
     def save_failure(*args):
@@ -851,6 +933,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                 state[1]+=.07  # Simulate measured settling beyond the last sent position.
             return 0
         def servoJoint(self,q,*args):
+            assert args[:2]==pytest.approx([math.radians(20*limit_scale),math.radians(5*limit_scale)])
             assert args[2]==(DT if model=='legacy-single' else .08)
             events.append(('send',clock[0]));state[:6]=[math.degrees(x) for x in q];return 0
         def forwardKinematics(self,q):
@@ -1050,6 +1133,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     monkeypatch.setattr(m.continuous,'TrialVideoRecorder',Recorder)
     out=tmp_path/'run'
     argv=['--execute','--model',model,'--output',str(out)]
+    if limit_scale!=1.:argv+=['--motion-limit-scale',str(limit_scale)]
     if model=='target-stack':argv+=['--max-seconds','600']
     if model in ('target-pair','target-stack'):
         argv+=['--target-snapshot','snapshot','--target-selections','labels']
@@ -1343,21 +1427,22 @@ def test_tcp_limit_and_j6_deceleration_are_satisfied_together():
     assert q!=q0
 
 
-def test_nonlinear_multiaxis_tracking_limits_and_fk_call_budget():
+@pytest.mark.parametrize('limit_scale',[1.,2.])
+def test_nonlinear_multiaxis_tracking_limits_and_fk_call_budget(limit_scale):
     import random
     rng=random.Random(23);calls=[0]
     def coupled_fk(q):
         calls[0]+=1
         return [.3+.013*q[0]+.002*math.sin(q[1]),-.5+.006*q[1]+.001*q[5],.3+.004*q[2]]
-    t=SmoothTrajectory([0]*6)
+    t=SmoothTrajectory([0]*6,limit_scale=limit_scale)
     for tick in range(800):
         if tick%7==0:target=[rng.uniform(-8,8) for _ in range(6)]
         previous_q=t.q.copy();previous_v=t.v.copy();before=calls[0]
         q,tcp=t.advance(target,coupled_fk)
         assert calls[0]-before<=9  # Bounded RPC load if FK comes from the controller.
-        assert math.dist(coupled_fk(previous_q),tcp)<=MAX_TCP_SPEED*DT+1e-7
-        assert max(abs(a-b) for a,b in zip(t.v,previous_v))<=MAX_ACCEL*DT+1e-8
-        assert max(abs(v) for v in t.v)<=MAX_SPEED
+        assert math.dist(coupled_fk(previous_q),tcp)<=MAX_TCP_SPEED*limit_scale*DT+1e-7
+        assert max(abs(a-b) for a,b in zip(t.v,previous_v))<=MAX_ACCEL*limit_scale*DT+1e-8
+        assert max(abs(v) for v in t.v)<=MAX_SPEED*limit_scale
 
 
 def test_unusable_braking_candidate_rejected_without_mutating_trajectory():

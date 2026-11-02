@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Offline SmolVLA inference over an SSH stdio pipe; no hardware, no TCP listener."""
+"""Offline AUBO policy inference over an SSH stdio pipe; no hardware, no TCP listener."""
 import argparse
 import base64
 import contextlib
@@ -10,6 +10,20 @@ import sys
 import time
 import zlib
 from pathlib import Path
+
+
+def load_checkpoint_config(checkpoint):
+    # Choice configs register on import. The worker is a fresh process and must
+    # not depend on a training script having imported a model beforehand.
+    policy_type = json.loads((Path(checkpoint)/'config.json').read_text())['type']
+    if policy_type == 'pi05':
+        from lerobot.policies.pi05.configuration_pi05 import PI05Config  # noqa: F401
+    elif policy_type == 'smolvla':
+        from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig  # noqa: F401
+    else:
+        raise ValueError(f'unsupported AUBO policy type: {policy_type}')
+    from lerobot.configs.policies import PreTrainedConfig
+    return PreTrainedConfig.from_pretrained(checkpoint, local_files_only=True)
 
 
 def decode_images(images, codec, *, image_keys=('global_rgb', 'grasp_rgb')):
@@ -66,8 +80,6 @@ def main():
     with contextlib.redirect_stdout(sys.stderr):
         import numpy as np
         import torch
-        from lerobot.configs.policies import PreTrainedConfig
-        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
         from lerobot.processor import PolicyProcessorPipeline
         from lerobot.processor.converters import batch_to_transition,transition_to_batch,policy_action_to_transition,transition_to_policy_action
         from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record,JOINT_TASK,JOINT_IMAGE_KEYS
@@ -90,13 +102,30 @@ def main():
         torch.set_float32_matmul_precision('high' if args.fast_matmul else 'highest')
         if json.loads((args.checkpoint/'aubo_joint_contract.json').read_text())!=contract_record():
             raise ValueError('checkpoint contract mismatch')
-        cfg=PreTrainedConfig.from_pretrained(args.checkpoint,local_files_only=True)
+        cfg=load_checkpoint_config(args.checkpoint)
         cfg.device='cuda'
-        model=SmolVLAPolicy.from_pretrained(args.checkpoint,config=cfg,local_files_only=True,strict=True)
+        if cfg.type == 'pi05':
+            if not args.target_conditioned or args.target_outline_width_px != 2:
+                raise ValueError('PI05 requires the AUBO 2px target contract')
+            if args.bf16 or args.fast_matmul:
+                raise ValueError('PI05 uses its saved precision contract; external precision overrides are not supported')
+            from lerobot.policies.pi05.modeling_pi05 import PI05Policy
+            from lerobot.bamboo_sorting.policy.pi05_joint_adapter import (
+                PI05JointTargetOfflineAdapter, load_joint_pi05_weights,
+            )
+            model=PI05Policy(cfg)
+            load_joint_pi05_weights(model,args.checkpoint/'model.safetensors')
+            adapter_class=PI05JointTargetOfflineAdapter
+        elif cfg.type == 'smolvla':
+            from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+            model=SmolVLAPolicy.from_pretrained(args.checkpoint,config=cfg,local_files_only=True,strict=True)
+        else:
+            raise ValueError(f'unsupported AUBO policy type: {cfg.type}')
+        model.eval().requires_grad_(False)
         pre=PolicyProcessorPipeline.from_pretrained(args.checkpoint,'policy_preprocessor.json',
-            overrides={'device_processor':{'device':'cuda'}},to_transition=batch_to_transition,to_output=transition_to_batch)
+            local_files_only=True,overrides={'device_processor':{'device':'cuda'}},to_transition=batch_to_transition,to_output=transition_to_batch)
         post=PolicyProcessorPipeline.from_pretrained(args.checkpoint,'policy_postprocessor.json',
-            to_transition=policy_action_to_transition,to_output=transition_to_policy_action)
+            local_files_only=True,to_transition=policy_action_to_transition,to_output=transition_to_policy_action)
         adapter=adapter_class(model,pre,post,contract=contract_record())
         if args.bf16 and not torch.cuda.is_bf16_supported():
             raise RuntimeError('BF16 unsupported on this GPU')
@@ -116,6 +145,8 @@ def main():
             from lerobot.bamboo_sorting.runtime.joint_target_runtime import FrozenStripSegmenter, FreshTargetInputs
             segmenter = FrozenStripSegmenter(str(args.target_segmentation_checkpoint))
     print(json.dumps({'ready':True,'checkpoint_sha256':digest.hexdigest(),'contract':contract_record(),
+                      'policy_type':cfg.type,'checkpoint_dtype':getattr(cfg,'dtype',None),
+                      'precision_contract':getattr(model,'aubo_joint_precision',None),
                       'bf16':args.bf16,'task':task,'action_chunk_available':args.return_action_chunk,
                       'target_live':segmenter is not None,
                       'target_motion_available':True,
