@@ -183,6 +183,8 @@ def setup_continuous(state):
         print(f"本轮限速：关节 {state.plan['joint_speed_deg_s']:g}°/秒，"
               f"加速度 {state.plan['joint_acceleration_deg_s2']:g}°/秒²，"
               f"末端 {state.plan['tcp_speed_m_s']:g} 米/秒。", flush=True)
+        if state.config.get('hold_action_until_replan'):
+            print("本轮实验：新预测到达时按观察年龄选完整动作行，保持至下一份新预测；继续异步观察，保留原时效和停止检查。", flush=True)
         if args.execution_paced:
             print("本轮按执行进度重观察：只取模型第0行，到位及IO确认后等待新帧；使用上述限速，保留原新鲜度与超时限制。", flush=True)
         elif args.observe_after_arrival:
@@ -452,8 +454,14 @@ def command_goal(state):
     if (not config["observe_after_arrival"] and config["approach"] and state.active_chunk is not None
             and (state.held_suction == 0 or state.active_transport) and not state.pending_suction):
         select_action = select_approach_action if state.held_suction == 0 else select_transport_action
-        candidate, new_selection = select_action(state.active_chunk, state.active_times, time.perf_counter())
-        if new_selection["selected_index"] != state.selection["selected_index"]:
+        if config.get('hold_action_until_replan'):
+            # Keep all seven coordinates from the age-selected model row.
+            # Fresh predictions may still replace it; no joint/IO averaging.
+            candidate, new_selection = state.goal, state.selection
+        else:
+            candidate, new_selection = select_action(state.active_chunk, state.active_times, time.perf_counter())
+        if (config.get('hold_action_until_replan')
+                or new_selection["selected_index"] != state.selection["selected_index"]):
             state.goal = validate_prediction(candidate, state.current_state, state.current_tcp,
                 forward_kinematics(state, candidate[:6]), state.station.lower, state.station.upper,
                 state.active_times, time.perf_counter(),

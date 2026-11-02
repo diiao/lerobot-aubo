@@ -44,6 +44,23 @@ def test_prediction_distance_separate_from_controller_limits():
         validate_prediction([361,*action[1:]],**args)
 
 
+def test_held_row_still_expires_before_servo_command(monkeypatch):
+    from types import SimpleNamespace
+    from lerobot.bamboo_sorting.runtime import continuous
+    monkeypatch.setattr(continuous.time,'perf_counter',lambda:1.6)
+    monkeypatch.setattr(continuous,'forward_kinematics',lambda *a:[.2,-.5,.3])
+    chunk=chunk_response()['action_chunk']
+    state=SimpleNamespace(config=dict(hold_action_until_replan=True,approach=True,
+        observe_after_arrival=False,max_prediction_age=.5,max_camera_skew=.1),
+        pending_suction=False,prediction_deadline=3.,active_chunk=chunk,active_times=[1.,1.,1.],
+        held_suction=0.,active_transport=False,goal=chunk[0],selection=dict(selected_index=0),
+        current_state=[*START_DEG,0.],current_tcp=[.2,-.5,.3],
+        station=SimpleNamespace(lower=[-360]*6,upper=[360]*6))
+    # No trajectory/servo object is supplied: stale data must fail before use.
+    with pytest.raises(ValueError,match='expired prediction'):
+        continuous.command_goal(state)
+
+
 def test_both_orders_explicit_prediction_age_budget():
     state=[*START_DEG,0]
     args=dict(action=state,state=state,tcp=[.2,-.5,.3],target_tcp=[.2,-.5,.3],
@@ -459,6 +476,13 @@ def test_pi05_sequence_keeps_controller_and_uses_independent_worker_for_every_ta
         'motion_limit_scale':2.,'joint_speed_deg_s':10.,'joint_acceleration_deg_s2':40.,'tcp_speed_m_s':.1}
     assert {k for k in doubled_config if doubled_config[k]!=config.get(k)} == {'motion_limit_scale'}
     assert config['motion_limit_scale']==1.
+    if stack_model=='pi05-fp32-21000':
+        held,held_config,_=resolve(['--target-stack-model',stack_model,'--hold-action-until-replan'])
+        assert {k for k in held if held[k]!=plan.get(k)}=={'hold_action_until_replan','action_selection'}
+        assert {k for k in held_config if held_config[k]!=config.get(k)}=={'hold_action_until_replan'}
+        assert held['hold_action_until_replan'] and not held['observe_after_arrival']
+        for extra in (['--observe-after-arrival'],['--execution-paced']):
+            with pytest.raises(SystemExit):resolve(['--target-stack-model',stack_model,'--hold-action-until-replan',*extra])
     for extra in (['--motion-limit-scale','2'],['--model','target-stack','--motion-limit-scale','3']):
         with pytest.raises(SystemExit):m.parse_args(extra)
     assert plan['target_sequence']==['A','B','C'] and plan['remaining_targets_by_pick']==[['A','B','C'],['B','C'],['C']]
@@ -498,6 +522,8 @@ def test_pi05_sequence_keeps_controller_and_uses_independent_worker_for_every_ta
             inf.InferencePipe(tmp_path,**setups[0][1])
     for extra in [['--model','target-pair'],['--model','target-stack','--target-outline-width-px','1']]:
         with pytest.raises(SystemExit):m.parse_args([*extra,'--target-stack-model',stack_model])
+    if stack_model!='pi05-fp32-21000':
+        with pytest.raises(SystemExit):resolve(['--target-stack-model',stack_model,'--hold-action-until-replan'])
 
 
 def test_thin_stack_plan_selects_complete_profile_without_changing_control(monkeypatch,capsys,tmp_path):
@@ -793,6 +819,8 @@ def test_unset_initial_suction_requires_confirmed_release(tmp_path,monkeypatch,a
     ('target-stack',1,False,True,'serial_slow'),
     ('target-stack',1,'hung',False,'latency'),
     ('target-stack',1,False,False,'camera_latency'),
+    ('target-stack',1,False,False,'hold'),
+    ('target-stack',1,'hung',False,'hold'),
     ('target-stack',1,False,False,'arrival'),
     ('target-stack',1,'hung',False,'arrival'),
     ('target-stack',1,'arrival_unreachable',False,'arrival'),
@@ -820,6 +848,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     if motion_preview:approach='sequence'
     baseline_replan=model=='baseline-stack' and approach=='baseline_replan'
     paced_test=approach=='paced'
+    hold_test=approach=='hold'
     arrival_test=approach in ('arrival','paced')
     arrival_events=[]
     pending_frame_observations=[]
@@ -877,9 +906,10 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         from lerobot.bamboo_sorting.runtime import live_setup as joint_target_live_setup
         monkeypatch.setattr(joint_target_live_setup,'prepare_live_setup',lambda *a,**kw:(
             dict(snapshot_id='seed',target_id=a[2],**({'visible_targets':[dict(target_id=t,mask_png=mask_png) for t in kw['remaining_target_ids']]} if motion_preview else {})),dict(live_target_seed=dict(target_id=a[2],remaining=kw.get('remaining_target_ids')),expected_sha256='target-model',target_conditioned=True,
-                return_action_chunk=True,segmentation_checkpoint='segmentation')))
+                return_action_chunk=True,segmentation_checkpoint='segmentation',
+                **(dict(remote_python='fake-python',pythonpath='fake-source',expected_precision_contract={'test':'fake'}) if hold_test else {}))))
     replan_test=approach in ('replan','replan_at_receipt')
-    transport_test=approach in ('transport','sequence','baseline_replan') or arrival_test
+    transport_test=approach in ('transport','sequence','baseline_replan') or arrival_test or hold_test
     transport_error=inference_error=='transport_hung'
     if transport_test or sequence_test:approach=7
     replan_at_receipt=approach=='replan_at_receipt'
@@ -887,7 +917,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     camera_latency_test=approach=='camera_latency'
     serial_slow_test=approach=='serial_slow'
     serial_latency_test=approach in ('serial_latency','serial_slow')
-    latency_test=approach in ('latency','camera_latency','serial_latency','serial_slow') or sequence_test or arrival_test
+    latency_test=approach in ('latency','camera_latency','serial_latency','serial_slow') or sequence_test or arrival_test or hold_test
     if latency_test:approach=7
     if replan_test or discard_test:approach=7
     if replan_at_receipt:approach=2
@@ -1042,6 +1072,11 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                                 if i>12:row[0]=361.  # Must never skip the release row.
                             if transport_error:
                                 for row in chunk:row[0]=START_DEG[0]+.2;row[-1]=100.
+                            if hold_test and transport_responses[0]>1:
+                                # A later observation moves release into the
+                                # selected horizon; it must remain a full row.
+                                chunk=[[*START_DEG,0.] for _ in range(50)]
+                                for row in chunk:row[0]+=.4;row[5]+=.4
                     elif state[-1]==100:
                         # An in-flight open-state prediction must be discarded
                         # after IO, before its obsolete joint/IO target is used.
@@ -1079,6 +1114,9 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
                     # Keep approaching while the second 550-ms request runs;
                     # the old 750-ms age limit stopped this exact waiting path.
                     chunk=[[*START_DEG,0.] for _ in range(50)]
+                if hold_test and index==0:
+                    chunk=[[*START_DEG,0.] for _ in range(50)]
+                    for i,row in enumerate(chunk):row[5]+=.2+.02*i
                 if arrival_test and index==0:
                     # Vary open-state rows: reaching the receipt-selected row
                     # must neither advance to later rows nor start a new request.
@@ -1137,6 +1175,7 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
     argv=['--execute','--model',model,'--output',str(out)]
     if limit_scale!=1.:argv+=['--motion-limit-scale',str(limit_scale)]
     if model=='target-stack':argv+=['--max-seconds','600']
+    if hold_test:argv+=['--target-stack-model','pi05-fp32-21000','--hold-action-until-replan']
     if model in ('target-pair','target-stack'):
         argv+=['--target-snapshot','snapshot','--target-selections','labels']
         argv+=['--target-sequence','A','B','C'] if sequence_test else ['--target-id','A']
@@ -1150,6 +1189,28 @@ def test_persistent_servo_and_stop_on_inference_error(tmp_path,monkeypatch,infer
         argv[argv.index('--target-snapshot')+1]=str(tmp_path/'snapshot')
         argv.extend(['--track-target-motion','--target-preview'])
     result=m.main(argv)
+    if hold_test:
+        complete=json.loads((out/'complete.json').read_text())
+        commands=list(map(json.loads,(out/'commands.jsonl').read_text().splitlines()))
+        rows=list(map(json.loads,(out/'trace.jsonl').read_text().splitlines()))
+        predictions={r['index']:r for r in rows if 'prediction'in r}
+        assert commands and not enabled[0]
+        for index in {c['prediction_index'] for c in commands}:
+            selected=[c for c in commands if c['prediction_index']==index and c['action_selection']is not None]
+            assert len({tuple(c['target']) for c in selected})==1
+            assert len({c['action_selection']['selected_index'] for c in selected})==1
+            for c in selected:
+                assert c['target']==predictions[index]['prediction']['action_chunk'][c['action_selection']['selected_index']]
+        assert result==int(bool(inference_error))
+        if not inference_error:
+            assert complete['suction_cycle_commanded'] and [v for k,v in events if k=='suction']==[100,0]
+            # A fresh prediction replaces the held target before arrival.
+            first_new=next(c for c in commands if c['prediction_index']!=commands[0]['prediction_index'])
+            assert max(abs(a-b)for a,b in zip(first_new['state'][:6],commands[0]['target'][:6]))>.15
+            assert {r['prediction']['target_input']['phase']for r in rows if'prediction'in r}=={'approach','transport'}
+        else:
+            assert not complete['suction_cycle_commanded'] and 'no fresh prediction'in complete['failure']
+        return
     if arrival_test:
         complete=json.loads((out/'complete.json').read_text())
         commands=list(map(json.loads,(out/'commands.jsonl').read_text().splitlines()))

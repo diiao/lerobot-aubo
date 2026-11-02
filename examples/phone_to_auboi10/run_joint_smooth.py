@@ -57,6 +57,8 @@ def parse_args(argv=None):
                    help='Wait for a model response; does not relax observation age or servo watchdog limits')
     p.add_argument('--motion-limit-scale',type=float,choices=(1.,2.),default=1.,
                    help='target-stack trial: 2 doubles joint speed/acceleration and TCP speed limits to 10 deg/s, 40 deg/s2, 0.10 m/s; default 1 preserves existing limits')
+    p.add_argument('--hold-action-until-replan',action='store_true',
+                   help='Experimental pi05-fp32-21000 only: age-select one complete action row on receipt, hold it until the next fresh prediction; keep asynchronous inference')
     p.add_argument('--max-seconds',type=float,help='Maximum run duration, or per-target duration with --target-sequence; completion stops earlier')
     p.add_argument('--latency-tolerant',action='store_true',
                    help='Target models: 1.5 s prediction age/watchdog; target-stack also: 400 ms camera age, 300 ms skew, 700 ms control gap, 250 ms state age; mixed-both-orders: 750 ms / 1 s and 400 ms / 300 ms; all: 5 s response wait')
@@ -70,6 +72,13 @@ def parse_args(argv=None):
     stack=args.model in ('target-stack','baseline-stack')
     if args.motion_limit_scale!=1. and args.model!='target-stack':
         p.error('--motion-limit-scale 2 requires target-stack')
+    if args.hold_action_until_replan:
+        if args.model!='target-stack' or args.target_stack_model!='pi05-fp32-21000':
+            p.error('--hold-action-until-replan requires target-stack pi05-fp32-21000')
+        if args.observe_after_arrival or args.execution_paced:
+            p.error('--hold-action-until-replan requires asynchronous replanning, not arrival-paced modes')
+        if not args.transport_age_aligned:
+            p.error('--hold-action-until-replan requires --transport-age-aligned')
     if args.execution_paced:
         if args.model != 'target-stack':p.error('--execution-paced requires target-stack')
         if args.transport_age_aligned or args.approach_age_aligned:
@@ -199,6 +208,7 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
         approach=approach,lossless_images=target_mode or args.model=='baseline-stack',
         motion_limit_scale=args.motion_limit_scale,
+        hold_action_until_replan=args.hold_action_until_replan,
         observe_after_arrival=args.observe_after_arrival,execution_paced=args.execution_paced)
 
 
@@ -263,6 +273,9 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                 plan.update(inference_precision='FP32 expert weights; BF16 autocast from saved precision contract',
                             inference_precision_contract=target_options['expected_precision_contract'])
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
+    if args.hold_action_until_replan:
+        plan.update(hold_action_until_replan=True,
+                    action_selection='observation_age_at_receipt_then_hold_complete_row_until_next_prediction')
     plan['observe_after_arrival']=args.observe_after_arrival
     if args.observe_after_arrival:
         plan.update(mode='observe_after_arrival_continuous_servo',
