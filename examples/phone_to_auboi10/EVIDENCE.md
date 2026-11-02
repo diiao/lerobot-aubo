@@ -1385,6 +1385,14 @@ best全体均值较final低2.49%，但不是每个指标都优于final；其闭�
 
 实际仅删除该输出目录的`retained_checkpoints/step_021000`（12文件）及本轮隔离源码内27个`__pycache__`目录（109文件），未扩大到父目录、环境缓存或其他训练。删除前核对无引用进程／打开文件／嵌套挂载，副本文件无硬链接，原best的tokenizer依赖指向自身；逐项`test ! -e`通过，531个保护文件设备／inode／大小／mtime及best指针保持。全部训练日志、28轮评价及预测、隔离源码、规则修复与回退证据、数据／基座／环境／其他模型均保留。本轮输出剩余8663414980字节（约8.66GB）；未启动训练、部署或硬件操作。根分区`/dev/nvme0n1p6`总容量452600283136字节，清理前普通用户可用82685640704字节，清理后91313922048字节（91.31GB／85.04GiB），实测增加8628281344字节（8.63GB）；清理后已用338220417024字节。GB为十进制，ext4保留空间不计入普通用户可用量。精确路径、日志摘录、保护核验和前后磁盘快照见[退役清理审计](../../artifacts/capture/stack/joint_stack_four_six_20261025/training_preparation/pi05/fp32_retraining/training_retirement_cleanup.json)，远端同份记录保存在隔离快照；旧保留审计不覆盖，`process.json`和`status.json`本地快照已刷新。
 
+**21000步best部署与严格重载复核（2026-11-02）**：用户要求先提交当前项目，再部署本轮best做真机推理实验。部署前当前20个文件提交为`951c9be0`，`make test-aubo-offline`为932通过／11跳过。新增显式`pi05-fp32-21000`身份，直接读取`checkpoints/best_step_021000`原件；模型SHA沿用历史逐文件审计的`7ada4146cd76303302c3b74134575ab43e082076bf81c37a0abad181a4c6dc4a`，本次实际worker加载已验证。新服务仅保存小型入口及验证脚本，复用退役训练的隔离源码；适配器、PI05模型和实时目标输入模块与本地已测代码的小文件身份一致，没有复制完整权重或修改训练原件。路径与清单见[部署来源](../../artifacts/live/stack/pi05_fp32_21000_live/deployment_source.json)。
+
+采用检查点保存的处理器／tokenizer／q01/q99和精度文件严格加载；确认FP32动作专家、BF16计算及推理时全参数无梯度。原644个观察、seed42、batch16复核后，source／episode／frame身份、state／label、padding和全部644×50×7动作块均与21000步原评价逐值相同，最大差0；监测验证loss及TCP主误差与README当前指标一致。验证输出写入远端新服务目录的`best_reload_monitor/`，未写入原训练输出；[重载报告](../../artifacts/live/stack/pi05_fp32_21000_live/reload_check.json)已回传。本次不含6023帧完整多seed评价，不补造训练的`final/`或`result.json`，仍保留原失败状态。
+
+使用历史快照`8385f5094c734ec1bbcb9325e0a793b4`执行新选项的实际SSH worker检查：两次接近使用同帧分割目标，模拟搬运使用原RGB；三次输出均为有限50×7，六关节raw／decoded最大差0，握手确认FP32精度约定及当前检查点SHA。保存图像含网络往返分别0.36974／0.34899／0.29820秒，不包含现场相机或机器人时序；详见[协议结果](../../artifacts/live/stack/pi05_fp32_21000_live/saved_protocol/result.json)。相关假设备CPU检查245项通过，覆盖三个π0.5选项的每目标独立会话、模型身份、精度拒绝及控制配置保持。验证结束GPU计算进程为空，普通用户可用磁盘91311620096字节（约91.31GB）。
+
+本轮[准备记录](../../artifacts/live/stack/pi05_fp32_21000_live/experiment_plan.json)状态为已部署、等待新场景；[软件配置](../../artifacts/live/stack/pi05_fp32_21000_live/software_settings_plan.json)以历史种子核对模型切换，snapshot为待定，不是现场许可。首轮新目录、单目标A、2倍限速及新归位／拍照／审核／计划流程统一见[README当前部署](README.md#π05-三根与四根训练准备)。本次助手没有相机／机械臂／IO访问、没有优化更新、未开始真机策略；目标服从、动作连续性和指定单根抓取均待本轮现场验证。
+
 远端 `outputs/pi05_joint_smoke/checkpoint` 仍是0步基座精度转换／输入适配验证产物，不是微调模型；原30000步训练权重位于独立的`outputs/pi05_joint_three_four`，FP32诊断候选另见上文。既有腕部机位差异没有因训练完成而消失；原29000步起步轨迹未通过，B组虽抬升改善仍未夹起，目标服从和主动纠偏均未通过验收。操作与接口只维护在[π0.5训练入口](README.md#π05-三根与四根训练准备)。
 
 ### 三根动作模型身份与训练结论

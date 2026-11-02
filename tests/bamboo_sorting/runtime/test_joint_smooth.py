@@ -427,7 +427,7 @@ def test_three_four_stack_selects_new_weights_with_existing_control_and_worker(m
                                      multi_separation=True,stack_model='three-four',outline_width_px=1)
 
 
-@pytest.mark.parametrize('stack_model',['pi05-29000','pi05-fp32-128'])
+@pytest.mark.parametrize('stack_model',['pi05-29000','pi05-fp32-128','pi05-fp32-21000'])
 def test_pi05_sequence_keeps_controller_and_uses_independent_worker_for_every_target(monkeypatch,tmp_path,stack_model):
     m=load_entry(monkeypatch)
     from lerobot.bamboo_sorting import model_profiles as profiles
@@ -451,7 +451,7 @@ def test_pi05_sequence_keeps_controller_and_uses_independent_worker_for_every_ta
     changed = {
         'checkpoint','checkpoint_sha256','target_stack_model','inference_script',
         'inference_python','inference_pythonpath','inference_precision'}
-    if stack_model=='pi05-fp32-128':changed.add('inference_precision_contract')
+    if stack_model in ('pi05-fp32-128','pi05-fp32-21000'):changed.add('inference_precision_contract')
     assert {k for k in plan if plan[k]!=old.get(k)} == changed
     assert {k for k in config if config[k]!=old_config.get(k)} == {'model_sha','pipe_options'}
     doubled,doubled_config,_=resolve(['--target-stack-model',stack_model,'--motion-limit-scale','2'])
@@ -469,10 +469,12 @@ def test_pi05_sequence_keeps_controller_and_uses_independent_worker_for_every_ta
         def wait(self,timeout):pass
     monkeypatch.setattr(inf.subprocess,'Popen',Process)
     from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
-    fp32=stack_model=='pi05-fp32-128'
-    checkpoint=profiles.TARGET_STACK_PI05_FP32_CHECKPOINT if fp32 else profiles.TARGET_STACK_PI05_CHECKPOINT
-    sha=profiles.TARGET_STACK_PI05_FP32_MODEL_SHA if fp32 else profiles.TARGET_STACK_PI05_MODEL_SHA
-    pythonpath=profiles.TARGET_STACK_PI05_FP32_PYTHONPATH if fp32 else profiles.TARGET_STACK_PI05_PYTHONPATH
+    fp32=stack_model in ('pi05-fp32-128','pi05-fp32-21000')
+    profile = ('TARGET_STACK_PI05_FP32_21000' if stack_model=='pi05-fp32-21000'
+               else 'TARGET_STACK_PI05_FP32' if fp32 else 'TARGET_STACK_PI05')
+    checkpoint=getattr(profiles,profile+'_CHECKPOINT')
+    sha=getattr(profiles,profile+'_MODEL_SHA')
+    pythonpath=getattr(profiles,profile+'_PYTHONPATH')
     ready=dict(ready=True,checkpoint_sha256=sha,
         contract=target_policy_contract_record(),action_chunk_available=True,target_live=True,
         target_motion_available=True,segmentation_checkpoint=profiles.TARGET_STACK_SEGMENTATION_CHECKPOINT)

@@ -37,8 +37,8 @@ def parse_args(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
                    help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
-    p.add_argument('--target-stack-model',choices=('original','three-four','pi05-29000','pi05-fp32-128'),default=None,
-                   help='2px defaults to three-four SmolVLA; pi05-29000 selects the old best; pi05-fp32-128 selects the FP32 diagnostic candidate')
+    p.add_argument('--target-stack-model',choices=('original','three-four','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
+                   help='2px defaults to three-four SmolVLA; pi05-fp32-21000 selects the retained FP32 best; other PI05 options are historical candidates')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
@@ -255,11 +255,11 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
             empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
         if args.target_stack_model != 'original':
             plan['target_stack_model']=args.target_stack_model
-        if args.target_stack_model in ('pi05-29000','pi05-fp32-128'):
+        if args.target_stack_model in ('pi05-29000','pi05-fp32-128','pi05-fp32-21000'):
             plan.update(inference_python=target_options['remote_python'],
                         inference_pythonpath=target_options['pythonpath'],
                         inference_precision='checkpoint bfloat16/float32; no additional autocast')
-            if args.target_stack_model == 'pi05-fp32-128':
+            if args.target_stack_model in ('pi05-fp32-128','pi05-fp32-21000'):
                 plan.update(inference_precision='FP32 expert weights; BF16 autocast from saved precision contract',
                             inference_precision_contract=target_options['expected_precision_contract'])
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)

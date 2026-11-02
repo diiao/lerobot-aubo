@@ -33,6 +33,10 @@ from ..model_profiles import (
     TARGET_STACK_PI05_FP32_MODEL_SHA,
     TARGET_STACK_PI05_FP32_INFERENCE_SCRIPT,
     TARGET_STACK_PI05_FP32_PYTHONPATH,
+    TARGET_STACK_PI05_FP32_21000_CHECKPOINT,
+    TARGET_STACK_PI05_FP32_21000_MODEL_SHA,
+    TARGET_STACK_PI05_FP32_21000_INFERENCE_SCRIPT,
+    TARGET_STACK_PI05_FP32_21000_PYTHONPATH,
 )
 from ..perception.target_seed import reviewed_masks
 from ..mask_codec import encode_mask
@@ -53,7 +57,7 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
         raise ValueError('target outline width must be 1 or 2 pixels')
     if outline_width_px == 1 and model != 'target-stack':
         raise ValueError('thin outline checkpoint requires target-stack')
-    if stack_model not in ('original', 'three-four', 'pi05-29000', 'pi05-fp32-128'):
+    if stack_model not in ('original', 'three-four', 'pi05-29000', 'pi05-fp32-128', 'pi05-fp32-21000'):
         raise ValueError('unknown stack model')
     if stack_model != 'original' and (model != 'target-stack' or outline_width_px != 2):
         raise ValueError(f'{stack_model} checkpoint requires target-stack with 2px outline')
@@ -127,5 +131,14 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
                            expected_sha256=TARGET_STACK_PI05_FP32_MODEL_SHA,
                            inference_script=TARGET_STACK_PI05_FP32_INFERENCE_SCRIPT,
                            pythonpath=TARGET_STACK_PI05_FP32_PYTHONPATH,
+                           expected_precision_contract=dict(FP32_EXPERT_PRECISION))
+        if stack_model == 'pi05-fp32-21000':
+            from ..policy.pi05_joint_adapter import FP32_EXPERT_PRECISION
+            options.update(remote_root=TARGET_STACK_PI05_REMOTE_ROOT,
+                           remote_python=TARGET_STACK_PI05_REMOTE_PYTHON,
+                           checkpoint=TARGET_STACK_PI05_FP32_21000_CHECKPOINT,
+                           expected_sha256=TARGET_STACK_PI05_FP32_21000_MODEL_SHA,
+                           inference_script=TARGET_STACK_PI05_FP32_21000_INFERENCE_SCRIPT,
+                           pythonpath=TARGET_STACK_PI05_FP32_21000_PYTHONPATH,
                            expected_precision_contract=dict(FP32_EXPERT_PRECISION))
     return seed, options
