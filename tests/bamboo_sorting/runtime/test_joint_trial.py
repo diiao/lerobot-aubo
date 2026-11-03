@@ -192,6 +192,33 @@ def test_full_chunk_pipe_negotiation_and_validation(tmp_path,monkeypatch,request
     assert timeouts==[120,request_timeout]
 
 
+def test_prediction_transport_timings_cover_the_entire_request(monkeypatch):
+    import io
+    import itertools
+    import json
+    from types import SimpleNamespace
+    from lerobot.bamboo_sorting.runtime import inference
+    pipe=inference.InferencePipe.__new__(inference.InferencePipe)
+    pipe.target_conditioned=False;pipe.live_target_seed=None;pipe.return_action_chunk=False
+    pipe.expected_sha256='saved-model';pipe.request_timeout_s=5
+    pipe.process=SimpleNamespace(stdin=io.StringIO())
+    response=dict(id=7,checkpoint_sha256='saved-model',shape=[50,7],
+                  action=[*START_DEG,0.],raw_action=[*START_DEG,0.])
+    monkeypatch.setattr(pipe,'receive',lambda timeout:response)
+    monkeypatch.setattr(inference,'encode_images',lambda images,codec:{'global_rgb':'unchanged-bytes'})
+    clock=itertools.count()
+    monkeypatch.setattr(inference.time,'perf_counter',lambda:next(clock)*.1)
+    result=pipe.predict(7,[*START_DEG,0.],{},codec='rgb_zlib',seed=42)
+    transport=result['transport']
+    stages=['encode_s','serialize_s','write_s','response_wait_s','validate_s']
+    assert all(transport[name]==pytest.approx(.1) for name in stages)
+    assert sum(transport[name] for name in stages)==pytest.approx(transport['roundtrip_s'])
+    packet=json.loads(pipe.process.stdin.getvalue())
+    assert packet['images']=={'global_rgb':'unchanged-bytes'}
+    assert packet['id']==7 and packet['seed']==42 and packet['codec']=='rgb_zlib'
+    assert transport['request_bytes']==len(pipe.process.stdin.getvalue().encode())
+
+
 def test_failed_shadow_never_gets_motion(tmp_path,monkeypatch):
     import json
     import numpy as np

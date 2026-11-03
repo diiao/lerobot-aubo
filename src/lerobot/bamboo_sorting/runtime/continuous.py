@@ -268,6 +268,12 @@ def infer(state, index, observed_state, images, metadata=None):
         result = state.pipe.predict(index, observed_state, images, codec="rgb_zlib")
     else:
         result = state.pipe.predict(index, observed_state, images)
+    if 'transport' in result:
+        # Persist even if the servo stops before consuming this future. The
+        # accepted-prediction trace alone otherwise loses the delayed request.
+        log(state.trace, {'inference_request_completed': {'index': index,
+            'completed_at': time.perf_counter(), 'target_input': metadata,
+            'transport': result['transport'], 'remote_processing_s': result.get('inference_s')}})
     if index % 5 == 0:
         import cv2
         for name, img in images.items():

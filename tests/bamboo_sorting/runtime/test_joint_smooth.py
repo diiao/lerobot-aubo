@@ -87,6 +87,20 @@ def chunk_response(close_at=None):
         'action_chunk':[r.copy() for r in chunk],'raw_action_chunk':[r.copy() for r in chunk]}
 
 
+def test_inference_worker_records_transport_before_future_is_consumed():
+    from types import SimpleNamespace
+    from lerobot.bamboo_sorting.runtime import continuous
+    result=dict(transport=dict(roundtrip_s=.8,response_wait_s=.7),inference_s=.16)
+    state=SimpleNamespace(motion_tracker=None,target_mode=False,config={'lossless_images':True},
+        pipe=SimpleNamespace(predict=lambda *a,**kw:result),trace=io.StringIO())
+    # No controller or future consumer exists: completion evidence must still
+    # survive a control-side timeout while this request was running.
+    assert continuous.infer(state,1,[*START_DEG,0.],{}) is result
+    receipt=json.loads(state.trace.getvalue())['inference_request_completed']
+    assert receipt['index']==1 and receipt['transport']==result['transport']
+    assert receipt['remote_processing_s']==.16
+
+
 def test_camera_pause_tolerance_preserves_skew_and_total_age_bounds():
     state=[*START_DEG,0]
     args=dict(action=state,state=state,tcp=[.2,-.5,.3],target_tcp=[.2,-.5,.3],

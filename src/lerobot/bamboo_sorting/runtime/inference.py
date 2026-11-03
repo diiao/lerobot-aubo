@@ -72,7 +72,9 @@ class InferencePipe:
             args.extend(['--target-segmentation-checkpoint', str(segmentation_checkpoint)])
         if task is not None:
             args.extend(['--task', task])
-        self.process = subprocess.Popen(['ssh', '-T', 'gpu', shlex.join(args)], stdin=subprocess.PIPE,
+        # Compress the base64/JSON wire without changing decoded RGB or the
+        # worker protocol. This affects only this connection, not SSH config.
+        self.process = subprocess.Popen(['ssh', '-T', '-C', 'gpu', shlex.join(args)], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1)
         try:
             ready = self.receive(120)
@@ -135,9 +137,12 @@ class InferencePipe:
             packet['seed'] = seed  # Offline paired comparison only; live requests omit it.
         encoded_at = time.perf_counter()
         wire = json.dumps(packet) + '\n'
+        serialized_at = time.perf_counter()
         self.process.stdin.write(wire)
         self.process.stdin.flush()
+        sent_at = time.perf_counter()
         result = self.receive(self.request_timeout_s)
+        received_at = time.perf_counter()
         if 'error' in result:
             evidence = result.get('target_evidence', {})
             if (result.get('error_code') != TargetForegroundMissing.code
@@ -188,8 +193,12 @@ class InferencePipe:
         else:
             finite_vector(result['raw_action'], 7, 'raw model action')
             finite_vector(result['action'], 7, 'decoded model action')
+        validated_at = time.perf_counter()
         result['transport'] = {'codec': codec, 'request_bytes': len(wire.encode()),
-            'encode_s': encoded_at - start, 'roundtrip_s': time.perf_counter() - start}
+            'ssh_compression': True, 'encode_s': encoded_at - start,
+            'serialize_s': serialized_at - encoded_at, 'write_s': sent_at - serialized_at,
+            'response_wait_s': received_at - sent_at, 'validate_s': validated_at - received_at,
+            'roundtrip_s': validated_at - start}
         return result
 
     def close(self):

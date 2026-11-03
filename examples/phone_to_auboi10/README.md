@@ -813,6 +813,8 @@ Ctrl+C、异常及超时进入停止伺服流程，不自动释放或归位。
 
 ### 目标条件模型单次真机试验
 
+推理连接启用仅作用于本次SSH进程的压缩，保留`rgb_zlib`无损RGB和原有worker协议。`trace.jsonl`新增`inference_request_completed`记录，保存编码、JSON序列化、发送、等待响应和校验的分段耗时；即使控制循环在等待期间停止，已完成请求仍会在收尾时留下记录。预测年龄仍从原图像时间戳计算，不由压缩或新日志延长。有限保存图像对照及现场验证边界见[传输修复证据](EVIDENCE.md#三根现场实验进程)。
+
 `run_joint_smooth.py --model target-stack`在2px时默认使用60000步三四根SmolVLA，并自动使用多目标可见种子分离；早期三根30000步模型须显式`--target-stack-model original`。当前21000步π0.5须显式`--target-stack-model pi05-fp32-21000`；`pi05-29000`仍指旧模型。独立环境和操作入口见[π0.5部署](#π05-三根与四根训练准备)。`--target-id`只抓一个指定目标；`--target-sequence A B C`依次抓放三根，两次之间自动归位，最后一根结束后停止。`target-pair`保留旧成对模型。`target-stack`使用第二轮混合微调第14轮best分割模型，`target-pair`继续用旧baseline；各模型、服务身份与历史验收见[EVIDENCE](EVIDENCE.md#三根堆叠正式采集)。
 
 <a id="三根四根模型试用准备"></a>
