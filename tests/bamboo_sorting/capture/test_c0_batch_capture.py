@@ -215,7 +215,8 @@ def test_importing_formal_batch_entry_is_hardware_free() -> None:
     assert state == {"forbidden": [], "threads": [], "sockets": []}
 
 
-def test_formal_batch_waits_for_both_cameras_to_advance() -> None:
+@pytest.mark.parametrize("stale_wait_s", [0.01, 0.3])
+def test_formal_batch_waits_for_both_cameras_to_advance(stale_wait_s) -> None:
     script = _load_batch_script()
     timestamps = iter(
         [
@@ -235,7 +236,7 @@ def test_formal_batch_waits_for_both_cameras_to_advance() -> None:
         read_observation=read_observation,
         read_timestamps=lambda: current["timestamps"],
         previous_camera_timestamps=previous,
-        monotonic=iter([0.0, 0.01]).__next__,
+        monotonic=iter([0.0, stale_wait_s]).__next__,
         sleep=lambda _seconds: None,
     )
 
@@ -243,11 +244,13 @@ def test_formal_batch_waits_for_both_cameras_to_advance() -> None:
     assert previous == {"global_rgb": 1.04, "grasp_rgb": 2.04}
 
 
-def test_formal_batch_fails_closed_when_camera_does_not_advance() -> None:
+@pytest.mark.parametrize("timeout_s", [0.2, None])
+def test_formal_batch_fails_closed_when_camera_does_not_advance(timeout_s) -> None:
     script = _load_batch_script()
     previous = {"global_rgb": 1.0, "grasp_rgb": 2.0}
 
-    with pytest.raises(C0BatchCaptureError, match="global_rgb"):
+    deadline_s = 0.5 if timeout_s is None else timeout_s
+    with pytest.raises(C0BatchCaptureError, match=rf"within {deadline_s:.3f}s: global_rgb"):
         script.read_fresh_c0_observation(
             read_observation=lambda: {"attempt": 1},
             read_timestamps=lambda: {
@@ -256,8 +259,8 @@ def test_formal_batch_fails_closed_when_camera_does_not_advance() -> None:
                 "robot_state": 3.0,
             },
             previous_camera_timestamps=previous,
-            timeout_s=0.2,
-            monotonic=iter([0.0, 0.2]).__next__,
+            **({"timeout_s": timeout_s} if timeout_s is not None else {}),
+            monotonic=iter([0.0, deadline_s]).__next__,
             sleep=lambda _seconds: None,
         )
 

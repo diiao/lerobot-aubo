@@ -411,9 +411,12 @@ def test_fixed_j5_data_and_checkpoint_are_not_reinterpreted_as_seven_dimensions(
         SmolVLAJointOfflineAdapter(Mock(config=make_joint_smolvla_config()), None, None, contract=old_contract)
 
 
-@pytest.mark.parametrize("failure,target_demonstrations", [(None, False), ("capture", False), ("finalize", False),
-                                                         (None, True), (None, "stack")])
-def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch, failure, target_demonstrations):
+@pytest.mark.parametrize("failure,target_demonstrations,split", [
+    (None, False, "train"), ("capture", False, "train"), ("finalize", False, "train"),
+    (None, True, "train"), (None, "stack", "train"), (None, "local", "train"),
+    (None, "local", "validation"), (None, "local", "test"),
+])
+def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch, failure, target_demonstrations, split):
     """Run entry callbacks with fake devices; prompts must own stdin exclusively."""
     import sys
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -423,6 +426,9 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     from lerobot.utils import control_utils
 
     entry = _entry()
+    is_stack = target_demonstrations in ("stack", "local")
+    scene_id = f"la-{split}-001" if target_demonstrations == "local" else "p-028"
+    scene_input = ("1" if split == "validation" else "001") if target_demonstrations == "local" else "28"
     calls, listeners = [], []
     fake = _robot()
     fake.robot_interface.getMotionControl().moveJoint.return_value = 0
@@ -438,7 +444,7 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
     monkeypatch.setattr(teleop_phone, "Phone", lambda config: SimpleNamespace(
         connect=lambda: None, is_connected=True,
         disconnect=lambda: calls.append("phone_disconnect")))
-    monkeypatch.setattr(entry, "read_fresh_c0_observation", lambda **kwargs: None)
+    monkeypatch.setattr(entry, "read_fresh_c0_observation", lambda **kwargs: _observation())
     monkeypatch.setattr(entry, "return_to_normal_start", lambda robot: True)
 
     def create(**kwargs):
@@ -448,16 +454,19 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
         return Dataset(kwargs["root"])
     monkeypatch.setattr(LeRobotDataset, "create", create)
 
-    def start_listener(events=None):
+    def start_listener(events=None, **kwargs):
         events = {} if events is None else events
-        events.update(exit_early=False, return_to_start=False, stop_recording=False, rerecord_episode=False)
+        if kwargs.get("enable_return_to_start") is False:
+            assert kwargs.get("reset_events") is False
+        if kwargs.get("reset_events", True):
+            events.update(exit_early=False, return_to_start=False, stop_recording=False, rerecord_episode=False)
         listener = SimpleNamespace(active=True, events=events)
         listener.stop = lambda: setattr(listener, "active", False)
         listeners.append(listener)
         return listener, events
     monkeypatch.setattr(control_utils, "init_keyboard_listener", start_listener)
-    answers = iter(["", "  ", "28", "", "1", "1", "3", "invalid", "1", "p-028", "s-002", "2", "2", "2"]
-                   if target_demonstrations == "stack" else
+    answers = iter(["", "  ", scene_input, "", "1", "1", "3", "invalid", "1", scene_id, "s-002", "2", "2", "2"]
+                   if is_stack else
                    ["", "  ", "t-001", "", "s-001", "invalid", "1", "t-001", "s-002", "2"]
                    if target_demonstrations else
                    ["", "  ", "train-r-scene", "", "ruler B", "invalid", "1", "train-r-scene-2", "ruler C", "2"])
@@ -472,16 +481,27 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
         active[0].events.update(return_to_start=True, exit_early=True)
     monkeypatch.setattr(entry.time, "sleep", press_keys)
 
+    def prepare_loop(**kwargs):
+        assert kwargs["dataset"] is None and kwargs["observer"] is None
+        assert kwargs["control_time_s"] == float("inf")
+        calls.append("unrecorded_preparation")
+    monkeypatch.setattr(lerobot_record, "record_loop", prepare_loop)
+
     def record(**kwargs):
         lifecycle = kwargs["lifecycle"]
         for index in range(2):
             lifecycle.episode_frame_observer()
             metadata = lifecycle.active["metadata"]
-            if target_demonstrations == "stack":
-                assert metadata["scene_id"] == "p-028"
+            if is_stack:
+                assert metadata["scene_id"] == scene_id
+                assert metadata["split"] == split
                 assert metadata["target_id"] == ["s-001", "s-002"][index]
                 assert metadata["pick_step"] == index + 1
                 assert metadata["available_target_count"] == [3, 2][index]
+                if target_demonstrations == "local":
+                    assert metadata["demo_scope"] == "local_alignment"
+                    assert "start_pose_group" not in metadata
+                    assert calls.count("unrecorded_preparation") == index + 1
             elif target_demonstrations:
                 assert metadata["scene_id"] == "t-001"
                 assert metadata["target_id"] == ["s-001", "s-002"][index]
@@ -495,7 +515,7 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
                 calls.append("capture_failure")
                 raise RuntimeError("capture failed")
             outcome = lifecycle.outcome_provider(index)
-            if target_demonstrations == "stack":
+            if is_stack:
                 assert outcome["human_outcome"] == ["single_success", "empty"][index]
                 assert outcome["target_outcome"]["neighbor_disturbed"] is None
             else:
@@ -514,9 +534,11 @@ def test_entry_keyboard_ownership_and_stop_before_finalize(tmp_path, monkeypatch
             raise RuntimeError("finalize failed")
     monkeypatch.setattr(lerobot_record, "finalize_recorded_dataset", finalize)
     args = ["--dataset-root", str(tmp_path / "data"), "--evidence-root", str(tmp_path / "evidence"),
-            "--num-episodes", "2", "--split", "train", "--record"]
-    if target_demonstrations == "stack":
+            "--num-episodes", "2", "--split", split, "--record"]
+    if is_stack:
         args.append("--stack-demonstrations")
+        if target_demonstrations == "local":
+            args += ["--demo-scope", "local_alignment"]
     elif target_demonstrations:
         args.append("--target-demonstrations")
     if failure:

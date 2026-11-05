@@ -1,5 +1,8 @@
 """Offline-only 7D legacy-teleop AUBO SmolVLA adapter; no robot access or execution."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import torch
 
@@ -46,6 +49,53 @@ def make_joint_smolvla_config(*, device="cpu", target_conditioned=False):
         adapt_to_pi_aloha=False, use_delta_joint_actions_aloha=False,
         push_to_hub=False,
     )
+
+
+def load_joint_smolvla_processors(path, config, *, contract):
+    """Continue an AUBO checkpoint with its saved normalization and inverse.
+
+    Only device and tokenizer cache location may change. New demonstration
+    statistics must not silently redefine what the pretrained outputs mean.
+    """
+    from lerobot.processor import PolicyProcessorPipeline, NormalizerProcessorStep, UnnormalizerProcessorStep
+    from lerobot.processor.converters import (
+        batch_to_transition, transition_to_batch, policy_action_to_transition, transition_to_policy_action,
+    )
+
+    path = Path(path)
+    if json.loads((path / "aubo_joint_contract.json").read_text()) != contract:
+        raise ValueError("base checkpoint contract differs from requested continuation")
+    pre_config = json.loads((path / "policy_preprocessor.json").read_text())
+    overrides = {"device_processor": {"device": config.device}}
+    for step in pre_config["steps"]:
+        if step.get("registry_name") == "tokenizer_processor":
+            overrides["tokenizer_processor"] = {"tokenizer_name": config.vlm_model_name}
+    pre = PolicyProcessorPipeline.from_pretrained(path, "policy_preprocessor.json", local_files_only=True,
+        overrides=overrides, to_transition=batch_to_transition, to_output=transition_to_batch)
+    post = PolicyProcessorPipeline.from_pretrained(path, "policy_postprocessor.json", local_files_only=True,
+        to_transition=policy_action_to_transition, to_output=transition_to_policy_action)
+    normalizers = [s for s in pre.steps if isinstance(s, NormalizerProcessorStep)]
+    unnormalizers = [s for s in post.steps if isinstance(s, UnnormalizerProcessorStep)]
+    if len(normalizers) != 1 or len(unnormalizers) != 1:
+        raise ValueError("base checkpoint requires one matched normalizer and unnormalizer")
+    normalizer, unnormalizer = normalizers[0], unnormalizers[0]
+    if (normalizer.features != {**config.input_features, **config.output_features}
+            or unnormalizer.features != config.output_features
+            or normalizer.norm_map != config.normalization_mapping
+            or unnormalizer.norm_map != config.normalization_mapping
+            or normalizer.eps != unnormalizer.eps
+            or normalizer.normalize_observation_keys is not None):
+        raise ValueError("base checkpoint processor features/normalization differ from AUBO configuration")
+    # Read effective tensors, not a potentially rounded/stale JSON stats file.
+    saved = normalizer.state_dict()
+    inverse = unnormalizer.state_dict()
+    stats = {key: {name: saved[f"{key}.{name}"].tolist() for name in ("mean", "std", "min", "max")}
+             for key in ("observation.state", "action")}
+    require_joint_normalization_stats(stats)
+    if any(f"action.{name}" not in inverse or not torch.equal(saved[f"action.{name}"], inverse[f"action.{name}"])
+           for name in ("mean", "std", "min", "max")):
+        raise ValueError("base checkpoint action normalization and inverse disagree")
+    return pre, post, stats
 
 
 class SmolVLAJointOfflineAdapter:

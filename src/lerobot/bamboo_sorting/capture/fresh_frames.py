@@ -14,17 +14,24 @@ from .c0_batch_capture import C0BatchCaptureError
 from .c0_smoke_capture import C0_SMOKE_IMAGE_KEYS
 
 
+CAPTURE_FRESH_FRAME_TIMEOUT_S = 0.5
+
+
 def read_fresh_c0_observation(
     *,
     read_observation: Callable[[], dict[str, Any]],
     read_timestamps: Callable[[], object],
     previous_camera_timestamps: dict[str, float],
-    timeout_s: float = 0.2,
+    timeout_s: float = CAPTURE_FRESH_FRAME_TIMEOUT_S,
     poll_interval_s: float = 0.002,
     monotonic: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
-    """Read until both formal cameras have a frame newer than the last saved read."""
+    """Wait through brief stalls, requiring both cameras to advance before return.
+
+    This capture-only wait does not relax camera frame-age checks or return
+    repeated frames. The caller sends no next action while waiting here.
+    """
 
     deadline = monotonic() + timeout_s
     stale_streams: list[str] = []

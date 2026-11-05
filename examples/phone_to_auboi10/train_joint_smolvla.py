@@ -30,9 +30,18 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--video-backend", choices=("pyav", "torchcodec"), default="pyav")
-    parser.add_argument("--learning-rate", type=float, help="Override optimizer peak learning rate for an explicit continuation")
+    parser.add_argument("--learning-rate", type=float, help="Override optimizer peak learning rate")
+    parser.add_argument("--local-demo-fraction", type=float,
+                        help="Expected sampling fraction for local_alignment (e.g. 0.5); remaining mass goes to full demos")
+    parser.add_argument("--normalization-source", choices=("train_data", "base_checkpoint"), default="train_data",
+                        help="base_checkpoint preserves saved AUBO processors for continuation; pooled new stats remain diagnostic")
     parser.add_argument("--checkpoint-steps", type=int, nargs="*", default=[],
                         help="Save intermediate weights at these training updates; final is always saved")
+    parser.add_argument("--validation-every", type=int, default=0,
+                        help="Fixed held-out checks every N updates; retain verified best and final only (0 disables)")
+    parser.add_argument("--validation-points-per-phase", type=int, default=8)
+    parser.add_argument("--validation-seeds", type=int, nargs="+",
+                        help="Fixed paired flow-noise seeds; default is seed, seed+1, seed+2")
     args = parser.parse_args(argv)
     if args.target_outline_width_px != 2 and not args.target_conditioned:
         parser.error("target-outline-width-px requires --target-conditioned")
@@ -40,11 +49,29 @@ def parse_args(argv=None):
         parser.error("steps and batch-size must be positive")
     if args.learning_rate is not None and (not math.isfinite(args.learning_rate) or args.learning_rate <= 0):
         parser.error("learning-rate must be finite and positive")
+    if args.local_demo_fraction is not None:
+        if not math.isfinite(args.local_demo_fraction) or not 0 < args.local_demo_fraction < 1:
+            parser.error("local-demo-fraction must be finite and strictly between 0 and 1")
+        if args.data_manifest is None or args.stage not in ("plan", "preflight", "train"):
+            parser.error("local-demo-fraction requires a manifest and plan/preflight/train")
+    if args.normalization_source == "base_checkpoint" and args.stage not in ("plan", "preflight", "train"):
+        parser.error("base_checkpoint normalization requires plan/preflight/train; evaluation uses its saved processors")
     if (len(set(args.checkpoint_steps)) != len(args.checkpoint_steps)
             or any(step < 1 or step >= args.steps for step in args.checkpoint_steps)):
         parser.error("checkpoint-steps must be unique positive updates before the final step")
     if args.checkpoint_steps and args.stage not in ("plan", "train"):
         parser.error("checkpoint-steps requires plan/train")
+    if args.validation_every < 0 or args.validation_points_per_phase < 2:
+        parser.error("validation-every must be nonnegative and validation-points-per-phase at least 2")
+    if args.validation_seeds is None:
+        args.validation_seeds = [args.seed, args.seed+1, args.seed+2]
+    if len(set(args.validation_seeds)) != len(args.validation_seeds):
+        parser.error("validation-seeds must be distinct")
+    if args.validation_every:
+        if args.stage not in ("plan", "train") or not args.target_conditioned or not args.data_manifest:
+            parser.error("periodic selection requires target-conditioned manifest plan/train")
+        if args.checkpoint_steps:
+            parser.error("periodic best/final retention cannot also retain explicit checkpoint-steps")
     if args.prepared_data is not None and (args.data_manifest is None or args.stage not in ("plan", "train", "evaluate")):
         parser.error("prepared-data requires a manifest and plan/train/evaluate")
     if args.target_conditioned and args.stage in ("preflight", "train", "evaluate") and args.data_manifest is None:
@@ -87,11 +114,15 @@ def main(argv=None):
     plan = {k: str(v.resolve()) if isinstance(v, Path) else v for k, v in vars(args).items()}
     plan.update(fixed_joint_targets_deg={}, state_action_names=["J1", "J2", "J3", "J4", "J5", "J6", "gripper_pos"],
                 chunk_size=50, n_action_steps=1, smoke_optimizer_steps=0, policy_execution_authorized=False)
+    if args.validation_every:
+        from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import SELECTION_RULE
+        plan.update(selection_rule=SELECTION_RULE, checkpoint_retention="verified_best_and_final",
+                    automatic_checkpoint_deletion="superseded best owned by this output only", early_stopping=False)
     print(json.dumps(plan, indent=2, ensure_ascii=False))
     if args.stage == "plan":
         return 0
     from lerobot.bamboo_sorting.policy.joint_training import (
-        prepare_training_data, prepare_training_manifest, read_prepared_training_data, write_json,
+        prepare_training_data, prepare_training_manifest, read_prepared_training_data, training_sampling_plan, write_json,
     )
     prepared = None
     if args.stage != "smoke":
@@ -105,8 +136,12 @@ def main(argv=None):
             prepared = prepare_training_data(args.train_root, args.train_evidence,
                 args.validation_root, args.validation_evidence,
                 train_source_root=args.train_source_root, validation_source_root=args.validation_source_root)
+    sampling = training_sampling_plan(prepared["train"], args.local_demo_fraction) \
+        if args.stage in ("preflight", "train") else None
     args.output.mkdir(parents=True, exist_ok=False)
     write_json(args.output / "plan.json", plan)
+    if sampling is not None:
+        write_json(args.output / "training_sampling.json", {**sampling, "seed": args.seed})
     if prepared is not None:
         if args.target_conditioned:
             from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
@@ -134,8 +169,10 @@ def run_model(args, prepared):
     import torch
     from torch.utils.data import DataLoader
     from lerobot.bamboo_sorting.aubo_joint_contract import JOINT_DIM, GRIPPER_INDEX, JOINT_IMAGE_KEYS, JOINT_TASK, joint_contract_record
-    from lerobot.bamboo_sorting.policy.joint_training import prediction_metrics, write_json
-    from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import make_joint_smolvla_config, make_joint_smolvla_processors
+    from lerobot.bamboo_sorting.policy.joint_training import prediction_metrics, write_json, make_training_sampler
+    from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import (
+        make_joint_smolvla_config, make_joint_smolvla_processors, load_joint_smolvla_processors,
+    )
     from lerobot.bamboo_sorting.policy.smolvla_joint_adapter import SmolVLAJointOfflineAdapter
     if args.target_conditioned:
         from lerobot.bamboo_sorting.policy.joint_target_policy import (
@@ -163,14 +200,15 @@ def run_model(args, prepared):
         for key in ("torch", "transformers", "lerobot", "safetensors", "accelerate")})
     images = [f"observation.images.{name}" for name in image_keys]
 
-    def load_checkpoint(path):
+    def load_checkpoint(path, *, device=None):
         if json.loads((path / "aubo_joint_contract.json").read_text()) != contract_record():
             raise ValueError("checkpoint is not full-joint AUBO")
         cfg = PreTrainedConfig.from_pretrained(path, local_files_only=True)
-        cfg.device = args.device
+        device = args.device if device is None else device
+        cfg.device = device
         model = SmolVLAPolicy.from_pretrained(path, config=cfg, local_files_only=True, strict=True)
         pre = PolicyProcessorPipeline.from_pretrained(path, "policy_preprocessor.json",
-            overrides={"device_processor": {"device": args.device}},
+            overrides={"device_processor": {"device": device}},
             to_transition=batch_to_transition, to_output=transition_to_batch)
         post = PolicyProcessorPipeline.from_pretrained(path, "policy_postprocessor.json",
             to_transition=policy_action_to_transition, to_output=transition_to_policy_action)
@@ -182,8 +220,8 @@ def run_model(args, prepared):
         return load_prepared_dataset(prepared[which], video_backend=args.video_backend,
             target_outline_width_px=args.target_outline_width_px)
 
-    def loader(ds, shuffle=False):
-        return DataLoader(ds, batch_size=args.batch_size, shuffle=shuffle, num_workers=0,
+    def loader(ds, shuffle=False, sampler=None):
+        return DataLoader(ds, batch_size=args.batch_size, shuffle=shuffle, sampler=sampler, num_workers=0,
                           generator=torch.Generator().manual_seed(args.seed))
 
     def observation(raw):
@@ -197,8 +235,36 @@ def run_model(args, prepared):
         write_json(path / "aubo_joint_contract.json", contract_record())
         if prepared is not None:
             write_json(path / "data_preflight.json", prepared)
+        write_json(path / "normalization.json", normalization)
+        if args.stage == "train":
+            write_json(path / "training_sampling.json", json.loads((args.output / "training_sampling.json").read_text()))
         write_json(path / "training_progress.json", {"optimizer_step": step,
             "implicit_resume_supported": False, "policy_execution_authorized": False})
+
+    best_path = best_metrics = monitor_plan = validation_dataset = None
+
+    def verify_saved_best(path):
+        from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import isolated_evaluation
+        # A second GPU policy is unnecessary for checking saved tensors.
+        with isolated_evaluation(policy):
+            restored, restored_pre, restored_post = load_checkpoint(path, device="cpu")
+            original_state, restored_state = policy.state_dict(), restored.state_dict()
+            if original_state.keys() != restored_state.keys():
+                raise ValueError("saved best state dictionary keys differ")
+            for key, value in original_state.items():
+                saved = restored_state[key]
+                if value.dtype != saved.dtype or not torch.equal(value.detach().cpu(), saved.detach().cpu()):
+                    raise ValueError(f"saved best tensor differs: {key}")
+            for original_pipeline, restored_pipeline in ((pre, restored_pre), (post, restored_post)):
+                for original_step, restored_step in zip(original_pipeline.steps, restored_pipeline.steps, strict=True):
+                    left, right = original_step.state_dict(), restored_step.state_dict()
+                    if type(original_step) != type(restored_step) or left.keys() != right.keys():
+                        raise ValueError("saved best processor structure differs")
+                    if any(left[k].dtype != right[k].dtype or not torch.equal(left[k].cpu(), right[k].cpu()) for k in left):
+                        raise ValueError("saved best processor statistics differ")
+            del restored_state, original_state, restored, restored_pre, restored_post
+            gc.collect()
+        return {"strict_reload": True, "state_dict_equal": True, "processors_state_equal": True, "device": "cpu"}
 
     if args.stage == "evaluate":
         provenance = json.loads((args.checkpoint / "data_preflight.json").read_text())
@@ -212,6 +278,11 @@ def run_model(args, prepared):
         if cfg.type != "smolvla":
             raise ValueError("base model must be SmolVLA")
         joint_cfg = make_joint_smolvla_config(device=args.device, target_conditioned=args.target_conditioned)
+        if args.normalization_source == "base_checkpoint" and any(
+                getattr(cfg, name) != getattr(joint_cfg, name) for name in (
+                    "input_features", "output_features", "normalization_mapping", "action_representation",
+                    "adapt_to_pi_aloha", "use_delta_joint_actions_aloha")):
+            raise ValueError("base checkpoint must already use the requested absolute 7D AUBO configuration")
         for name in ("input_features", "output_features", "normalization_mapping", "device", "chunk_size",
                      "n_action_steps", "num_steps", "action_representation", "relative_action_stats",
                      "execution_loss_fraction", "adapt_to_pi_aloha", "use_delta_joint_actions_aloha", "push_to_hub"):
@@ -220,7 +291,6 @@ def run_model(args, prepared):
         cfg.vlm_model_name = str(args.vlm_path.resolve())
         if args.learning_rate is not None:
             cfg.optimizer_lr = args.learning_rate
-        policy = SmolVLAPolicy.from_pretrained(args.base_path, config=cfg, local_files_only=True, strict=True)
         if args.stage == "smoke":
             stats = {key: {"mean": [0] * GRIPPER_INDEX + [50], "std": [1] * GRIPPER_INDEX + [50],
                            "min": [-1] * GRIPPER_INDEX + [0], "max": [1] * GRIPPER_INDEX + [100]}
@@ -231,8 +301,17 @@ def run_model(args, prepared):
             raw["action"][:, 1:25, GRIPPER_INDEX] = 100
         else:
             stats = prepared["train_only_stats"]
-        pre, post = make_joint_smolvla_processors(cfg, stats, target_conditioned=args.target_conditioned)
+        # Preserve the new train-only measurements even when they are not the
+        # normalization actually used by the continued policy.
         write_json(args.output / "train_only_stats.json", stats)
+        if args.normalization_source == "base_checkpoint":
+            pre, post, stats = load_joint_smolvla_processors(args.base_path, cfg, contract=contract_record())
+        else:
+            pre, post = make_joint_smolvla_processors(cfg, stats, target_conditioned=args.target_conditioned)
+        normalization = {"source": args.normalization_source, "stats": stats,
+                         "base_checkpoint": str(args.base_path.resolve()) if args.normalization_source == "base_checkpoint" else None}
+        write_json(args.output / "normalization.json", normalization)
+        policy = SmolVLAPolicy.from_pretrained(args.base_path, config=cfg, local_files_only=True, strict=True)
         params = [p for p in policy.parameters() if p.requires_grad]
         policy.train()
         if args.stage == "smoke":
@@ -251,7 +330,19 @@ def run_model(args, prepared):
             del loss
         else:
             train_dataset = dataset("train")
-            batches = loader(train_dataset, shuffle=True)
+            if args.validation_every:
+                from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import (
+                    SELECTION_RULE, build_monitor_plan, evaluate_monitor, publish_best_checkpoint, selection_comparison,
+                )
+                validation_dataset = dataset("validation")
+                monitor_plan = build_monitor_plan(prepared["validation"], points_per_phase=args.validation_points_per_phase)
+                write_json(args.output / "validation_plan.json", {
+                    **{k: v for k, v in monitor_plan.items() if k != "full_observations"},
+                    "full_validation_frames": len(validation_dataset), "seeds": args.validation_seeds,
+                    "rule": SELECTION_RULE, "validation_every": args.validation_every,
+                    "final_step_always_checked": True, "early_stopping": False})
+            sampler = make_training_sampler(prepared["train"], args.local_demo_fraction, seed=args.seed)
+            batches = loader(train_dataset, shuffle=sampler is None, sampler=sampler)
             optimizer = cfg.get_optimizer_preset().build(params)
             warmup = min(1000, max(1, args.steps // 10))
             def scale(step):
@@ -286,6 +377,28 @@ def run_model(args, prepared):
                     if step in args.checkpoint_steps:
                         save_checkpoint(args.output / "checkpoints" / f"step_{step:06d}", step)
                         print(f"checkpoint_saved step={step}", flush=True)
+                    if args.validation_every and (step % args.validation_every == 0 or step == args.steps):
+                        metrics = evaluate_monitor(policy, pre, post, validation_dataset, monitor_plan["observations"],
+                            batch_size=args.batch_size, seeds=args.validation_seeds)
+                        comparison = selection_comparison(metrics, best_metrics)
+                        destination = args.output / "validation" / f"step_{step:06d}"
+                        destination.mkdir(parents=True, exist_ok=False)
+                        write_json(destination / "metrics.json", metrics)
+                        if comparison["improved"]:
+                            metrics["guard_reference"] = {k: min(v, best_metrics.get("guard_reference", best_metrics["guards"])[k])
+                                if best_metrics else v for k, v in metrics["guards"].items()}
+                            best_path = publish_best_checkpoint(args.output, step, metrics, best_path,
+                                                                save_checkpoint, verify_saved_best)
+                            best_metrics = metrics
+                        decision = dict(optimizer_step=step, primary=metrics["primary"],
+                            primary_seed_std=metrics["primary_seed_std"], validation_loss=metrics["validation_loss"],
+                            guards=metrics["guards"], comparison=comparison, best_checkpoint=str(best_path),
+                            best_primary=best_metrics["primary"], training_continues=True)
+                        write_json(destination / "decision.json", decision)
+                        with (args.output / "validation_history.jsonl").open("a") as history:
+                            history.write(json.dumps(decision, allow_nan=False) + "\n")
+                        print(f"validation step={step} primary={metrics['primary']:.6f} "
+                              f"new_best={comparison['improved']} blocked={comparison['blocked_guards']}", flush=True)
             torch.save({"step": args.steps, "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()},
                        args.output / "training_state.pt")
             del optimizer, scheduler, loss
@@ -310,14 +423,21 @@ def run_model(args, prepared):
                 "optimizer_steps": 0, "physical_success_verified": False})
             return
     states, targets, predictions, episodes, frames, source_indices, losses = [], [], [], [], [], [], []
+    full_chunks, expert_chunks, full_padding = [], [], []
     validation_sources = prepared["validation"].get("sources", [prepared["validation"]])
     source_boundaries = np.cumsum([source["frames"] for source in validation_sources])
     observed_frames = 0
     policy.eval()
+    if args.validation_every:
+        torch.manual_seed(args.seed)
     with torch.inference_mode():
-        for raw in loader(dataset("validation")):
+        for raw in loader(validation_dataset if validation_dataset is not None else dataset("validation")):
             loss, _ = policy(pre(raw), reduction="none")
-            predicted = post(policy.predict_action_chunk(pre(observation(raw))))[:, 0].cpu().numpy()
+            chunks = post(policy.predict_action_chunk(pre(observation(raw)))).cpu().numpy()
+            predicted = chunks[:, 0]
+            if args.validation_every:
+                full_chunks.extend(chunks); expert_chunks.extend(raw["action"].numpy())
+                full_padding.extend(raw["action_is_pad"].numpy())
             if not torch.isfinite(loss).all() or not np.isfinite(predicted).all():
                 raise ValueError("nonfinite held-out results")
             states.extend(raw["observation.state"].numpy())
@@ -347,13 +467,49 @@ def run_model(args, prepared):
         mask = source_indices_array == index
         result = prediction_metrics(states_array[mask], targets_array[mask], predictions_array[mask])
         result.update(source_index=index, root=source["root"],
+                      demo_scope=source.get("demo_scope", "full"),
                       validation_loss=float(losses_array[mask].mean()),
                       prediction="first_action_from_saved_expert_observations",
                       policy_execution_authorized=False)
         by_source.append(result)
     write_json(args.output / "validation_by_source.json", {"sources": by_source,
         "physical_success_verified": False, "policy_execution_authorized": False})
-    write_json(args.output / "complete.json", {"stage": args.stage, "completed": True,
+    by_scope = {}
+    for scope in sorted({source.get("demo_scope", "full") for source in validation_sources}):
+        indices = [i for i, source in enumerate(validation_sources) if source.get("demo_scope", "full") == scope]
+        mask = np.isin(source_indices_array, indices)
+        result = prediction_metrics(states_array[mask], targets_array[mask], predictions_array[mask])
+        result["validation_loss"] = float(losses_array[mask].mean())
+        by_scope[scope] = result
+    write_json(args.output / "validation_by_demo_scope.json", {"groups": by_scope,
+        "prediction": "first_action_from_saved_expert_observations",
+        "physical_success_verified": False, "policy_execution_authorized": False})
+    selection_result = {}
+    if args.validation_every:
+        from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import score_action_chunks
+        full_rows = monitor_plan["full_observations"]
+        final_selection = score_action_chunks(full_rows, states, expert_chunks, full_chunks, full_padding)
+        final_selection.update(seeds=[args.seed], frames=len(full_rows), coverage=[(
+            r["demo_scope"], r["scene_id"], r["source_index"], r["episode_index"], r["frame_index"], r["phase"])
+            for r in full_rows])
+        folder = args.output / "full_validation"
+        folder.mkdir()
+        write_json(folder / "final.json", final_selection)
+        del policy, pre, post
+        gc.collect()
+        if args.device == "cuda":
+            torch.cuda.empty_cache()
+        policy, pre, post = load_checkpoint(best_path)
+        best_selection = evaluate_monitor(policy, pre, post, validation_dataset, full_rows,
+                                          batch_size=args.batch_size, seeds=[args.seed])
+        write_json(folder / "best.json", best_selection)
+        write_json(folder / "comparison.json", dict(
+            final_vs_best=selection_comparison(final_selection, best_selection),
+            selected_by="fixed monitor, three paired seeds; full validation is a separate diagnostic",
+            best_checkpoint=str(best_path), final_checkpoint=str(checkpoint), automatic_deployment=False))
+        selection_result = dict(best_checkpoint=str(best_path), final_checkpoint=str(checkpoint),
+                                checkpoint_retention="verified_best_and_final", early_stopping=False)
+    write_json(args.output / "complete.json", {"stage": args.stage, "completed": True, **selection_result,
         "policy_execution_authorized": False, "physical_success_verified": False})
 
 

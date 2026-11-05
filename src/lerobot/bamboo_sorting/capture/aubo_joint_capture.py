@@ -20,6 +20,7 @@ from .c0_gripper_capture_journal import C0GripperPendingCaptureJournalV1
 from ..joint_stack_metadata import (
     HUMAN_OUTCOMES, stack_metadata, validate_stack_sequence, validate_target_outcome,
 )
+from ..joint_demo_metadata import demo_metadata
 
 
 def write_joint_json(path, record):
@@ -143,6 +144,7 @@ class JointCaptureSession:
         if not isinstance(metadata, dict) or any(not isinstance(metadata.get(k), str) or not metadata[k].strip()
                                                for k in ("scene_id", identity_field)):
             raise ValueError(f"scene_id and {identity_field} are required")
+        metadata = {**metadata, **demo_metadata(metadata)}
         validate_stack_sequence([a for a in self.attempts if a["status"] == "saved_pending_finalize"]
                                 + [{"metadata": metadata}])
         self.active = {"episode_index": self.saved_count, "metadata": copy.deepcopy(metadata),
@@ -170,6 +172,11 @@ class JointCaptureSession:
     def save_episode(self, *, dataset, episode_index, **_):
         attempt = self._require_active(dataset, episode_index)
         attempt["observer"].validate_buffer(dataset)
+        if attempt["metadata"]["demo_scope"] == "local_alignment":
+            # Use the first saved observation, not an earlier preparation pose.
+            attempt["metadata"].update(demo_metadata({**attempt["metadata"], "initial_state":
+                np.asarray(dataset.episode_buffer["observation.state"][0], dtype=np.float32).tolist()},
+                require_initial_state=True))
         outcome = self.outcome_provider(episode_index)
         if stack_metadata(attempt["metadata"]):
             if not isinstance(outcome, dict):

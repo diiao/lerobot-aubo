@@ -509,7 +509,7 @@ def record_loop(
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
-        if events["exit_early"]:
+        if events.get("stop_recording") or events["exit_early"]:
             events["exit_early"] = False
             break
 

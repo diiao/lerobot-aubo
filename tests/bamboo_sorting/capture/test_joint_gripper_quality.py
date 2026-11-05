@@ -105,8 +105,9 @@ def test_suction_coordinate_receives_gradient_and_padding_does_not():
     torch.testing.assert_close(restored[..., 7:], torch.full_like(restored[..., 7:], .5))
 
 
-@pytest.mark.parametrize("stack_fields", [None, (1, 2), (7, 6), (12, 4)])
-def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_path, stack_fields):
+@pytest.mark.parametrize("stack_fields,local_demo", [(None, False), ((1, 2), False), ((7, 6), False),
+                                                    ((12, 4), False), ((1, 2), True), ((1, 2), "legacy_group")])
+def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_path, stack_fields, local_demo):
     """Real record loop, normalization stats and video files; fake hardware only."""
     import av
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -142,22 +143,39 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     pipeline = RobotProcessorPipeline(steps=[AuboGripperVelocityToPosition(latch=True)],
         to_transition=robot_action_observation_to_transition, to_output=transition_to_robot_action)
     velocities = [0, 1, 0, 0, -1, 0]
-    events, sent = {"exit_early": False}, []
+    events, sent = dict(exit_early=False, stop_recording=False, rerecord_episode=False, return_to_start=False), []
+    stop_at = len(velocities)
     def observation():
         robot.last_c0_sensor_timestamps = dict.fromkeys(("robot_state", "global_rgb", "grasp_rgb"),
                                                         1.0 + len(sent) / 25)
-        return {**_observation(), "gripper_pos": 100. if robot.is_suction_on else 0.}
+        return {**_observation(), "J1": float(len(sent)), "gripper_pos": 100. if robot.is_suction_on else 0.}
     robot.get_observation = observation
     actual_send = robot.send_action
     def send(command):
         result = actual_send(command)
         sent.append(result)
-        events["exit_early"] = len(sent) == len(velocities)
+        events["exit_early"] = len(sent) == stop_at
         return result
     robot.send_action = send
     dataset = LeRobotDataset.create(repo_id="local/joint-test", root=tmp_path / "data", fps=25,
         features=joint_dataset_features(), robot_type="aubo_i10", use_videos=True)
     write_joint_json(dataset.root / "meta/aubo_joint_contract.json", joint_contract_record())
+    if local_demo:
+        from lerobot.bamboo_sorting.capture.joint_local_preparation import prepare_local_start
+        metadata_provider = session.prepare_episode
+        def prepare(index):
+            nonlocal stop_at
+            stop_at = 2
+            prepare_local_start(robot=robot, teleop=FakeTeleop([
+                {**_phone_target(), "ee.gripper_vel": v} for v in (1, -1)]), events=events,
+                teleop_action_processor=PhoneToJointAction(pipeline, robot),
+                robot_action_processor=entry.IdentityAction(), robot_observation_processor=entry.learning_observation,
+                record_loop=record_loop)
+            assert dataset.episode_buffer["size"] == 0
+            stop_at = 2 + len(velocities)
+            return {**metadata_provider(index), "demo_scope": "local_alignment",
+                    **({"start_pose_group": "combined"} if local_demo == "legacy_group" else {})}
+        session.prepare_episode = prepare
     record_loop(robot=robot, events=events, fps=25, dataset=dataset,
         teleop=FakeTeleop([{**_phone_target(), "ee.gripper_vel": v} for v in velocities]),
         teleop_action_processor=PhoneToJointAction(pipeline, robot),
@@ -169,8 +187,18 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
     report = audit_joint_dataset(dataset.root, tmp_path / "evidence")
     assert report["audit_passed"] and report["gripper_quality_passed"]
     assert report["supervised_candidate_episodes"] == [0]
-    assert [a["gripper_pos"] for a in sent] == [0, 100, 100, 100, 0, 0]
-    assert writes == [(3, False), (2, True), (2, False), (3, True)]
+    assert [a["gripper_pos"] for a in sent] == ([100, 0] if local_demo else []) + [0, 100, 100, 100, 0, 0]
+    assert writes == [(3, False), (2, True), (2, False), (3, True)] * (2 if local_demo else 1)
+    if local_demo:
+        captured = report["episodes"][0]
+        assert captured["demo_scope"] == "local_alignment"
+        if local_demo == "legacy_group":
+            assert captured["start_pose_group"] == "combined"
+        else:
+            assert "start_pose_group" not in captured
+        assert captured["initial_state"] == [2., 0., 0., 0., 90., 0., 0.]
+        assert captured["gripper_quality"]["activate_frames"] == [1]
+        assert captured["gripper_quality"]["release_frames"] == [4]
     videos = list(dataset.root.glob("videos/*/chunk-*/*.mp4"))
     assert len(videos) == 2
     for path in videos:
@@ -230,3 +258,9 @@ def test_real_dataset_roundtrip_with_latched_suction_and_mocked_controller(tmp_p
         failed = audit_joint_dataset(dataset.root, evidence)
         assert failed['supervised_candidate_episodes'] == []
         assert failed['stack_summary']['target_choice_eligible_episodes'] == [0]
+        if local_demo:
+            stored['attempts'][0]['metadata']['initial_state'][0] += 1
+            (evidence/'session.json').write_text(json.dumps(stored))
+            (evidence/'episode-0000.json').write_text(json.dumps(stored['attempts'][0]))
+            with pytest.raises(ValueError, match='initial_state differs'):
+                audit_joint_dataset(dataset.root, evidence)

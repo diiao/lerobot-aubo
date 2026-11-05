@@ -217,6 +217,7 @@ def init_keyboard_listener(
     events: dict[str, bool] | None = None,
     *,
     enable_return_to_start: bool = True,
+    reset_events: bool = True,
 ):
     """
     Initializes a non-blocking keyboard listener for real-time user interaction.
@@ -229,16 +230,20 @@ def init_keyboard_listener(
         A tuple containing:
         - The `pynput.keyboard.Listener` instance, or `None` if in a headless environment.
         - A dictionary of event flags (e.g., `exit_early`) that are set by key presses.
+
+    Use reset_events=False when replacing a listener within the same session:
+    a pending stop request must survive that phase transition.
     """
     # Allow to exit early while recording an episode or resetting the environment,
     # by tapping the right arrow key '->'. This might require a sudo permission
     # to allow your terminal to monitor keyboard events.
     if events is None:
         events = {}
-    events["exit_early"] = False
-    events["rerecord_episode"] = False
-    events["stop_recording"] = False
-    events["return_to_start"] = False
+    for key in ("exit_early", "rerecord_episode", "stop_recording", "return_to_start"):
+        if reset_events:
+            events[key] = False
+        else:
+            events.setdefault(key, False)
 
     stdin_listener = _StdinHotkeyListener(
         events,

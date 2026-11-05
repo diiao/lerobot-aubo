@@ -7,6 +7,7 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from ..joint_gripper_quality import gripper_episode_quality, require_joint_normalization_stats
+from ..joint_demo_metadata import demo_metadata
 from ..joint_stack_metadata import (
     stack_metadata, validate_stack_sequence, validate_target_outcome, successful_target_outcome, stack_summary,
 )
@@ -79,6 +80,10 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
         if sidecar != record or sidecar["dataset_root"] != identity:
             raise ValueError("joint episode sidecar differs from finalized session")
         mask = ep == index
+        demo = demo_metadata(record["metadata"], require_initial_state=True)
+        if demo["demo_scope"] == "local_alignment" and not np.array_equal(
+                states[mask][0], np.asarray(demo["initial_state"], dtype=np.float32)):
+            raise ValueError("local initial_state differs from the first recorded observation")
         if not np.array_equal(frame[mask], np.arange(mask.sum())):
             raise ValueError("joint episode frame indices are not contiguous")
         records = record["joint_frames"]
@@ -115,7 +120,7 @@ def audit_joint_dataset(dataset_root, evidence_root, *, source_dataset_root=None
         if record["human_outcome"] == "single_success":
             quality_issues.extend(f"episode-{index}: {issue}" for issue in gripper["quality_issues"])
         result.append({"episode_index": index, "frames": int(mask.sum()),
-                       **record["metadata"], "human_outcome": record["human_outcome"],
+                       **record["metadata"], **demo, "human_outcome": record["human_outcome"],
                        **({"target_outcome": record["target_outcome"]} if "target_outcome" in record else {}),
                        "gripper_quality": gripper})
     candidates = [r["episode_index"] for r in result if r["human_outcome"] == "single_success"

@@ -17,8 +17,9 @@ from lerobot.bamboo_sorting.aubo_joint_contract import (
     joint_command, joint_contract_record, joint_dataset_features,
 )
 from lerobot.bamboo_sorting.capture.aubo_joint_capture import JointCaptureSession, write_joint_json
-from lerobot.bamboo_sorting.capture.fresh_frames import read_fresh_c0_observation
+from lerobot.bamboo_sorting.capture.fresh_frames import CAPTURE_FRESH_FRAME_TIMEOUT_S, read_fresh_c0_observation
 from lerobot.bamboo_sorting.capture.homing import return_to_normal_start
+from lerobot.bamboo_sorting.joint_demo_metadata import DEMO_SCOPES
 from lerobot.bamboo_sorting.joint_stack_metadata import MAX_STACK_TARGET_COUNT, confirmed_target_outcome
 from lerobot.bamboo_sorting.capture.joint_camera_config import (
     CAMERA_SET_PATHS, DEFAULT_CAPTURE_CAMERA_SET, load_joint_camera_configuration,
@@ -34,6 +35,8 @@ def parse_args(argv=None):
                         help="Record selected object identity; preserve raw RGB, annotate approach masks offline")
     parser.add_argument("--stack-demonstrations", action="store_true",
                         help="Target demonstrations from piles of up to six strips; record saved attempt number and available target count")
+    parser.add_argument("--demo-scope", choices=DEMO_SCOPES, default="full",
+                        help="local_alignment: unrecorded phone positioning above the pile, then record correction through release")
     parser.add_argument("--split", choices=("train", "validation", "test"), required=True)
     parser.add_argument("--camera-set", choices=tuple(CAMERA_SET_PATHS), default=DEFAULT_CAPTURE_CAMERA_SET,
                         help="original-global: original camera (default); wide-global: optional new 1080p camera")
@@ -43,6 +46,8 @@ def parse_args(argv=None):
     args.evidence_root = args.evidence_root.expanduser().resolve()
     if args.stack_demonstrations:
         args.target_demonstrations = True
+    if args.demo_scope == "local_alignment" and not args.stack_demonstrations:
+        parser.error("local_alignment requires --stack-demonstrations")
     if args.num_episodes < 1:
         parser.error("num-episodes must be positive")
     if args.target_demonstrations and args.camera_set != "original-global":
@@ -102,6 +107,9 @@ def main(argv=None):
             "teleoperation_profile": "legacy_abs_j6yaw",
             "target_demonstrations": args.target_demonstrations,
             "stack_demonstrations": args.stack_demonstrations,
+            "demo_scope": args.demo_scope,
+            "preparation_recorded": False,
+            "fresh_camera_frame_timeout_s": CAPTURE_FRESH_FRAME_TIMEOUT_S,
             **({"target_outcome_entry": "single_operator_confirmation"} if args.stack_demonstrations else {}),
             "mode": "supervised_capture" if args.record else "plan_only"}
     print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -119,7 +127,8 @@ def main(argv=None):
     from lerobot.robots.aubo_i10.robot_processor import (
         AuboEEBoundsAndSafety, AuboGripperVelocityToPosition, AuboLockVerticalYaw, PhoneEEToAuboEE,
     )
-    from lerobot.scripts.lerobot_record import finalize_recorded_dataset, record_episode_sessions
+    from lerobot.scripts.lerobot_record import finalize_recorded_dataset, record_episode_sessions, record_loop
+    from lerobot.bamboo_sorting.capture.joint_local_preparation import prepare_local_start
     from lerobot.teleoperators.phone.config_phone import PhoneConfig, PhoneOS
     from lerobot.teleoperators.phone.phone_processor import MapPhoneActionToRobotAction
     from lerobot.teleoperators.phone.teleop_phone import Phone
@@ -186,9 +195,10 @@ def main(argv=None):
                 listener.stop()
                 listener = None
             print(f"\n准备第 {index + 1}/{args.num_episodes} 条；数据划分：{args.split}")
-            scene = required_text("堆编号（可只填数字，如 28→p-028；本堆继续沿用，不恢复摆放）：" if args.stack_demonstrations
+            scene_prefix = f"la-{args.split}" if args.demo_scope == "local_alignment" else "p"
+            scene = required_text(f"堆编号（可只填数字，如 001→{scene_prefix}-001；本堆继续沿用，不恢复摆放）：" if args.stack_demonstrations
                                   else "场景编号（例如 t-001，同一摆放保持同一编号，不跨训练/验证/测试）：",
-                                  numeric_prefix="p" if args.stack_demonstrations else None)
+                                  numeric_prefix=scene_prefix if args.stack_demonstrations else None)
             placement = ""
             target_metadata = {}
             if args.target_demonstrations:
@@ -208,8 +218,10 @@ def main(argv=None):
                             high=MAX_STACK_TARGET_COUNT))
             else:
                 placement = required_text("物理刻度线/摆放参考（例如尺线 B、方向 90°）：")
+            demo = {"demo_scope": args.demo_scope}
             listener, _ = init_keyboard_listener(events)
-            print("按 r 归位，摆好竹条后按 → 开始；录制中 → 结束，← 重录，Esc 停止。")
+            print("按 r 归位，摆好竹条后按 → 进入不录制的准备遥操。" if args.demo_scope == "local_alignment"
+                  else "按 r 归位，摆好竹条后按 → 开始；录制中 → 结束，← 重录，Esc 停止。")
             events["exit_early"] = events["return_to_start"] = False
             ready = False
             while not events["stop_recording"]:
@@ -225,7 +237,15 @@ def main(argv=None):
             # Ensure record_loop exits immediately if stopped during preparation.
             events["exit_early"] = bool(events["stop_recording"])
             teleop_processor.reset()
-            return {"scene_id": scene, "placement_reference": placement, "split": args.split, **target_metadata}
+            if args.demo_scope == "local_alignment" and not events["stop_recording"]:
+                # Homing is only offered in the preceding stationary phase.
+                listener.stop()
+                listener, _ = init_keyboard_listener(events, enable_return_to_start=False, reset_events=False)
+                prepare_local_start(robot=robot, teleop=phone, events=events,
+                    teleop_action_processor=teleop_processor, robot_action_processor=IdentityAction(),
+                    robot_observation_processor=learning_observation, record_loop=record_loop)
+            return {"scene_id": scene, "placement_reference": placement, "split": args.split,
+                    **target_metadata, **demo}
 
         def outcome_provider(index):
             nonlocal listener

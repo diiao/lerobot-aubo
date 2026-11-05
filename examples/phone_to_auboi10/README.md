@@ -1,6 +1,6 @@
 # AUBO i10 项目手册
 
-更新：2026-10-25。本文集中维护当前状态、操作方法和后续计划；实验指标与原始路径只维护在
+更新：2026-11-04。本文集中维护当前状态、操作方法和后续计划；实验指标与原始路径只维护在
 [证据索引](EVIDENCE.md)。所有命令从仓库根目录 `/home/rentao/program/lerobot-aubo` 执行。
 
 ## 目录
@@ -14,6 +14,7 @@
 - [相机配置](#相机配置)
 - 静态分割：[采集与人工复核](#静态分割采集与人工复核)、[数据、训练与独立评价](#静态分割数据训练与独立评价)
 - 动作模型：[手机遥操采集](#动作模型手机遥操采集)、[训练与离线评价](#动作模型训练与离线评价)、[现场运行](#动作模型现场运行)
+- [上方起点的局部纠正示教](#上方起点的局部纠正示教)：采集步骤、批次计划与[任务接手](#局部示教任务接手)
 - [目标条件接口约定](#目标条件接口约定)：标注格式、训练／运行共用规则
 - [斜条J6欠转的腕部角度诊断](#斜条j6欠转的腕部角度诊断)：只待现有人工标注收束，不阻塞堆叠试采
 - [后续研究与待办](#后续研究与待办)：含[推进顺序](#当前位置与下一步)、[自主选目标与逐根清空](#自主选目标与逐根清空)及[扩展到6根及以下](#扩展到6根及以下)
@@ -25,7 +26,7 @@
 
 当前主线保留已训练的`target-stack`及三根连续抓放方案。三根训练数据、标注和两组动作模型训练均已完成，trial04已有操作者确认的三根成功及真实空目标恢复记录。[六根及以下的静态分割扩展](#扩展到6根及以下)已完成052～060补采复核、首轮混合微调及061～064首次独立测试；061～064获准加入训练后，第二轮混合微调及52张固定验证图对照也已完成。2026-10-24用户确认**静态视觉识别表现达到本阶段预期，抓取场景中的实际效果仍需实验验证**，当前进入[下一阶段抓取验证准备](#当前位置与下一步)。短段漏检和局部实例拆分保留为已知问题，详见[结果证据](EVIDENCE.md#多根静态分割数据链路检查)；暂不继续补采065～069或追加视觉训练。061～064首次测试记录保留，此后属于已见训练样本。工作区最多容纳六根，八根扩展暂缓。旧模型与运行参数保留；新分割模型已接入`target-stack`，真实GPU加载和三次动作返回已确认，检查脚本的本地保存错误与后续现场验证边界见[当前位置与下一步](#当前位置与下一步)。提交与问题状态统一见[进展索引](EVIDENCE.md#提交与实验进展总览)。
 
-用户最新安排恢复四根→六根人工遥操动作示教准备，与另一会话的1像素正式训练并行；混合训练、部署和自主抓取不在本次范围，详见[采集安排](#四根与六根动作数据扩充)。P1仍暂停，原数据和既有训练来源保持。
+**当前安排（2026-11-05）**：局部纠正示教已完成24堆92条54115帧，最后`014`～`024`的40条22777帧已完整收尾；采集检查及双路关键帧复查通过。用户取消另录验证集，保留原三根3堆，旧四根抽5堆、新局部示教抽4堆，按整堆形成训练65堆237条152192帧、验证12堆44条27819帧。来源、抽取编号及标注入口见[局部示教](#上方起点的局部纠正示教)；本批22904帧目标轮廓及所列误差已获用户接受，92条真实数据接口和严格混合预检均通过。用户明确要求重新训练：从原始SmolVLA预训练权重开始，使用本轮训练集统计，不加载旧AUBO任务权重或处理器。原数据、旧标注及缓存复用，未重复传输原数据。本轮已完成60000步优化和6轮固定监控验证，60000步成为最佳，最佳／最终模型已保存并通过重载。原进程于11月5日04:34在最佳全量复评期间被系统内存不足终止；已按用户授权清理旧全量报告并以分块独立进程于10:39完成27819帧复评，0新增优化步；本轮训练及评估收尾已完成，见[完成核对](../../artifacts/training/stack_local_alignment/reevaluation_completion_check.json)。本轮60000步已按用户授权部署为显式`--target-stack-model local-alignment`，198项CPU检查、新处理器往返检查及3次保存图像GPU服务验收通过。首轮C→A→B已由操作者执行，用户确认三根抓取成功；已保留运行与人工反馈，单轮结果不等于稳定成功率或精对准验收。第二轮A→B→C已实跑，用户反馈“完全抓偏”；程序在B阶段触发碰撞保护，且未确认关闭伺服。第三轮四根实验在A阶段人工中断，用户反馈抓取失败，B/C/D未执行；结束保存状态停稳、伺服关闭、夹爪命令100。第四轮C→D→A→B完成四个指令周期，但用户仍反馈抓取失败、画面向左偏；不据程序周期判定物理成功。用户要求先提交当前项目，再准备从本轮60000步模型续训30000步，保持选模及保存规则，最终训练启动须另行授权。默认入口仍为原三根＋四根60000步、2px描边`three-four`模型；不恢复退役候选，π0.5为独立路线。
 
 系统包含感知与动作两部分：实例分割识别每根竹条的可见像素；动作模型根据指定目标轮廓、双路图像和机器人状态预测运动。
 
@@ -465,6 +466,7 @@ action记录控制器接受的目标，不能替换成实测角度；TCP（工�
 手机完成接近、夹紧、提起、搬运、释放，结束前须释放并填写实际结果；保留失败与中断记录。
 录制和控制目标25 Hz；填表时暂停快捷键监听。归位使用 `NORMAL_START_DEG`；退出先停伺服再整理视频。
 Esc不是硬件急停，不能中断等待完成的归位。既有 `single_success` 标签不自动表示双根或整堆成功。
+人工采集等待两路新帧的门槛为0.5秒（原0.2秒），实际值记入`plan.json.fresh_camera_frame_timeout_s`。等待期间不发送下一条动作、不保存重复帧；持续无新帧仍报错停止。相机帧龄检查和策略运行保护保持原值；延长等待可能造成短暂遥操停顿，不表示相机故障已修复。
 
 ```bash
 .venv/bin/python examples/phone_to_auboi10/audit_joint_dataset.py \
@@ -477,10 +479,72 @@ Esc不是硬件急停，不能中断等待完成的归位。既有 `single_succe
 数据目录与对应证据一起保留，不重写源路径；相机快照在证据 `plan.json` 及数据 `meta/camera_configuration.json`。
 现有动作训练不自动读取静态分割数据或新相机数据；多来源组合使用下节的显式清单。
 
+### 上方起点的局部纠正示教
+
+目标是补充“尚未对准→主动修正位置／角度→对准后夹紧→提起→搬运→释放”的完整局部示教。
+这属于局部起点的行为克隆（用人工正确动作训练策略）；只有从策略实际到达的状态接管并聚合专家动作，才直接对应DAgger的数据分布纠正。本入口不自动运行策略或接管。
+共同起点是堆上方便于观察、尚有对准工作的位置，不是每根目标已经精确对准的位置；只录后者会漏掉希望模型学会的纠正过程。
+
+`--demo-scope full`为原默认流程。新模式使用`--stack-demonstrations --demo-scope local_alignment`，仍使用原双640×480相机、25 Hz、7维绝对关节动作与原安全处理器，不修改`NORMAL_START_DEG`。
+起点由操作者现场遥操决定，不执行固定上方航点；具体安全高度、位置和角度扰动范围需在现场确定。
+
+局部模式的堆编号可直接输入`001`或`1`：按`--split`自动展开为`la-train-001`、`la-validation-001`或`la-test-001`，并在终端显示完整编号。同堆各条继续输入同一数字；完整文字编号仍原样接受。原`full`模式的数字堆编号仍展开为`p-*`，已有数据不改名。
+
+**选哪根竹条**：由操作者从当前未被压住、且有下指空间的候选中指定，程序不会自动随机抽取。多个候选都可抓时，在不同堆之间轮换或随机选择，避免总选最左／最近的一根；只有一个可抓候选时就选它。四根分开时通常可选四根；一根压三根且只有上层可抓时先选上层；两组交叉时可在两根可抓上层条中选择。每次抓走后按实际剩余状态重新判断，`available_target_count`记录当时可抓候选数，不是剩余根数。
+
+选定后，一条示教始终抓同一个`target_id`，同一物理竹条的ID随它保留，不能按第几次抓取重新编号。采后审核该目标在接近阶段的轮廓；训练通过全局图中的目标描边告知模型抓哪根，`target_id`文字本身不作为模型输入。目标身份及是否可抓依赖操作者确认，采集程序不会自动从图像核验。
+
+1. 输入堆编号、实际目标ID、累计保存尝试序号`pick_step`、当时可下指的上层条数`available_target_count`。
+2. 按`r`完成原归位，摆好竹条后按第一次`→`，进入**不录制的准备遥操**。此阶段同样会控制机械臂和夹爪，但不向数据集、视频或帧侧录写入样本。
+3. 遥操到堆上方的预定起点，夹爪保持张开，松开手机移动按钮，再按第二次`→`。程序停伺服、重置遥操积分基准，从新的真实观察开始正式录制；夹爪命令未张开则继续准备。准备中`←`重新准备，`Esc`取消；`r`仅在前一归位等待阶段可用。
+4. 录制精确对准到搬运放下的过程，完成释放后按`→`保存并如实填写结果。正式录制中`←`舍弃本次并重新准备，`Esc`不保存未完成示教。失败尝试另留结果，不作为成功监督；不把策略失败动作当专家标签。
+
+下一根仍先完成原归位，再人工移到堆上方开始新条目；本模式没有自动保存并返回上方起点的功能。同堆不恢复中间摆放，失败后重试同一根沿用目标ID；已保存失败也占一次`pick_step`，未保存的重录不占。若重录前已改变堆内状态，重新核对目标身份和可抓候选数。
+
+`demo_scope`标记整段／局部示教。按用户要求，起点分组填写和`--start-pose-group`选项已移除，新录制不再写入`start_pose_group`；既有数据中的该字段保留兼容，不改写原始记录。局部示教的`initial_state`自动取正式数据首帧`[J1…J6,gripper_pos]`，审计会与Parquet核对；准备阶段状态不冒充录制起点。
+
+局部示教已全部录完：24堆92条54115帧，覆盖下表七类摆放。原始数据均仍位于`datasets/stack/train/`，采集时的`split=train`保持不变；训练／验证的实际用途由[新清单](../../artifacts/training/stack_local_alignment/sources.json)中的`selection_scenes`指定，不搬移、复制或重写原数据。最后40条来源为`joint_stack_local_remaining_train_014_024`，所有来源与检查入口见[证据](EVIDENCE.md#局部起点纠正示教的软件准备)。
+
+| 摆放类型 | 已采堆号 | 总堆／条 | 本轮局部验证堆号 |
+| --- | --- | --- | --- |
+| 三根：交叉两根＋独立一根 | `021`～`024` | 4／12 | `024` |
+| 四根分开 `four_separate` | `001、014` | 2／8 | — |
+| 一对交叉＋两根独立 `crossing_pair_two_separate` | `015`～`018` | 4／16 | — |
+| 两组独立交叉 `two_crossing_pairs` | `003、011`～`013` | 4／16 | — |
+| 一根压三根 `one_over_three` | `002、008`～`010` | 4／16 | `010` |
+| 一根压两根＋一根独立 `one_over_two_one_separate` | `019、020` | 2／8 | `020` |
+| 两根压两根 `two_over_two` | `004`～`007` | 4／16 | `007` |
+| 合计 | `001`～`024` | 24／92 | 4堆15条8626帧 |
+
+用户明确不再另录验证集，原新增7堆27条计划取消，不执行该旧命令。验证按初始堆及其全部后续剩余状态整体抽取，绝不随机拆帧或拆同堆条目：
+
+| 数据来源 | 训练：堆／条／帧 | 验证：堆／条／帧 | 验证身份 |
+| --- | --- | --- | --- |
+| 原三根整段 | 20／60／40673 | 3／9／6023 | 保留`p-101、p-102、p-103` |
+| 原四根整段 | 25／100／66030 | 5／20／13170 | `p-027、p-032、p-038、p-043、p-050` |
+| 新局部纠正 | 20／77／45489 | 4／15／8626 | `la-train-007、010、020、024` |
+| 合计 | 65／237／152192 | 12／44／27819 | 整堆无交叉 |
+
+该选择使合并验证覆盖七类摆放，少量类别的验证堆数仍有限。本轮从原始预训练权重重新学习AUBO任务，12堆验证均不进入本轮任务训练及归一化统计。旧四根5堆曾被旧60000步AUBO模型训练见过，这一限制影响与旧模型的对照，不能把旧模型在这5堆的表现称为未见数据泛化。[划分记录](../../artifacts/training/stack_local_alignment/split_plan.json)保存每堆及跨目录来源，不改原ID。
+
+`001`跨两个来源组成四条，原前三条来源的`capture_complete=false`保留；`003`原目录含`two_over_two`，用户确认实际是两组独立交叉，按实际分类计数。`011`～`013`第二条的可抓数以`recording_review/metadata_corrections.json`从1修正为2，标注与训练统一通过`reviewed_stack_metadata`读取，不改原session／侧录／审计。`022、024`先移除独立条后只剩交叉组，第二条可抓数1与关键帧一致，不追加修正。
+
+本批22904个接近帧均已有目标轮廓，首次接受闭爪后继续使用原图搬运。用户授权的冻结分割推理已完成，优化步数为0；旧数据、标注和模型原地复用，新来源先盘点再只上传缺失原视频／Parquet／侧录。RGB在远端按实际视频偏移提取；本机浏览使用JPEG派生图，训练仍读取原视频。用户已明确接受整批现有轮廓、409帧RGB补绘及所列误差，逐帧接受记录保留问题说明，不宣称逐像素真值。当前状态统一见[训练准备入口](../../artifacts/training/stack_local_alignment/review_index.html)和[准备完成记录](../../artifacts/training/stack_local_alignment/pretraining_readiness.json)；全部真实数据接口及混合预检已通过；本轮真实训练及授权复评均已完成，部署及保存图像GPU服务验收已完成，当前场景已审核，真实抓取由操作者手动启动。
+
+#### 局部示教任务接手
+
+接手快照为2026-11-04：工作目录`/home/rentao/program/lerobot-aubo`，分支`research/depth-vla-phase-a`，HEAD为`cb4c0802`（局部示教修改前的本地检查点，未推送）。先读根目录[AGENT.md](../../AGENT.md)、本节完整计划和[EVIDENCE中的局部示教证据](EVIDENCE.md#局部起点纠正示教的软件准备)，再核对当前`git status --short --branch`与真实产物；新文件及操作者反馈优先于此快照。
+
+- **保护工作区**：局部准备／录制、数字堆编号、采集等待与混合训练改动尚未提交。`src/lerobot/bamboo_sorting/capture/joint_local_preparation.py`、`src/lerobot/bamboo_sorting/joint_demo_metadata.py`、`tests/bamboo_sorting/capture/test_joint_local_preparation.py`仍为未跟踪文件，其余改动见Git差异。保留现有修改，不重置工作区；数据和实验产物被Git忽略，代码提交不是数据备份。必要时沿`record_joint.py`→`capture/joint_local_preparation.py`／`aubo_joint_capture.py`→`lerobot_record.py`阅读实际录制逻辑。
+- **当前数据**：九个局部来源已完成24堆92条；最后40条在`joint_stack_local_remaining_train_014_024`。不要再次执行录制命令、删除该目录或创建后缀目录；早先清理只涉及当时0条正式保存的中断残留，不能用于当前完整数据。原新增验证录制已取消。
+- **划分与标注**：使用`artifacts/training/stack_local_alignment/sources.json`及`split_plan.json`；整堆选择允许同一原目录被两集合以互不重叠场景引用，原采集split不改写。先读`review_index.html`、`pretraining_readiness.json`、`all_source_interface_check.json`及`combined_preflight_check.json`，再按需查看各来源`target_annotations`。轮廓已获用户接受，92条接口和混合预检均完成；复用完整推理结果、已传原数据及本轮远端预检，不从头重跑。
+- **原始证据**：`001`跨来源及原中断标记、`003`实际分类、`011`～`013`三条人工可抓数修正均保留。菜单／开合周期／存储检查不能代替物理成功证明；未保存重录不计正式监督，未知物理字段保持未知。
+- **授权边界**：本批冻结离线标注推理、目标轮廓接受及严格CPU预检已完成；用户已授权GPU空闲时启动本轮训练，已于2026-11-04 19:41后台启动并完成训练和复评；2026-11-05部署与真机实验已获授权，后续已按用户明确指令停止Ollama，并通过保存图像GPU服务验收；本轮场景和顺序已审核，助手尚未操作硬件。按用户更正采用[重新训练方案](#局部示教混合训练)，从原始SmolVLA预训练权重及新训练统计开始，不加载旧60000步AUBO权重或处理器。已授权配置和完整远端参数在`training_launch_proposal.json`，重新训练配置检查见`retraining_preparation_check.json`。实际启动、日志和退出状态见`training_launch.json`／`training_process.json`，硬件仍由用户手动操作。
+
 ## 动作模型：训练与离线评价
 
 入口为 `train_joint_smolvla.py`，使用 [七维关节契约](#当前状态与系统边界)。
-当前 `mixed-both-orders` 已完成微调和离线验收。模型、训练参数和原始验收路径见 [证据索引](EVIDENCE.md#当前双摆放模型)。
+历史 `mixed-both-orders` 已完成微调和离线验收；当前主线为2px目标条件`three-four`。新局部示教使用独立候选目录，保留当前权重；实际模型身份见 [证据索引](EVIDENCE.md#三根动作模型身份与训练结论)。
 
 ### 阶段与默认值
 
@@ -493,9 +557,10 @@ Esc不是硬件急停，不能中断等待完成的归位。既有 `single_succe
 | `evaluate` | 加载已有检查点及其处理器，在相同来源上评价 |
 
 默认 `device=cpu`、`steps=10000`、`batch-size=8`、`seed=42`；
-当前模型使用显式 `--steps 30000 --device cuda`。模型一次预测 50 步，每步 7 维。
-入口只保存最终检查点，没有中途恢复训练接口。训练输出必须是全新目录。
-`--learning-rate`可显式覆盖峰值学习率；`--preclose-loss-weight`仅用于目标条件训练，按各示教的专家首次闭合帧给未来动作行加权，窗口由`--preclose-frames`指定（默认10，含闭合帧）。每个样本按有效权重之和及7个真实维度归一化，补齐行不参与；不传参数保持原损失，倍率1为普通续训控制。该权重只参与训练，不改变推理或动作选步。`--fit-observations`是默认关闭的[固定观察拟合历史结果](EVIDENCE.md#p1新增动作模型横向对比)，仅选择训练输入；不能与上述加权、持位、闭合或均衡采样叠加。
+模型一次预测50步，每步7维；各历史模型的实际步数以对应产物为准，不把入口默认值当作当前60000步模型的训练记录。
+最终检查点始终保存，`--checkpoint-steps`可指定额外中间步数，没有隐式恢复优化器的接口；从旧权重继续时新建优化器。训练输出必须是全新目录。
+本轮另用`--validation-every`启用周期选模，只保留严格验收的最佳及最终模型；此模式不允许同时指定`--checkpoint-steps`保留其他权重。旧的显式中间检查点流程保持不变。
+`--learning-rate`可显式覆盖峰值学习率。旧`--preclose-loss-weight`与`--fit-observations`属于历史实验，当前入口不提供；不要复制旧实验参数启动本轮。
 
 所有模型阶段从本地缓存加载，进程内关闭 Hub/WandB 上传及遥测。
 `preflight` 不加载模型，`smoke/train/evaluate` 会加载；真实训练和新增模型推理由操作者明确启动。
@@ -512,6 +577,39 @@ GPU 副本清单：同目录下的 `sources_remote.json`。
 
 成功示范按结果和夹爪标签筛选；归一化只使用选中的训练帧。
 每个来源先构造不跨条目的动作块，再组合训练。场景编号隔离不能替代人工检查物理摆放是否重复。
+
+### 局部示教混合训练
+
+原25个训练来源、3个验证来源的清单保留在`artifacts/capture/stack/joint_stack_four_six_20261025/training_preparation/target_training_sources_local.json`。本轮清单为`artifacts/training/stack_local_alignment/sources.json`，远端映射为同目录`sources_remote.json`，引用旧来源及九个新局部来源，不复制数据本体。
+
+可选字段`selection_scenes`是该原目录中参与当前集合的完整场景ID列表，预检拒绝空／重复／不存在的场景、同场景跨集合或同原目录选择重叠；跨目录续录仍按共同场景ID检查泄漏。原始split保留，预检另记`effective_split`、`capture_splits`及选择依据。只有显式按整堆选择时允许从原train来源划作验证；省略字段的历史来源继续要求采集split一致。同一轮预检缓存原来源审计与指纹，避免因共享目录反复计算。旧项省略`demo_scope`即为`full`，新增局部项显式为`local_alignment`；预检核对实际侧录，不能只改清单冒充局部示教。
+
+本轮抽样与归一化选项：
+
+- `--local-demo-fraction 0.5`：旧整段／新局部各分配50%的**抽样概率**，组内按帧均匀抽样、有放回；不是每个目录各占一份，也不保证每个小批次恰好一半。可调整为其他0～1之间的比例，但须保留两类来源。未传时沿用按所有帧打乱。50步动作块只在原来源和原episode内取样，尾部补齐；同一局部示教内允许从对准自然跨到夹紧、搬运。
+- `--normalization-source train_data`：本轮重新训练使用此模式，从已选65堆训练数据计算状态和动作统计，建立配套归一化／反归一化，验证数据不参与。`train_only_stats.json`和`data_preflight.json`保存训练统计，`normalization.json`记录实际使用值。抽样比例与归一化来源独立，50%局部抽样同样支持重新训练。既有`base_checkpoint`模式只供另行明确的旧AUBO检查点续训，保持该旧模型的处理器含义；本轮不选它。
+
+`preflight`先检查来源和整堆划分并生成`training_sampling.json`，不加载模型。新清单需要重新审计，不能复用仅含旧25个来源的`--prepared-data`。本轮预检已含新整堆划分、全部目标接口和新训练统计，与模型初始化方式无关，重新训练可直接复用。验证集不做均衡抽样，`validation_by_demo_scope.json`分别报告整段和局部的离线动作指标，`validation_by_source.json`保留来源细分；这些均不能替代物理抓取评价。
+
+本轮[严格混合预检](../../artifacts/training/stack_local_alignment/combined_preflight_check.json)已通过：训练／验证整堆无交叉，所选训练统计与独立检查一致，九个新来源92条54115帧的目标接口全部通过。[重新训练配置检查](../../artifacts/training/stack_local_alignment/retraining_preparation_check.json)在CPU确认原始基座和缓存存在、真实训练参数可解析、新处理器使用所选训练统计，动作极值归一化再还原的最大误差为0；未加载旧AUBO权重或处理器，没有加载策略模型、使用GPU或操作硬件。完整`data_preflight.json`保留在远端本轮`artifacts/training/stack_local_alignment/preflight/`，启动参数已引用该文件，无需再次传输原数据或重复计算内容指纹。先前针对旧处理器的比较报告保留为准备历史，不是本轮实际归一化配置。
+
+[训练启动提案](../../artifacts/training/stack_local_alignment/training_launch_proposal.json)已填写原始`lerobot/smolvla_base`缓存、VLM缓存、隔离源码快照、数据清单及预检文件路径，并保存完整`train_argv`，已按用户“空闲时我们可以开始训练”授权于2026-11-04 19:41（北京时间）后台执行；[实际启动记录](../../artifacts/training/stack_local_alignment/training_launch.json)保留PID、启动前GPU占用和环境，`training_process.json`记录进程状态／最终退出码。本轮从原始SmolVLA预训练权重重新训练AUBO任务，不随机重建视觉语言骨干，不加载旧AUBO任务模型、旧处理器或优化器；使用本轮训练集归一化。本轮采用60000步预算，峰值学习率`1e-4`、batch 8、seed 42；按用户授权，改为每10000步验证并只保留最佳与最终模型。保持原模型结构、冻结配置、2px描边、50步动作块及七维绝对关节动作。训练预算及启动已获用户授权，输出为独立`outputs/joint_stack_local_alignment_retrained`；[启动检查](../../artifacts/training/stack_local_alignment/training_start_check.json)已确认真实优化器完成140步、loss／梯度有限，实际统计和均衡抽样正确；该报告为启动快照，后续进度以远端输出的`training.jsonl`和`artifacts/training/stack_local_alignment/training.log`为准。运行模型与旧实验保留，运动／相机时效检查不变。
+
+**本轮检查点与选模规则**：`--validation-every 10000 --validation-points-per-phase 8 --validation-seeds 42 43 44`。原验证集、已接受轮廓和归一化统计不改。固定[验证采样计划](../../artifacts/training/stack_local_alignment/checkpoint_selection_plan.json)已在CPU准备，覆盖12堆44条、2540个观察；各条各阶段均匀选点，并包含闭爪／释放前19、10、1帧、事件帧及后1、10帧。周期验证在训练进程中离线调用模型，未启动真机策略执行。
+
+1. **检查时机**：10000／20000／30000／40000／50000／60000步；最后一步即使不是整万也检查。三个固定种子使用相同观察顺序和批大小，取平均分并报告种子间标准差。验证恢复训练的随机数状态、训练模式及推理队列，不改变后续训练抽样或噪声。
+2. **主指标越小越好**：起动、接近和闭爪前阶段，比较预测动作块第0～19行与专家真实动作的六关节平均绝对误差，单位为度，尾部补齐行不计。先在条内按阶段等权，再按堆内条目、各堆平均，最后让整段／局部各占50%。这样长视频、停留段及数量较多的整段示教不会掩盖局部对准问题。阶段按专家观察时刻划分，未来20行动作可能跨过闭爪事件。
+3. **防退步条件**：主指标必须严格降低，且闭爪前六关节误差、最差堆闭爪前误差、闭爪前J6误差、搬运／释放关节误差、整段与局部各自的接近误差、闭爪与释放时序误差均不能明显恶化。上限为`max(历史已接受最佳值×1.20, 历史已接受最佳值＋绝对容差)`；关节容差0.05°，事件时序容差1帧（25 Hz下40 ms）。历史参考取历次已接受最佳的最小值，不能每次退步20%不断累积。事件时序比较完整50步块的首个事件，漏事件按该窗口的真实长度罚分，不能用“没预测事件”获得零时序误差。这些是离线筛选容限，不是实机抓取精度标准。
+4. **仅供诊断**：验证loss及完整预测块的闭爪／释放事件错误数不直接排序或否决候选；完整块尾部可能被后续重规划替换。分数相同保留较早模型。各次指标、护栏阈值及接受／拒绝原因存于`validation/step_*/`和`validation_history.jsonl`。
+5. **保留与删除**：仅改善且通过上述条件时，先写入本轮`checkpoints/best_step_*.incomplete`，在CPU严格重载模型及配套处理器，逐张量确认权重与处理器统计一致，再原子发布为完整最佳并更新`best_checkpoint.json`；之后才删除带本轮所有权记录、且由旧最佳指针指定的旧最佳权重包。不改善只存评估记录，不存候选权重；保存或重载失败保留旧最佳。历史模型、基座、数据和其他目录不在删除范围。
+
+正常完成后保留一个`checkpoints/best_step_*`和`final/`；即使二者来自同一步，也保留两个完整模型包。最终模型沿用严格保存重载检查，并对最佳与最终分别完成全部44条27819帧的固定seed 42离线验证，结果在`full_validation/`；其差异单独报告，不用这次复评偷偷改写固定监控选出的最佳。当前实现不自动早停，`final`表示预算结束时的模型，不表示最好；离线最佳也不等于实机成功率最高；本轮部署已获授权，验收状态见下方现场准备。
+
+**本轮收尾与内存隔离复评（2026-11-05）**：60000步固定监控主误差0.290547°、闭爪前误差0.176384°、闭爪／释放时序综合误差11.53075／4.89205步，验证loss 0.0422369，全部防退步条件通过。原进程在完成最终模型全量报告后，执行最佳模型全量复评时被系统OOM终止（04:34:39，退出码−9；匿名内存约56.4 GiB），原失败状态和日志保留，不能把原进程标记为正常退出。用户授权清除中断残留并复评；仅删除远端`full_validation/final.json`以重算，其旧分数和50个保护文件的大小／mtime记录在[清理证据](../../artifacts/training/stack_local_alignment/reevaluation_cleanup.json)，原始数据、已完成首行动作评估、周期监控、权重和优化器状态未删。新增复评脚本以每2048帧一个独立进程顺序执行，batch 8、seed 42，跨分块保存并恢复Python／NumPy／Torch CPU及CUDA随机数；只积累拥有独立存储的紧凑数值数组，避免持有原批次内存。78项CPU检查通过，包含跨分块与整段预测逐值一致、批次释放检查，见[软件检查](../../artifacts/training/stack_local_alignment/reevaluation_software_check.json)。最佳与最终的全部权重／配置／处理器逐文件一致，见[等价检查](../../artifacts/training/stack_local_alignment/model_equivalence.json)，因此只预测一次并为两者生成对应报告，不重复GPU计算。分块复评于09:58启动、10:39:35完成，耗时40分51秒；14个分块覆盖12堆44条全部27819帧，工作进程峰值RAM为3.654 GiB，全部分块结束后已生成`complete.json`、最佳／最终与比较报告，0新增优化步。全量seed 42复评主误差0.294291°、闭爪前误差0.175791°、闭爪／释放时序综合误差12.65561／8.48026步、验证loss 0.041622；这是完整帧集单seed的结果，不能与2540观察三seed固定监控的分数混用。旧全量final摘要中的所有原有指标均被逐值复现，最佳／最终报告一致，见[完成核对](../../artifacts/training/stack_local_alignment/reevaluation_completion_check.json)、[全量最佳](../../artifacts/training/stack_local_alignment/full_validation/best.json)、[全量最终](../../artifacts/training/stack_local_alignment/full_validation/final.json)及[比较](../../artifacts/training/stack_local_alignment/full_validation/comparison.json)。60000步最佳、最终与用户单独保留的30000步模型均在；原训练进程OOM失败事实保留，本轮完成来自随后成功补齐的评估收尾。不改原固定监控选出的最佳、不部署或操作硬件。
+
+**用户另行指定保留的30000步模型**：2026-11-04 23:24（北京时间），按用户“30000步模型可以给我另存一份吗，不要被后面出现更好的被删除”要求，已在远端另存完整模型包至`/home/rentao/program/lerobot-aubo-joint-stack/outputs/joint_stack_local_alignment_retrained/retained_checkpoints/step_030000`。共14个原始文件、1676555283字节，含权重、配套处理器、归一化、数据说明及选模／严格重载记录；原件与副本逐文件字节比对一致，副本使用独立文件，不是软链接或硬链接。本目录在自动清理的`checkpoints/`之外；后续新最佳仍可替换其原`best_step_030000`，独立副本保持，只有用户明确要求删除时才清理。正常自动保留最佳／最终之外额外保留此份，不改变选模规则、不自动部署、不含优化器续训状态。细节见[独立保留记录](../../artifacts/training/stack_local_alignment/retained_step_030000.json)。
+
+### 通用数据预检示例
 
 本机只看方案：
 
@@ -819,7 +917,17 @@ Ctrl+C、异常及超时进入停止伺服流程，不自动释放或归位。
 
 <a id="三根四根模型试用准备"></a>
 
-**当前状态：四根连续试验已结束，转入模型与闭环诊断**：最新`stack_three_four_four_pick_fresh_layout/four_pick_run/`已由操作者执行；用户反馈这几批均有部分抓到、部分失败，未逐根确认结果，原始`physical_grasp_success=null`保持。该轮及前四轮的录像、动作和选择全部保留，旧[操作者命令](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/operator_commands.json)已标为执行历史。当前固定诊断入口为[review/findings.json](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/findings.json)，包括[五轮指令审计](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/batch_audit.json)、[当前模型配置](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/model_audit.json)、[远端处理器统计核对](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/normalization_check.json)及[最新闭爪前对照](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/stack_three_four_four_pick_fresh_layout_preclose.jpg)。现有证据优先指向末段模型位姿／纠偏与训练部署分布问题，扰动后的目标跟随退化及闭爪预测稳定性并列检查，尚无唯一根因；具体结果见[EVIDENCE](EVIDENCE.md#三根四根感知链路复核)。本次只做CPU保存产物复核、远端配置／处理器只读检查及官方／论文资料查询，没有新增策略推理、训练、部署、硬件访问或运行代码修改。
+**新局部纠正60000步模型：首轮成功、第二轮抓偏碰撞停止，准备四根（2026-11-05）**：使用显式`--model target-stack --target-stack-model local-alignment --target-outline-width-px 2`，绑定本轮`joint_stack_local_alignment_retrained/checkpoints/best_step_060000`、SHA `bd95ca61…ac8d22e`和其新训练集归一化处理器；`three-four`保留原路径／SHA和默认行为。独立远端服务为`/home/rentao/program/lerobot-aubo-joint-stack/artifacts/joint_stack_local_alignment_live_service`，源码复用本轮隔离快照，不复制权重、不覆盖旧服务。198项CPU运行器／目标分离／运动预览检查通过，实际保存处理器在CPU加载、动作极值还原最大误差0；25 Hz、原运动限制、400 ms相机时效、1.5秒预测保护及SSH压缩保持。[部署记录](../../artifacts/training/stack_local_alignment/deployment/deployment_receipt.json)与[保存图像GPU检查](../../artifacts/training/stack_local_alignment/deployment/gpu_worker_check/complete.json)记录3次接近／搬运请求、50×7有限动作、同图同seed动作最大差0及掩码一致，请求耗时0.261～0.337秒；另有服务固定2次合成预热。只使用保存RGB，未连接机械臂或相机，不代表实际相机时效或抓取成功率已验收。
+
+本轮目录为`artifacts/live/stack/stack_local_alignment_60000_first_trial/`。操作者归位通过，新快照`d9217824a2d74746bd41ab9177996013`距START最大0.0001466°、夹爪0，双路原图未改。用户明确“轮廓正确，按C→A→B（先独立条）”：C为左侧独立，A为右侧近竖直交叉上层，B为斜向下层、仅标两段可见区域。[selection.json](../../artifacts/live/stack/stack_local_alignment_60000_first_trial/scene_snapshot/selection.json)记录确认原话；[场景计划](../../artifacts/live/stack/stack_local_alignment_60000_first_trial/three_pick_plan.json)核对三会话都使用新权重、C/A/B→A/B→B及两次目标间归位，最后不归位。Ollama在用户明确要求“帮我停掉这个本地模型的推理服务”后已停止，服务文件和模型保留；不再沿用此前恢复容器的临时状态。该轮`three_pick_run/`已由操作者执行，用户明确“这次三根抓取成功了”，[人工反馈](../../artifacts/live/stack/stack_local_alignment_60000_first_trial/operator_feedback.json)分别记录C/A/B抓取成功；单根限定、精确对准、邻条扰动、送达和人工介入未另行逐项确认，不扩展成独立证据。原始`complete.json`的`physical_grasp_success=null`保持，物理结果来自操作者反馈。[本轮收尾检查](../../artifacts/live/stack/stack_local_alignment_60000_first_trial/completion_check.json)核对525份预测、4460条指令、3个周期及两次目标间归位，全部已消费预测使用新模型SHA；双路各5259帧、录像报告完整无编码错误，未重复全段解码。结束保存状态停稳、伺服关闭、夹爪命令0，不是当前硬件观测。用户已重新摆放，该轮[命令](../../artifacts/live/stack/stack_local_alignment_60000_first_trial/operator_commands.json)转为执行历史，原快照／种子不可复跑。
+
+**第二轮重摆：抓偏，B阶段碰撞停止**：`stack_local_alignment_60000_rearranged_trial/`已实跑A→B→C；[原始结果](../../artifacts/live/stack/stack_local_alignment_60000_rearranged_trial/three_pick_run/complete.json)记录272份预测、2333条指令，只完成A一个闭合／释放指令周期，在B阶段以`isCollisionOccurred=True`停止，C未执行；收尾同时报告`servo remains enabled`，未确认安全停机，也没有有效最终状态。用户明确反馈第二次“完全抓偏”，[人工反馈](../../artifacts/live/stack/stack_local_alignment_60000_rearranged_trial/operator_feedback.json)按整体评价保存，未推算逐根成败及成功数量，原物理字段null保持。与首轮相同模型及全部控制参数的[准备检查](../../artifacts/live/stack/stack_local_alignment_60000_rearranged_trial/preparation_check.json)保留为执行前历史，不能当作当前安全状态。新旧快照、录像、预测和动作日志保持；旧命令已标为历史，不复跑。
+
+**第三轮四根：A阶段失败，已人工中断**：`stack_local_alignment_60000_four_pick_trial/`已实跑，[原始结果](../../artifacts/live/stack/stack_local_alignment_60000_four_pick_trial/four_pick_run/complete.json)为`operator_interrupt`、135份预测、1262条指令，A未完成闭合／释放周期，B/C/D未执行，`failure=null`。用户反馈“这次抓取失败”，[人工反馈](../../artifacts/live/stack/stack_local_alignment_60000_four_pick_trial/operator_feedback.json)记录整体失败，不推算成功数量或未执行目标的物理结果，原物理字段null保持。[收尾记录](../../artifacts/live/stack/stack_local_alignment_60000_four_pick_trial/completion_check.json)核对保存结束状态为停稳、伺服关闭、夹爪命令100，不是当前硬件状态。录像报告双路各1278帧，但`complete=false`且两路有`BrokenPipeError`，未做完整解码，不认定为抓取失败根因。原快照、确认轮廓、计划、日志和录像保留，用户已重摆，旧命令标为执行历史。
+
+**第四轮四根重摆：四个指令周期完成，现场仍失败并向左偏**：`stack_local_alignment_60000_four_pick_rearranged_trial/`已执行C→D→A→B，[原始结果](../../artifacts/live/stack/stack_local_alignment_60000_four_pick_rearranged_trial/four_pick_run/complete.json)记录500份预测、4378条指令、四周期及`failure=null`。用户明确“还是抓取失败”，并反馈在助手所见视角总体向左偏；[人工反馈](../../artifacts/live/stack/stack_local_alignment_60000_four_pick_rearranged_trial/operator_feedback.json)按图像方向的定性观察保存，不解释为已标定的机器人坐标偏差，不推算逐根成败、成功数量或唯一根因，原物理字段null不改。[收尾检查](../../artifacts/live/stack/stack_local_alignment_60000_four_pick_rearranged_trial/completion_check.json)核对保存结束状态停稳、伺服关闭、夹爪0；不是当前硬件状态。双路各5582帧，录像报告完整、编码错误空，未做全段解码。旧命令转为历史，原始照片／圈选／日志／录像保留。用户要求先提交当前项目，再准备从60000步续训30000步；固定验证／选模／保存规则不变，训练启动另等明确授权，不加入固定横向补偿。
+
+**原three-four状态：四根连续试验已结束，转入模型与闭环诊断**：最新`stack_three_four_four_pick_fresh_layout/four_pick_run/`已由操作者执行；用户反馈这几批均有部分抓到、部分失败，未逐根确认结果，原始`physical_grasp_success=null`保持。该轮及前四轮的录像、动作和选择全部保留，旧[操作者命令](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/operator_commands.json)已标为执行历史。当前固定诊断入口为[review/findings.json](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/findings.json)，包括[五轮指令审计](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/batch_audit.json)、[当前模型配置](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/model_audit.json)、[远端处理器统计核对](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/normalization_check.json)及[最新闭爪前对照](../../artifacts/live/stack/stack_three_four_four_pick_fresh_layout/review/stack_three_four_four_pick_fresh_layout_preclose.jpg)。现有证据优先指向末段模型位姿／纠偏与训练部署分布问题，扰动后的目标跟随退化及闭爪预测稳定性并列检查，尚无唯一根因；具体结果见[EVIDENCE](EVIDENCE.md#三根四根感知链路复核)。本次只做CPU保存产物复核、远端配置／处理器只读检查及官方／论文资料查询，没有新增策略推理、训练、部署、硬件访问或运行代码修改。
 
 **上一轮重摆四根：效果不错，B阶段因腕部相机中断**：`stack_three_four_four_pick_rearranged/four_pick_run/`已由操作者执行，[原始结果](../../artifacts/live/stack/stack_three_four_four_pick_rearranged/four_pick_run/complete.json)为`error`、275份预测、2564条指令，C→D→A完成三个闭爪／释放指令周期；切换B后腕部Sonix CAM1最新帧9550.5ms超过400ms而停止。C/D/A各625／818／1121条动作指令，B会话虽开始但未发送策略动作，不能记B物理失败。用户反馈“这次抓取效果不错”，作为整体定性反馈保存在[operator_feedback.json](../../artifacts/live/stack/stack_three_four_four_pick_rearranged/operator_feedback.json)，未逐根确认成功及数量；原`physical_grasp_success=null`保持。快照`11e3cdad587b4bbe963c8b88da5282af`、[标注叠图](../../artifacts/live/stack/stack_three_four_four_pick_rearranged/scene_snapshot/annotation_preview.png)、[选择检查](../../artifacts/live/stack/stack_three_four_four_pick_rearranged/selection_check.json)、原始录像与日志均保留。结束保存状态停稳、伺服关闭、夹爪0且距START最大0.0001467975°，不是当前硬件观测。操作者已重新摆放，旧实验／命令状态已转为历史，继续准备见上段。
 

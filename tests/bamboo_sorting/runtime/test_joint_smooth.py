@@ -403,6 +403,40 @@ def test_baseline_stack_accepts_one_cycle_without_target_files(monkeypatch,capsy
     assert plan['requested_suction_cycles']==1 and plan['max_seconds']==120
 
 
+def test_local_alignment_selects_60000_weights_and_saved_processors_without_changing_control(monkeypatch,capsys,tmp_path):
+    m=load_entry(monkeypatch)
+    from lerobot.bamboo_sorting import model_profiles as profiles
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    (tmp_path/'snapshot.json').write_text(json.dumps(dict(schema='joint_target_shadow_snapshot',
+        snapshot_id='new-scene',execution_eligible=False)))
+    labels=tmp_path/'selection.json'
+    labels.write_text(json.dumps(dict(schema='joint_target_shadow_selection',snapshot_id='new-scene',
+        human_reviewed=True,targets=[dict(target_id=t,polygons=[[[x,100],[x+20,100],[x+20,400],[x,400]]])
+                                    for t,x in [('A',100),('B',200),('C',300)]])))
+    args=['--model','target-stack','--target-snapshot',str(tmp_path),'--target-selections',str(labels),
+          '--target-sequence','C','A','B','--target-preview','--track-target-motion',
+          '--transport-age-aligned','--latency-tolerant','--max-seconds','600']
+    assert m.main(args)==0
+    old=json.loads(capsys.readouterr().out)
+    assert m.main([*args,'--target-stack-model','local-alignment'])==0
+    new=json.loads(capsys.readouterr().out)
+    assert new['checkpoint']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_CHECKPOINT
+    assert new['checkpoint_sha256']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_MODEL_SHA
+    assert new['inference_script']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_SERVICE_ROOT+'/joint_inference_stdio.py'
+    assert new['inference_pythonpath']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_PYTHONPATH
+    assert old['checkpoint']==profiles.TARGET_STACK_THREE_FOUR_CHECKPOINT
+    assert {k for k in new if new[k]!=old.get(k)}=={
+        'checkpoint','checkpoint_sha256','target_stack_model','inference_script','inference_pythonpath'}
+    assert new['control_hz']==25 and new['max_camera_age_ms']==400
+    assert new['max_prediction_age_s']==1.5 and new['watchdog_s']==1.5
+    assert new['target_sequence']==['C','A','B']
+    for extra in (['--model','baseline-stack'],['--model','target-pair'],
+                  ['--model','target-stack','--target-outline-width-px','1']):
+        with pytest.raises(SystemExit):m.parse_args([*extra,'--target-stack-model','local-alignment'])
+
+
 def test_three_four_stack_selects_new_weights_with_existing_control_and_worker(monkeypatch,capsys,tmp_path):
     m=load_entry(monkeypatch)
     from lerobot.bamboo_sorting import model_profiles as profiles
