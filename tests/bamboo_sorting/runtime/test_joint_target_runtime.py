@@ -15,6 +15,41 @@ def inputs():
     return mask,seed,frame
 
 
+def test_configured_score_threshold_recovers_current_foreground_but_still_stops_on_empty():
+    from lerobot.bamboo_sorting.runtime.joint_target_runtime import TargetForegroundMissing
+    mask,seed,frame=inputs()
+    seed.update(target_selection_mode='multi_foreground',visible_targets=[
+        dict(target_id='A',mask_png=seed['mask_png']),
+        dict(target_id='B',mask_png=seed['excluded_mask_png'])])
+    current=np.zeros_like(mask);current[250:300,400:420]=True
+    thresholds=[]
+    def segmenter(rgb,*,score_threshold=.5):
+        thresholds.append(score_threshold)
+        result=current if score_threshold < .3 else np.zeros_like(mask)
+        return result.astype(np.uint16),[dict(mask_id=1,class_id=1,score=.25)]
+    default=FreshTargetInputs(seed,segmenter)
+    with pytest.raises(TargetForegroundMissing):
+        default.prepare(frame,dict(frame_id='default',target_id='A',phase='approach'))
+    seed['segmentation_score_threshold']=.2
+    relaxed=FreshTargetInputs(seed,segmenter)
+    _,evidence=relaxed.prepare(frame,dict(frame_id='relaxed',target_id='A',phase='approach'))
+    assert thresholds==[.5,.2]
+    assert evidence['segmentation_score_threshold']==.2
+    np.testing.assert_array_equal(decode_mask(evidence['mask_png']),current)
+    current[:]=False
+    with pytest.raises(TargetForegroundMissing) as caught:
+        relaxed.prepare(frame,dict(frame_id='empty',target_id='A',phase='approach'))
+    assert caught.value.evidence['segmentation_score_threshold']==.2
+    assert not decode_mask(caught.value.evidence['mask_png'],allow_empty=True).any()
+
+
+@pytest.mark.parametrize('threshold',[0,-.1,1.1,float('nan'),float('inf'),True,'0.2'])
+def test_invalid_segmentation_threshold_is_rejected_before_segmentation(threshold):
+    _,seed,_=inputs();seed['segmentation_score_threshold']=threshold
+    with pytest.raises(ValueError,match='segmentation score threshold'):
+        FreshTargetInputs(seed,lambda rgb:pytest.fail('segmenter accessed'))
+
+
 @pytest.mark.parametrize('outline_width_px', [1, 2])
 @pytest.mark.parametrize('multi', [False, True])
 def test_fresh_mask_render_matches_training_without_forging_review(outline_width_px, multi):

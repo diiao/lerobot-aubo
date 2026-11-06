@@ -10,7 +10,7 @@ import torch
 
 from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import (
     SELECTION_RULE, build_monitor_plan, collect_action_chunks, evaluate_monitor, publish_best_checkpoint,
-    score_action_chunks, selection_comparison,
+    score_action_chunks, selection_comparison, load_selection_baseline,
 )
 
 
@@ -35,6 +35,24 @@ def samples(groups=None):
 def candidate(primary=1., guard=.1):
     return dict(primary=primary, primary_name=SELECTION_RULE["primary"], seeds=[42, 43, 44], coverage=[("a", 0)],
                 guards={"preclose_joint_mae_deg": guard, "close_timing_steps": 0., "release_timing_steps": 0.})
+
+
+def test_continuation_baseline_restores_historical_guards_and_checks_coverage(tmp_path):
+    metric = candidate(); metric["guard_reference"] = {**metric["guards"], "preclose_joint_mae_deg": .05}
+    metric["coverage"] = [("full", "scene", 0, 0, 1, "preclose")]
+    (tmp_path/"selection_metrics.json").write_text(json.dumps(metric))
+    plan = {"observations": [dict(demo_scope="full", scene_id="scene", source_index=0,
+                                 episode_index=0, frame_index=1, phase="preclose")]}
+    restored = load_selection_baseline(tmp_path, plan, [42,43,44])
+    assert restored["coverage"] == metric["coverage"] and restored["guard_reference"] == metric["guard_reference"]
+    comparison = selection_comparison({**restored, "primary": .9, "guards": {**restored["guards"],
+                                     "preclose_joint_mae_deg": .11}}, restored)
+    assert "preclose_joint_mae_deg" in comparison["blocked_guards"]
+    with pytest.raises(ValueError, match="seed/coverage"):
+        load_selection_baseline(tmp_path, plan, [42])
+    plan["observations"][0]["scene_id"] = "different"
+    with pytest.raises(ValueError, match="seed/coverage"):
+        load_selection_baseline(tmp_path, plan, [42,43,44])
 
 
 def test_macro_balancing_does_not_favor_long_easy_scenes_or_the_larger_scope():

@@ -42,6 +42,8 @@ def parse_args(argv=None):
     parser.add_argument("--validation-points-per-phase", type=int, default=8)
     parser.add_argument("--validation-seeds", type=int, nargs="+",
                         help="Fixed paired flow-noise seeds; default is seed, seed+1, seed+2")
+    parser.add_argument("--resume-training-state", type=Path,
+                        help="Explicit optimizer/scheduler continuation into a NEW output; steps are additional updates")
     args = parser.parse_args(argv)
     if args.target_outline_width_px != 2 and not args.target_conditioned:
         parser.error("target-outline-width-px requires --target-conditioned")
@@ -72,6 +74,12 @@ def parse_args(argv=None):
             parser.error("periodic selection requires target-conditioned manifest plan/train")
         if args.checkpoint_steps:
             parser.error("periodic best/final retention cannot also retain explicit checkpoint-steps")
+    if args.resume_training_state is not None:
+        if (args.stage not in ("plan", "train") or not args.validation_every
+                or args.normalization_source != "base_checkpoint" or args.base_path is None):
+            parser.error("resume-training-state requires periodic manifest plan/train and base_checkpoint normalization")
+        if args.learning_rate is not None:
+            parser.error("resume-training-state preserves the saved learning rate; do not override it")
     if args.prepared_data is not None and (args.data_manifest is None or args.stage not in ("plan", "train", "evaluate")):
         parser.error("prepared-data requires a manifest and plan/train/evaluate")
     if args.target_conditioned and args.stage in ("preflight", "train", "evaluate") and args.data_manifest is None:
@@ -102,11 +110,54 @@ def parse_args(argv=None):
             if any(output == p or p in output.parents or output in p.parents for p in protected):
                 parser.error("output must be independent of manifest and source roots")
         for path in (args.train_root, args.validation_root, args.train_evidence, args.validation_evidence, args.prepared_data,
-                     args.base_path, args.vlm_path, args.checkpoint):
+                     args.base_path, args.vlm_path, args.checkpoint, args.resume_training_state):
             if path is not None and (output == path.resolve() or path.resolve() in output.parents
                                      or output in path.resolve().parents):
                 parser.error("output must be independent of input roots")
     return args
+
+
+def read_continuation_state(args, prepared):
+    """Restore explicit optimizer progress; do not claim to restore data/RNG position."""
+    import torch
+
+    path = args.resume_training_state
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    progress = json.loads((args.base_path / "training_progress.json").read_text())
+    step = state["step"]
+    if type(step) is not int or step < 1 or progress["optimizer_step"] != step:
+        raise ValueError("optimizer state step differs from base checkpoint")
+    if json.loads((args.base_path / "data_preflight.json").read_text()) != prepared:
+        raise ValueError("continuation data/split/statistics differ from base checkpoint")
+    source_plan = json.loads((path.parent / "plan.json").read_text())
+    for key in ("batch_size", "seed", "local_demo_fraction", "target_outline_width_px"):
+        if source_plan.get(key) != getattr(args, key):
+            raise ValueError(f"continuation training setting differs: {key}")
+    source_pointer = json.loads((path.parent / "best_checkpoint.json").read_text())
+    if (Path(source_pointer["path"]).resolve() != args.base_path.resolve()
+            or source_pointer["optimizer_steps"] != step):
+        raise ValueError("continuation requires the best checkpoint at the saved optimizer step")
+    if state["scheduler"]["last_epoch"] != step:
+        raise ValueError("scheduler step differs from optimizer step")
+    groups = state["optimizer"]["param_groups"]
+    if (not groups or len(groups) != len(state["scheduler"]["_last_lr"])
+            or any(g["lr"] != lr or not math.isfinite(lr) or lr <= 0
+                   for g, lr in zip(groups, state["scheduler"]["_last_lr"], strict=True))):
+        raise ValueError("optimizer/scheduler learning rates differ")
+    # Legacy training_state.pt was written only after its full optimization budget.
+    state["schedule_steps"] = state.get("schedule_steps", step)
+    if type(state["schedule_steps"]) is not int or not 1 <= state["schedule_steps"] <= step:
+        raise ValueError("invalid original schedule horizon")
+    return state
+
+
+def training_lr_scale(step, schedule_steps):
+    """The original cosine schedule, clamped at its existing terminal rate."""
+    warmup = min(1000, max(1, schedule_steps // 10))
+    if step < warmup:
+        return (step + 1) / warmup
+    return .025 + .975 * (1 + math.cos(math.pi * min(
+        (step - warmup) / max(1, schedule_steps - warmup), 1))) / 2
 
 
 def main(argv=None):
@@ -118,6 +169,10 @@ def main(argv=None):
         from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import SELECTION_RULE
         plan.update(selection_rule=SELECTION_RULE, checkpoint_retention="verified_best_and_final",
                     automatic_checkpoint_deletion="superseded best owned by this output only", early_stopping=False)
+    if args.resume_training_state is not None:
+        plan.update(step_budget="additional_updates", selection_baseline=str(args.base_path.resolve()),
+                    optimizer_resume=True, scheduler_resume=True, data_rng_position_restored=False,
+                    learning_rate_policy="preserve original schedule horizon and terminal rate")
     print(json.dumps(plan, indent=2, ensure_ascii=False))
     if args.stage == "plan":
         return 0
@@ -329,10 +384,15 @@ def run_model(args, prepared):
             policy.zero_grad(set_to_none=True)
             del loss
         else:
+            continuation = read_continuation_state(args, prepared) if args.resume_training_state else None
+            start_step = continuation["step"] if continuation else 0
+            final_step = start_step + args.steps
+            schedule_steps = continuation["schedule_steps"] if continuation else args.steps
             train_dataset = dataset("train")
             if args.validation_every:
                 from lerobot.bamboo_sorting.policy.joint_checkpoint_selection import (
                     SELECTION_RULE, build_monitor_plan, evaluate_monitor, publish_best_checkpoint, selection_comparison,
+                    load_selection_baseline,
                 )
                 validation_dataset = dataset("validation")
                 monitor_plan = build_monitor_plan(prepared["validation"], points_per_phase=args.validation_points_per_phase)
@@ -341,18 +401,29 @@ def run_model(args, prepared):
                     "full_validation_frames": len(validation_dataset), "seeds": args.validation_seeds,
                     "rule": SELECTION_RULE, "validation_every": args.validation_every,
                     "final_step_always_checked": True, "early_stopping": False})
+                if continuation:
+                    best_metrics = load_selection_baseline(args.base_path, monitor_plan, args.validation_seeds)
+                    best_path = args.base_path.resolve()
+                    write_json(args.output / "best_checkpoint.json", dict(path=str(best_path),
+                        optimizer_steps=start_step, primary=best_metrics["primary"],
+                        primary_name=best_metrics["primary_name"], external_baseline=True))
             sampler = make_training_sampler(prepared["train"], args.local_demo_fraction, seed=args.seed)
             batches = loader(train_dataset, shuffle=sampler is None, sampler=sampler)
             optimizer = cfg.get_optimizer_preset().build(params)
-            warmup = min(1000, max(1, args.steps // 10))
-            def scale(step):
-                if step < warmup:
-                    return (step + 1) / warmup
-                return .025 + .975 * (1 + math.cos(math.pi * min((step - warmup) / max(1, args.steps - warmup), 1))) / 2
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, scale)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, partial(training_lr_scale, schedule_steps=schedule_steps))
+            if continuation:
+                optimizer.load_state_dict(continuation["optimizer"])
+                scheduler.load_state_dict(continuation["scheduler"])
+                write_json(args.output / "continuation.json", dict(base_checkpoint=str(args.base_path.resolve()),
+                    training_state=str(args.resume_training_state.resolve()), start_step=start_step,
+                    additional_steps=args.steps, final_step=final_step, schedule_steps=schedule_steps,
+                    restored_learning_rates=[group["lr"] for group in optimizer.param_groups],
+                    optimizer_resume=True, scheduler_resume=True, data_rng_position_restored=False,
+                    selection_baseline_primary=best_metrics["primary"]))
+                del continuation
             iterator, start = iter(batches), time.monotonic()
             with (args.output / "training.jsonl").open("x") as stream:
-                for step in range(1, args.steps + 1):
+                for step in range(start_step + 1, final_step + 1):
                     try:
                         raw = next(iterator)
                     except StopIteration:
@@ -372,12 +443,12 @@ def run_model(args, prepared):
                         "lr": optimizer.param_groups[0]["lr"], "elapsed_s": time.monotonic() - start}
                     stream.write(json.dumps(record) + "\n")
                     stream.flush()
-                    if step == 1 or step % 100 == 0:
+                    if step == start_step + 1 or step % 100 == 0:
                         print(f"step={step} loss={float(loss.detach()):.6f}", flush=True)
                     if step in args.checkpoint_steps:
                         save_checkpoint(args.output / "checkpoints" / f"step_{step:06d}", step)
                         print(f"checkpoint_saved step={step}", flush=True)
-                    if args.validation_every and (step % args.validation_every == 0 or step == args.steps):
+                    if args.validation_every and ((step - start_step) % args.validation_every == 0 or step == final_step):
                         metrics = evaluate_monitor(policy, pre, post, validation_dataset, monitor_plan["observations"],
                             batch_size=args.batch_size, seeds=args.validation_seeds)
                         comparison = selection_comparison(metrics, best_metrics)
@@ -387,7 +458,8 @@ def run_model(args, prepared):
                         if comparison["improved"]:
                             metrics["guard_reference"] = {k: min(v, best_metrics.get("guard_reference", best_metrics["guards"])[k])
                                 if best_metrics else v for k, v in metrics["guards"].items()}
-                            best_path = publish_best_checkpoint(args.output, step, metrics, best_path,
+                            owned_previous = best_path if best_path is not None and best_path.parent == args.output / "checkpoints" else None
+                            best_path = publish_best_checkpoint(args.output, step, metrics, owned_previous,
                                                                 save_checkpoint, verify_saved_best)
                             best_metrics = metrics
                         decision = dict(optimizer_step=step, primary=metrics["primary"],
@@ -399,11 +471,12 @@ def run_model(args, prepared):
                             history.write(json.dumps(decision, allow_nan=False) + "\n")
                         print(f"validation step={step} primary={metrics['primary']:.6f} "
                               f"new_best={comparison['improved']} blocked={comparison['blocked_guards']}", flush=True)
-            torch.save({"step": args.steps, "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()},
+            torch.save({"step": final_step, "schedule_steps": schedule_steps,
+                        "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict()},
                        args.output / "training_state.pt")
             del optimizer, scheduler, loss
         checkpoint = args.output / "final"
-        save_checkpoint(checkpoint, args.steps if args.stage == "train" else 0)
+        save_checkpoint(checkpoint, final_step if args.stage == "train" else 0)
         torch.manual_seed(args.seed)
         before = post(policy.predict_action_chunk(pre(observation(raw)))).detach().cpu()
         del params, policy, pre, post
@@ -436,13 +509,13 @@ def run_model(args, prepared):
             chunks = post(policy.predict_action_chunk(pre(observation(raw)))).cpu().numpy()
             predicted = chunks[:, 0]
             if args.validation_every:
-                full_chunks.extend(chunks); expert_chunks.extend(raw["action"].numpy())
-                full_padding.extend(raw["action_is_pad"].numpy())
+                full_chunks.extend(chunks.copy()); expert_chunks.extend(raw["action"].numpy().copy())
+                full_padding.extend(raw["action_is_pad"].numpy().copy())
             if not torch.isfinite(loss).all() or not np.isfinite(predicted).all():
                 raise ValueError("nonfinite held-out results")
-            states.extend(raw["observation.state"].numpy())
-            targets.extend(raw["action"][:, 0].numpy())
-            predictions.extend(predicted)
+            states.extend(raw["observation.state"].numpy().copy())
+            targets.extend(raw["action"][:, 0].numpy().copy())
+            predictions.extend(predicted.copy())
             episodes.extend(raw["episode_index"].tolist())
             frames.extend(raw["frame_index"].tolist())
             batch_frames = len(raw["episode_index"])
@@ -510,6 +583,7 @@ def run_model(args, prepared):
         selection_result = dict(best_checkpoint=str(best_path), final_checkpoint=str(checkpoint),
                                 checkpoint_retention="verified_best_and_final", early_stopping=False)
     write_json(args.output / "complete.json", {"stage": args.stage, "completed": True, **selection_result,
+        **({"optimizer_steps": final_step, "optimizer_steps_this_run": args.steps} if args.stage == "train" else {}),
         "policy_execution_authorized": False, "physical_success_verified": False})
 
 

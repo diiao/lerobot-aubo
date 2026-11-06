@@ -27,6 +27,11 @@ from ..model_profiles import (
     TARGET_STACK_LOCAL_ALIGNMENT_MODEL_SHA,
     TARGET_STACK_LOCAL_ALIGNMENT_SERVICE_ROOT,
     TARGET_STACK_LOCAL_ALIGNMENT_PYTHONPATH,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_SERVICE_ROOT,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_SEGMENTATION_SCORE_THRESHOLD,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_PYTHONPATH,
     TARGET_STACK_PI05_CHECKPOINT,
     TARGET_STACK_PI05_MODEL_SHA,
     TARGET_STACK_PI05_PYTHONPATH,
@@ -61,7 +66,7 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
         raise ValueError('target outline width must be 1 or 2 pixels')
     if outline_width_px == 1 and model != 'target-stack':
         raise ValueError('thin outline checkpoint requires target-stack')
-    if stack_model not in ('original', 'three-four', 'local-alignment', 'pi05-29000', 'pi05-fp32-128', 'pi05-fp32-21000'):
+    if stack_model not in ('original', 'three-four', 'local-alignment', 'local-alignment-70000', 'pi05-29000', 'pi05-fp32-128', 'pi05-fp32-21000'):
         raise ValueError('unknown stack model')
     if stack_model != 'original' and (model != 'target-stack' or outline_width_px != 2):
         raise ValueError(f'{stack_model} checkpoint requires target-stack with 2px outline')
@@ -126,6 +131,12 @@ def prepare_live_setup(snapshot_path, selection_path, target_id, *, paired_separ
                            expected_sha256=TARGET_STACK_LOCAL_ALIGNMENT_MODEL_SHA,
                            inference_script=TARGET_STACK_LOCAL_ALIGNMENT_SERVICE_ROOT + '/joint_inference_stdio.py',
                            pythonpath=TARGET_STACK_LOCAL_ALIGNMENT_PYTHONPATH)
+        if stack_model == 'local-alignment-70000':
+            seed['segmentation_score_threshold'] = TARGET_STACK_LOCAL_ALIGNMENT_70000_SEGMENTATION_SCORE_THRESHOLD
+            options.update(checkpoint=TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT,
+                           expected_sha256=TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+                           inference_script=TARGET_STACK_LOCAL_ALIGNMENT_70000_SERVICE_ROOT + '/joint_inference_stdio.py',
+                           pythonpath=TARGET_STACK_LOCAL_ALIGNMENT_70000_PYTHONPATH)
         if stack_model == 'pi05-29000':
             options.update(remote_root=TARGET_STACK_PI05_REMOTE_ROOT,
                            remote_python=TARGET_STACK_PI05_REMOTE_PYTHON,

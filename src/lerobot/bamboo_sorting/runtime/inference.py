@@ -25,7 +25,8 @@ class InferencePipe:
                  remote_root=LEGACY_REMOTE_ROOT, checkpoint=None, expected_sha256=LEGACY_MODEL_SHA,
                  inference_script=None, return_action_chunk=False, request_timeout_s=2.,
                  target_conditioned=False, pythonpath=None, live_target_seed=None, segmentation_checkpoint=None,
-                 target_outline_width_px=2, remote_python=LEGACY_REMOTE_PYTHON, expected_precision_contract=None):
+                 target_outline_width_px=2, remote_python=LEGACY_REMOTE_PYTHON, expected_precision_contract=None,
+                 raw_rgb_ablation=False):
         if type(target_outline_width_px) is not int or target_outline_width_px not in (1, 2):
             raise ValueError('target outline width must be 1 or 2 pixels')
         if target_outline_width_px != 2 and not target_conditioned:
@@ -34,6 +35,8 @@ class InferencePipe:
             raise ValueError('live target seed and segmentation checkpoint must be provided together')
         if live_target_seed is not None and not target_conditioned:
             raise ValueError('live segmentation requires target-conditioned model')
+        if raw_rgb_ablation and (not target_conditioned or live_target_seed is not None):
+            raise ValueError('raw RGB ablation requires the target checkpoint without live segmentation')
         if not math.isfinite(request_timeout_s) or request_timeout_s <= 0:
             raise ValueError('inference request timeout must be finite and positive')
         self.request_timeout_s = request_timeout_s
@@ -41,6 +44,7 @@ class InferencePipe:
         self.expected_sha256 = expected_sha256
         self.return_action_chunk = return_action_chunk
         self.target_conditioned = target_conditioned
+        self.raw_rgb_ablation = raw_rgb_ablation
         self.live_target_seed = live_target_seed
         self.contract = joint_contract_record()
         if target_conditioned:
@@ -112,8 +116,22 @@ class InferencePipe:
             raise RuntimeError(result['error'])
         return result
 
-    def predict(self, index, state, images, *, codec='jpeg95', seed=None, target_input=None, target_motion=None):
+    def predict(self, index, state, images, *, codec='jpeg95', seed=None, target_input=None, target_motion=None,
+                raw_rgb_phase=None):
         start = time.perf_counter()
+        if getattr(self, 'raw_rgb_ablation', False):
+            if (set(images) != {'global_rgb', 'grasp_rgb'} or codec != 'rgb_zlib'
+                    or target_input is not None or target_motion is not None
+                    or raw_rgb_phase not in ('approach', 'transport')):
+                raise ValueError('raw RGB ablation requires raw lossless images and an accepted-command phase, without a selected target')
+            # Keep the saved feature names/adapter contract, without rendering
+            # any pixels. The adapter passes only RGB, state and the fixed task
+            # to the policy; this constant identity selects no scene object.
+            from ..policy.joint_target import TARGET_IMAGE_KEY
+            images = {TARGET_IMAGE_KEY: images['global_rgb'], 'grasp_rgb': images['grasp_rgb']}
+            target_input = dict(target_id='unselected', frame_id=f'raw_rgb/{index}', phase=raw_rgb_phase)
+        elif raw_rgb_phase is not None:
+            raise ValueError('raw RGB phase requires the explicit ablation mode')
         if self.target_conditioned:
             keys = ('global_rgb', 'grasp_rgb') if self.live_target_seed is not None else self.contract['image_keys']
             if (set(images) != set(keys) or not isinstance(target_input, dict)
@@ -143,6 +161,11 @@ class InferencePipe:
         sent_at = time.perf_counter()
         result = self.receive(self.request_timeout_s)
         received_at = time.perf_counter()
+        if (self.live_target_seed and target_input['phase'] == 'approach'
+                and ('error' not in result or result.get('error_code') == TargetForegroundMissing.code)
+                and result.get('target_evidence', {}).get('segmentation_score_threshold', .5)
+                != self.live_target_seed.get('segmentation_score_threshold', .5)):
+            raise ValueError('live segmentation score threshold mismatch')
         if 'error' in result:
             evidence = result.get('target_evidence', {})
             if (result.get('error_code') != TargetForegroundMissing.code
@@ -193,6 +216,9 @@ class InferencePipe:
         else:
             finite_vector(result['raw_action'], 7, 'raw model action')
             finite_vector(result['action'], 7, 'decoded model action')
+        if getattr(self, 'raw_rgb_ablation', False):
+            result['input_ablation'] = dict(mode='raw_rgb', selected_target_id=None,
+                phase=raw_rgb_phase, segmentation_enabled=False, outline_applied=False)
         validated_at = time.perf_counter()
         result['transport'] = {'codec': codec, 'request_bytes': len(wire.encode()),
             'ssh_compression': True, 'encode_s': encoded_at - start,

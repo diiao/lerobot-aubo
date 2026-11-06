@@ -250,6 +250,23 @@ def evaluate_monitor(policy, pre, post, dataset, observations, *, batch_size, se
                 primary_seed_std=float(np.std([r["primary"] for r in runs])), physical_success_verified=False)
 
 
+def load_selection_baseline(checkpoint, monitor_plan, seeds):
+    """Carry the old accepted best and its nonaccumulating guards into a new run."""
+    checkpoint = Path(checkpoint)
+    metrics = json.loads((checkpoint / "selection_metrics.json").read_text())
+    metrics["coverage"] = [tuple(row) for row in metrics["coverage"]]
+    coverage = [(r["demo_scope"], r["scene_id"], r["source_index"], r["episode_index"], r["frame_index"], r["phase"])
+                for r in monitor_plan["observations"]]
+    if metrics["seeds"] != list(seeds) or metrics["coverage"] != coverage:
+        raise ValueError("continuation selection seed/coverage differs from baseline")
+    reference = metrics.get("guard_reference")
+    if (reference is None or reference.keys() != metrics["guards"].keys()
+            or any(not np.isfinite(v) or v < 0 or v > metrics["guards"][k] for k, v in reference.items())):
+        raise ValueError("continuation requires valid historical guard references")
+    selection_comparison(metrics, metrics)
+    return metrics
+
+
 def selection_comparison(candidate, best):
     values = [candidate["primary"], *candidate["guards"].values()]
     if candidate["primary_name"] != SELECTION_RULE["primary"] or any(not np.isfinite(v) or v < 0 for v in values):

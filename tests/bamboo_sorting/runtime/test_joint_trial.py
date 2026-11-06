@@ -691,7 +691,7 @@ def test_pending_camera_does_not_hide_other_camera_errors(failure):
     assert s.previous=={'global_rgb':10.,'grasp_rgb':10.}
 
 
-@pytest.mark.parametrize('corruption',[None,'id','checkpoint','target','frame','phase','snapshot','mode','nonempty','ordinary_error'])
+@pytest.mark.parametrize('corruption',[None,'id','checkpoint','target','frame','phase','snapshot','mode','nonempty','ordinary_error','threshold'])
 def test_empty_target_pipe_requires_matching_typed_evidence(monkeypatch,corruption):
     import io
     from types import SimpleNamespace
@@ -718,8 +718,24 @@ def test_empty_target_pipe_requires_matching_typed_evidence(monkeypatch,corrupti
     if corruption=='snapshot':evidence['seed_snapshot_id']='old'
     if corruption=='mode':evidence['target_selection_mode']='paired_foreground'
     if corruption=='ordinary_error':response['error_code']='model_error'
+    if corruption=='threshold':pipe.live_target_seed['segmentation_score_threshold']=.2
     monkeypatch.setattr(pipe,'receive',lambda timeout:response)
     images={k:np.zeros((480,640,3),np.uint8) for k in ('global_rgb','grasp_rgb')}
     with pytest.raises(TargetForegroundMissing if corruption is None else ValueError) as caught:
         pipe.predict(42,[*START_DEG,0],images,codec='rgb_zlib',target_input=meta)
     if corruption is not None:assert not isinstance(caught.value,TargetForegroundMissing)
+
+
+def test_prediction_rejects_worker_that_ignores_configured_segmentation_threshold(monkeypatch):
+    import io
+    import numpy as np
+    from types import SimpleNamespace
+    from lerobot.bamboo_sorting.runtime.inference import InferencePipe
+    pipe=InferencePipe.__new__(InferencePipe)
+    pipe.target_conditioned=True;pipe.contract={};pipe.request_timeout_s=5
+    pipe.live_target_seed=dict(segmentation_score_threshold=.2)
+    pipe.process=SimpleNamespace(stdin=io.StringIO())
+    monkeypatch.setattr(pipe,'receive',lambda timeout:{'target_evidence':{'segmentation_score_threshold':.5}})
+    images={k:np.zeros((480,640,3),np.uint8) for k in ('global_rgb','grasp_rgb')}
+    with pytest.raises(ValueError,match='segmentation score threshold mismatch'):
+        pipe.predict(42,[*START_DEG,0],images,target_input=dict(target_id='C',frame_id='new',phase='approach'))

@@ -403,7 +403,169 @@ def test_baseline_stack_accepts_one_cycle_without_target_files(monkeypatch,capsy
     assert plan['requested_suction_cycles']==1 and plan['max_seconds']==120
 
 
-def test_local_alignment_selects_60000_weights_and_saved_processors_without_changing_control(monkeypatch,capsys,tmp_path):
+def test_raw_rgb_plan_keeps_current_weights_without_target_selection(monkeypatch,capsys):
+    m=load_entry(monkeypatch)
+    def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
+    monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
+    monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
+    argv=['--model','target-stack','--target-stack-model','local-alignment-70000','--raw-rgb',
+          '--cycles','4','--transport-age-aligned','--latency-tolerant','--max-seconds','600']
+    assert m.main(argv)==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['checkpoint']==m.TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT
+    assert plan['checkpoint_sha256']==m.TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA
+    assert plan['input_ablation']=='raw_rgb' and plan['target_conditioning_enabled'] is False
+    assert plan['segmentation_enabled'] is False and plan['image_codec']=='rgb_zlib'
+    assert not any(k in plan for k in ('target_id','target_sequence','seed_snapshot_id','segmentation_checkpoint'))
+    assert plan['requested_suction_cycles']==4 and plan['automatic_home'] is True
+    assert plan['max_seconds_scope']=='per_cycle' and plan['inference_session_per_cycle'] is True
+    assert plan['control_hz']==25 and plan['joint_speed_deg_s']==5
+    assert plan['watchdog_s']==1.5 and plan['max_camera_age_ms']==400
+    for extra in (['--target-id','A'],['--target-sequence','C','D','A','B'],
+                  ['--target-snapshot','unused'],['--target-preview'],['--track-target-motion']):
+        with pytest.raises(SystemExit):m.main(argv+extra)
+    with pytest.raises(SystemExit):m.main(['--model','baseline-stack','--raw-rgb'])
+    with pytest.raises(SystemExit):m.main(['--model','target-stack','--raw-rgb'])
+
+
+def test_raw_rgb_pipe_preserves_pixels_and_uses_no_scene_identity(monkeypatch,tmp_path):
+    import base64
+    import zlib
+    from lerobot.bamboo_sorting.runtime import inference as inf
+    from lerobot.bamboo_sorting.policy.joint_target import TARGET_IMAGE_KEY
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    m=load_entry(monkeypatch)
+    args,sequence,target_mode,approach,mixed,timeout,parser=m.parse_args(
+        ['--model','target-stack','--target-stack-model','local-alignment-70000','--raw-rgb'])
+    _,_,target_options,_=m.resolve_targets(args,sequence,target_mode,parser)
+    options=m.resolve_config(args,sequence,target_mode,approach,mixed,timeout,target_options)['pipe_options']
+    launches=[]
+    class Process:
+        def __init__(self,command,**kw):launches.append(command);self.stdin=io.StringIO()
+        def wait(self,timeout):pass
+    monkeypatch.setattr(inf.subprocess,'Popen',Process)
+    chunk=[[0.]*7 for _ in range(50)]
+    messages=iter([dict(ready=True,checkpoint_sha256=m.TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+        contract=target_policy_contract_record(),action_chunk_available=True,target_live=False),
+        dict(id=0,checkpoint_sha256=m.TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+             shape=[50,7],action=chunk[0],raw_action=chunk[0],action_chunk=chunk,raw_action_chunk=chunk)])
+    monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:next(messages))
+    pipe=inf.InferencePipe(tmp_path,**options)
+    try:
+        assert '--target-conditioned' in launches[0][-1]
+        assert '--target-segmentation-checkpoint' not in launches[0][-1]
+        images={'global_rgb':np.arange(480*640*3,dtype=np.uint8).reshape(480,640,3),
+                'grasp_rgb':np.full((480,640,3),91,np.uint8)}
+        result=pipe.predict(0,[0.]*7,images,codec='rgb_zlib',raw_rgb_phase='approach')
+        packet=json.loads(pipe.process.stdin.getvalue())
+        assert set(packet['images'])=={TARGET_IMAGE_KEY,'grasp_rgb'}
+        assert zlib.decompress(base64.b64decode(packet['images'][TARGET_IMAGE_KEY]))==images['global_rgb'].tobytes()
+        assert zlib.decompress(base64.b64decode(packet['images']['grasp_rgb']))==images['grasp_rgb'].tobytes()
+        assert packet['target_input']==dict(target_id='unselected',frame_id='raw_rgb/0',phase='approach')
+        assert 'target_seed' not in packet and 'target_motion' not in packet
+        assert result['input_ablation']['outline_applied'] is False
+        assert result['input_ablation']['selected_target_id'] is None
+        for extra in ({'target_input':{'target_id':'A'}},{'target_motion':{}},{'codec':'jpeg95'}):
+            with pytest.raises(ValueError,match='raw RGB ablation requires'):
+                pipe.predict(1,[0.]*7,images,**{'codec':'rgb_zlib','raw_rgb_phase':'approach',**extra})
+    finally:pipe.close()
+
+
+@pytest.mark.parametrize('home_failure',[False,True])
+def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch,home_failure):
+    from concurrent.futures import Future
+    from lerobot.robots.aubo_i10 import aubo_i10
+    m=load_entry(monkeypatch)
+    runtime=m.continuous
+    clock=[10.];q=[*START_DEG,0.];enabled=[False]
+    workers=[];homes=[];io_commands=[];phases=[]
+    monkeypatch.setattr(runtime.time,'perf_counter',lambda:clock[0])
+    monkeypatch.setattr(runtime.time,'sleep',lambda s:clock.__setitem__(0,clock[0]+s))
+    monkeypatch.setattr(m.sys.stdin,'isatty',lambda:True)
+    monkeypatch.setattr(runtime,'read_task',lambda:'Pick one strip and place it in the collection area.')
+    monkeypatch.setattr('builtins.input',lambda _: '')
+    class Station:
+        lower=[-360]*6;upper=[360]*6;cameras={}
+        def __init__(self):self.iface=self;self.state=self;self.algorithm=self;self.io_readback=self
+        def connect(self):pass
+        def close(self):pass
+        def current(self,**kw):return q.copy(),[.2,-.5,.3],clock[0]
+        def observe(self,**kw):
+            clock[0]+=.01  # New image captured after any accepted IO command.
+            return q.copy(),{k:np.full((480,640,3),len(homes),np.uint8)
+                             for k in ('global_rgb','grasp_rgb')},[clock[0]]*3
+        def getMotionControl(self):return self
+        def isSteady(self):return True
+        def isServoModeEnabled(self):return enabled[0]
+        def setServoMode(self,value):enabled[0]=value;return 0
+        def servoJoint(self,joints,*args):q[:6]=[math.degrees(x) for x in joints];return 0
+        def forwardKinematics(self,joints):return [.2,-.5,.3,0.,0.,0.],0
+    class Pipe:
+        def __init__(self,output,**kw):
+            assert not enabled[0]
+            assert kw['checkpoint']==m.TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT
+            assert kw['raw_rgb_ablation'] is True and 'live_target_seed' not in kw
+            self.index=len(workers);workers.append(self.index);self.requests=0
+        def predict(self,index,state,images,**kw):
+            assert 'target_input' not in kw and 'target_motion' not in kw
+            assert kw['codec']=='rgb_zlib'
+            phase=kw['raw_rgb_phase'];phases.append((self.index,phase))
+            assert phase==('transport' if state[-1]==100 else 'approach')
+            if self.requests==0:
+                assert phase=='approach' and images['global_rgb'][0,0,0]==len(homes)
+            self.requests+=1
+            chunk=[[*START_DEG,0. if state[-1]==100 else 100.] for _ in range(50)]
+            return dict(action=chunk[0],action_chunk=chunk)
+        def close(self):pass
+    class Pool:
+        def __init__(self,**kw):pass
+        def submit(self,fn,*args):
+            future=Future()
+            try:future.set_result(fn(*args))
+            except BaseException as exc:future.set_exception(exc)
+            return future
+        def shutdown(self,**kw):pass
+    class Suction:
+        last_gripper_command_trace=None
+        def __init__(self,*args):pass
+        def _control_suction_based_on_gripper(self,value):
+            q[-1]=value;io_commands.append(value);self.last_gripper_command_trace={'target':value}
+    class Recorder:
+        def __init__(self,*args):pass
+        def start(self):pass
+        def close(self):return {'complete':True}
+    def home(*args,**kw):
+        assert not enabled[0] and q[-1]==0
+        homes.append(True)
+        if home_failure:raise RuntimeError('test home failure')
+        clock[0]+=2.;q[:6]=START_DEG
+        return {'moved':True}
+    monkeypatch.setattr(runtime,'ReadOnlyStation',Station)
+    monkeypatch.setattr(runtime,'InferencePipe',Pipe)
+    monkeypatch.setattr(runtime,'ThreadPoolExecutor',Pool)
+    monkeypatch.setattr(runtime,'TrialVideoRecorder',Recorder)
+    monkeypatch.setattr(runtime,'home_to_start',home)
+    monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
+    out=tmp_path/'run'
+    assert m.main(['--execute','--model','target-stack','--target-stack-model','local-alignment-70000',
+        '--raw-rgb','--cycles','4','--transport-age-aligned','--latency-tolerant',
+        '--max-seconds','600','--output',str(out)])==int(home_failure)
+    complete=json.loads((out/'complete.json').read_text())
+    assert complete['completed_suction_cycles']==(1 if home_failure else 4)
+    assert len(homes)==(1 if home_failure else 3) and len(workers)==(1 if home_failure else 4)
+    assert io_commands==[100.,0.]*(1 if home_failure else 4)
+    assert all((i,'approach') in phases and (i,'transport') in phases for i in workers)
+    assert complete['physical_grasp_success'] is None and complete['target_id'] is None
+    assert complete['input_ablation']=='raw_rgb' and enabled[0] is False
+    if home_failure:assert 'test home failure' in complete['failure']
+    else:assert complete['failure'] is None
+
+
+@pytest.mark.parametrize('profile,prefix', [
+    ('local-alignment','TARGET_STACK_LOCAL_ALIGNMENT'),
+    ('local-alignment-70000','TARGET_STACK_LOCAL_ALIGNMENT_70000'),
+])
+def test_local_alignment_selects_weights_and_saved_processors_without_changing_control(monkeypatch,capsys,tmp_path,profile,prefix):
     m=load_entry(monkeypatch)
     from lerobot.bamboo_sorting import model_profiles as profiles
     def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
@@ -420,21 +582,24 @@ def test_local_alignment_selects_60000_weights_and_saved_processors_without_chan
           '--transport-age-aligned','--latency-tolerant','--max-seconds','600']
     assert m.main(args)==0
     old=json.loads(capsys.readouterr().out)
-    assert m.main([*args,'--target-stack-model','local-alignment'])==0
+    assert m.main([*args,'--target-stack-model',profile])==0
     new=json.loads(capsys.readouterr().out)
-    assert new['checkpoint']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_CHECKPOINT
-    assert new['checkpoint_sha256']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_MODEL_SHA
-    assert new['inference_script']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_SERVICE_ROOT+'/joint_inference_stdio.py'
-    assert new['inference_pythonpath']==profiles.TARGET_STACK_LOCAL_ALIGNMENT_PYTHONPATH
+    assert new['checkpoint']==getattr(profiles,prefix+'_CHECKPOINT')
+    assert new['checkpoint_sha256']==getattr(profiles,prefix+'_MODEL_SHA')
+    assert new['inference_script']==getattr(profiles,prefix+'_SERVICE_ROOT')+'/joint_inference_stdio.py'
+    assert new['inference_pythonpath']==getattr(profiles,prefix+'_PYTHONPATH')
     assert old['checkpoint']==profiles.TARGET_STACK_THREE_FOUR_CHECKPOINT
-    assert {k for k in new if new[k]!=old.get(k)}=={
-        'checkpoint','checkpoint_sha256','target_stack_model','inference_script','inference_pythonpath'}
+    changed={'checkpoint','checkpoint_sha256','target_stack_model','inference_script','inference_pythonpath'}
+    if profile=='local-alignment-70000':changed.add('segmentation_score_threshold')
+    assert {k for k in new if new[k]!=old.get(k)}==changed
+    assert old['segmentation_score_threshold']==.5
+    assert new['segmentation_score_threshold']==(.2 if profile=='local-alignment-70000' else .5)
     assert new['control_hz']==25 and new['max_camera_age_ms']==400
     assert new['max_prediction_age_s']==1.5 and new['watchdog_s']==1.5
     assert new['target_sequence']==['C','A','B']
     for extra in (['--model','baseline-stack'],['--model','target-pair'],
                   ['--model','target-stack','--target-outline-width-px','1']):
-        with pytest.raises(SystemExit):m.parse_args([*extra,'--target-stack-model','local-alignment'])
+        with pytest.raises(SystemExit):m.parse_args([*extra,'--target-stack-model',profile])
 
 
 def test_three_four_stack_selects_new_weights_with_existing_control_and_worker(monkeypatch,capsys,tmp_path):

@@ -420,6 +420,50 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
     assert entry.main(["--stage", "evaluate", "--checkpoint", str(output / "final"),
                        "--output", str(tmp_path / "evaluation"), *data_args]) == 0
     assert json.loads((tmp_path / "evaluation/complete.json").read_text())["completed"]
+    if selection:
+        original_best = Path(json.loads((output / "best_checkpoint.json").read_text())["path"])
+        protected = (original_best / "toy.pt").read_bytes()
+        resume_args = ["--stage", "train", "--batch-size", str(batch_size),
+            "--base-path", str(original_best), "--vlm-path", str(vlm), *data_args, *sampling_args,
+            "--normalization-source", "base_checkpoint", "--validation-every", "1",
+            "--resume-training-state", str(output / "training_state.pt")]
+        resumed = tmp_path / "resumed"
+        assert entry.main([*resume_args, "--steps", "2", "--output", str(resumed)]) == 0
+        records = [json.loads(line) for line in (resumed / "training.jsonl").read_text().splitlines()]
+        assert [r["step"] for r in records] == [3, 4]
+        original_state = torch.load(output / "training_state.pt", weights_only=True)
+        final_state = torch.load(resumed / "training_state.pt", weights_only=True)
+        assert final_state["step"] == 4 and final_state["schedule_steps"] == 2
+        assert all(r["lr"] == original_state["optimizer"]["param_groups"][0]["lr"] for r in records)
+        assert all(int(v["step"]) == 4 for v in final_state["optimizer"]["state"].values())
+        assert json.loads((resumed / "best_checkpoint.json").read_text())["optimizer_steps"] == 4
+        assert (original_best / "toy.pt").read_bytes() == protected
+        assert len(list((resumed / "checkpoints").iterdir())) == 1
+        assert json.loads((resumed / "complete.json").read_text())["optimizer_steps_this_run"] == 2
+        # Worse continuation must keep the external 60000-equivalent baseline,
+        # rather than selecting its first new candidate by default.
+        original_predict = ToyPolicy.predict_action_chunk
+        monkeypatch.setattr(ToyPolicy, "predict_action_chunk", lambda self, batch: original_predict(self, batch)+100)
+        rejected = tmp_path / "rejected"
+        assert entry.main([*resume_args, "--steps", "1", "--output", str(rejected)]) == 0
+        assert json.loads((rejected / "best_checkpoint.json").read_text())["path"] == str(original_best)
+        assert not (rejected / "checkpoints").exists()
+        assert (rejected / "final/toy.pt").is_file() and (original_best / "toy.pt").read_bytes() == protected
+        decision = json.loads((rejected / "validation/step_000003/decision.json").read_text())
+        assert not decision["comparison"]["improved"]
+
+
+def test_explicit_resume_keeps_schedule_floor_and_rejects_learning_rate_override(tmp_path):
+    entry = _entry()
+    assert entry.training_lr_scale(60000, 60000) == entry.training_lr_scale(90000, 60000) == .025
+    args = ["--resume-training-state", str(tmp_path/"training_state.pt"),
+        "--base-path", str(tmp_path/"best"), "--target-conditioned", "--validation-every", "10000",
+        "--data-manifest", str(tmp_path/"sources.json"), "--normalization-source", "base_checkpoint"]
+    assert entry.parse_args(args).resume_training_state == tmp_path/"training_state.pt"
+    with pytest.raises(SystemExit):
+        entry.parse_args([*args, "--learning-rate", "0.0001"])
+    with pytest.raises(SystemExit):
+        entry.parse_args([*args, "--normalization-source", "train_data"])
 
 
 def test_prepared_data_reuse_checks_manifest_order_and_keeps_stats(tmp_path):

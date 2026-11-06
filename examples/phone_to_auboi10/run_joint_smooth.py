@@ -14,6 +14,8 @@ from lerobot.bamboo_sorting.model_profiles import (
     BOTH_ORDERS_INFERENCE_SCRIPT, BOTH_ORDERS_MODEL_SHA, BOTH_ORDERS_REMOTE_ROOT,
     LEGACY_MODEL_SHA as MODEL_SHA, MIXED_CHECKPOINT, MIXED_INFERENCE_SCRIPT, MIXED_MODEL_SHA,
     MIXED_REMOTE_ROOT, TARGET_STACK_REMOTE_ROOT,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT, TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+    TARGET_STACK_LOCAL_ALIGNMENT_70000_SERVICE_ROOT, TARGET_STACK_LOCAL_ALIGNMENT_70000_PYTHONPATH,
 )
 from lerobot.bamboo_sorting.policy.joint_target_policy import TargetInputSession
 from lerobot.bamboo_sorting.runtime.continuous import MAX_TARGET_REOBSERVATIONS, execute_continuous
@@ -37,8 +39,10 @@ def parse_args(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
                    help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
-    p.add_argument('--target-stack-model',choices=('original','three-four','local-alignment','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
-                   help='2px defaults to three-four; local-alignment selects the new 60000-step correction model; PI05 choices remain separate')
+    p.add_argument('--target-stack-model',choices=('original','three-four','local-alignment','local-alignment-70000','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
+                   help='2px defaults to three-four; local-alignment selects 60000 steps, local-alignment-70000 selects the continued best; PI05 choices remain separate')
+    p.add_argument('--raw-rgb',action='store_true',
+                   help='local-alignment-70000 input ablation: unchanged checkpoint, raw dual RGB, no selected target or order; home between cycles')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
@@ -68,8 +72,18 @@ def parse_args(argv=None):
     if args.target_stack_model is None:
         args.target_stack_model = ('three-four' if args.model == 'target-stack'
                                    and args.target_outline_width_px == 2 else 'original')
-    target_mode=args.model in ('target-pair','target-stack')
+    target_mode=args.model in ('target-pair','target-stack') and not args.raw_rgb
     stack=args.model in ('target-stack','baseline-stack')
+    if args.raw_rgb:
+        if args.model!='target-stack' or args.target_stack_model!='local-alignment-70000' or args.target_outline_width_px!=2:
+            p.error('--raw-rgb requires target-stack local-alignment-70000 with its saved 2px checkpoint contract')
+        forbidden=[name for name,value in (
+            ('--target-snapshot',args.target_snapshot),('--target-selections',args.target_selections),
+            ('--target-id',args.target_id),('--target-sequence',args.target_sequence),
+            ('--target-preview',args.target_preview),('--track-target-motion',args.track_target_motion),
+            ('--paired-target-separation',args.paired_target_separation),
+            ('--multi-target-separation',args.multi_target_separation)) if value]
+        if forbidden:p.error(f'--raw-rgb does not use target options: {", ".join(forbidden)}')
     if args.motion_limit_scale!=1. and args.model!='target-stack':
         p.error('--motion-limit-scale 2 requires target-stack')
     if args.hold_action_until_replan:
@@ -108,7 +122,7 @@ def parse_args(argv=None):
         if len(set(sequence))!=len(sequence):p.error('target sequence must contain distinct identities')
         if args.cycles not in (None,len(sequence)):p.error('--cycles must match the target sequence length')
         args.target_id=sequence[0]
-    if args.model=='target-stack':
+    if args.model=='target-stack' and not args.raw_rgb:
         if args.paired_target_separation:p.error('target-stack uses multi-target separation')
         args.multi_target_separation=True
     if args.multi_target_separation and (not target_mode or args.paired_target_separation):
@@ -123,18 +137,25 @@ def parse_args(argv=None):
     inference_timeout_s=args.inference_timeout_s if args.inference_timeout_s is not None else (5. if args.latency_tolerant else 2.)
     if not math.isfinite(inference_timeout_s) or inference_timeout_s<=0:
         p.error('--inference-timeout-s must be finite and positive')
-    if args.latency_tolerant and not (args.model in ('mixed-both-orders','baseline-stack') or target_mode):
+    if args.latency_tolerant and not (args.model in ('mixed-both-orders','baseline-stack') or target_mode or args.raw_rgb):
         p.error('--latency-tolerant requires mixed-both-orders, a target model or baseline-stack')
-    approach=args.approach_age_aligned or target_mode or args.model=='baseline-stack'
-    if approach and not (args.model in ('mixed-both-orders','baseline-stack') or target_mode):
+    approach=args.approach_age_aligned or target_mode or args.model=='baseline-stack' or args.raw_rgb
+    if approach and not (args.model in ('mixed-both-orders','baseline-stack') or target_mode or args.raw_rgb):
         p.error('--approach-age-aligned requires mixed-both-orders, a target model or baseline-stack')
-    mixed=args.model in ('mixed-double','mixed-both-orders','baseline-stack') or target_mode
+    mixed=args.model in ('mixed-double','mixed-both-orders','baseline-stack') or target_mode or args.raw_rgb
     return args,sequence,target_mode,approach,mixed,inference_timeout_s,p
 
 
 def resolve_targets(args, sequence, target_mode, parser):
     """Load reviewed seeds and model options; no hardware or model access."""
     target_session=None;target_seed=None;target_options=None;target_setups=None
+    if args.raw_rgb:
+        target_options=dict(remote_root=TARGET_STACK_REMOTE_ROOT,
+            checkpoint=TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT,
+            expected_sha256=TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+            inference_script=TARGET_STACK_LOCAL_ALIGNMENT_70000_SERVICE_ROOT+'/joint_inference_stdio.py',
+            pythonpath=TARGET_STACK_LOCAL_ALIGNMENT_70000_PYTHONPATH,
+            target_conditioned=True,return_action_chunk=True,raw_rgb_ablation=True)
     if target_mode:
         if not all((args.target_snapshot,args.target_selections,args.target_id)):
             parser.error('target models require --target-snapshot, --target-selections and --target-id')
@@ -170,7 +191,7 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
     max_seconds=args.max_seconds if args.max_seconds is not None else (360 if mixed and not (target_mode or stack) else 120)
     servo_command_time=.08 if mixed else DT
     max_camera_age_ms=250 if mixed else 100
-    max_prediction_age=.5 if args.model in ('mixed-both-orders','baseline-stack') or target_mode else MAX_PREDICTION_AGE
+    max_prediction_age=.5 if args.model in ('mixed-both-orders','baseline-stack') or target_mode or args.raw_rgb else MAX_PREDICTION_AGE
     max_without_prediction=MAX_WITHOUT_PREDICTION
     max_camera_skew=MAX_CAMERA_SKEW
     max_control_gap=.35
@@ -197,7 +218,7 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
                       'expected_sha256':model_sha,'inference_script':BASELINE_STACK_INFERENCE_SCRIPT,
                       'pythonpath':BASELINE_STACK_PYTHONPATH,'target_conditioned':False,
                       'live_target_seed':None,'segmentation_checkpoint':None,'return_action_chunk':True}
-    if target_mode:
+    if target_mode or args.raw_rgb:
         pipe_options=target_options
         model_sha=target_options['expected_sha256']
     pipe_options['request_timeout_s']=inference_timeout_s
@@ -206,7 +227,8 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         max_without_prediction=max_without_prediction,max_camera_skew=max_camera_skew,
         max_control_gap=max_control_gap,max_state_age=max_state_age,mixed=mixed,
         model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
-        approach=approach,lossless_images=target_mode or args.model=='baseline-stack',
+        approach=approach,lossless_images=target_mode or args.model=='baseline-stack' or args.raw_rgb,
+        raw_rgb_ablation=args.raw_rgb,
         motion_limit_scale=args.motion_limit_scale,
         hold_action_until_replan=args.hold_action_until_replan,
         observe_after_arrival=args.observe_after_arrival,execution_paced=args.execution_paced)
@@ -254,6 +276,7 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                                 if args.paired_target_separation else 'fresh segmentation plus reviewed-seed association; stop on failure'),
             target_phase_source='first accepted close command; never prediction',
             segmentation_checkpoint=target_options['segmentation_checkpoint'])
+        plan['segmentation_score_threshold'] = target_seed.get('segmentation_score_threshold', .5)
         plan['target_outline_width_px']=args.target_outline_width_px
     if sequence:
         plan.update(target_sequence=sequence,automatic_home=len(sequence)>1,
@@ -261,11 +284,12 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                     inference_session_per_target=True,
                     remaining_targets_by_pick=[sequence[i:] for i in range(len(sequence))])
     if args.model=='target-stack':
-        plan.update(empty_target_reobservations_per_target=MAX_TARGET_REOBSERVATIONS,
-            empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
+        if target_mode:
+            plan.update(empty_target_reobservations_per_target=MAX_TARGET_REOBSERVATIONS,
+                empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
         if args.target_stack_model != 'original':
             plan['target_stack_model']=args.target_stack_model
-        if args.target_stack_model == 'local-alignment':
+        if args.target_stack_model in ('local-alignment','local-alignment-70000'):
             plan['inference_pythonpath']=target_options['pythonpath']
         if args.target_stack_model in ('pi05-29000','pi05-fp32-128','pi05-fp32-21000'):
             plan.update(inference_python=target_options['remote_python'],
@@ -274,6 +298,15 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
             if args.target_stack_model in ('pi05-fp32-128','pi05-fp32-21000'):
                 plan.update(inference_precision='FP32 expert weights; BF16 autocast from saved precision contract',
                             inference_precision_contract=target_options['expected_precision_contract'])
+    if args.raw_rgb:
+        plan.update(input_ablation='raw_rgb',target_conditioning_enabled=False,
+            checkpoint=target_options['checkpoint'],inference_script=target_options['inference_script'],
+            target_input='no selected target or order; raw global_rgb and grasp_rgb plus unchanged 7D state/task',
+            segmentation_enabled=False,image_codec='rgb_zlib',
+            adapter_target_metadata='constant unselected identity for saved adapter validation only; not a policy input',
+            transport_phase_source='first accepted close command clock; bound to each request at capture',
+            automatic_home=expected_cycles>1,homing_between_cycles_only=True,
+            max_seconds_scope='per_cycle',inference_session_per_cycle=True)
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
     if args.hold_action_until_replan:
         plan.update(hold_action_until_replan=True,

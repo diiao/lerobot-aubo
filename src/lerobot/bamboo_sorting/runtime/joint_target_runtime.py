@@ -4,6 +4,7 @@ Automatic masks remain reviewed=False. Association failure stops the request;
 no old mask is returned. Explicit multi-target misses carry diagnostic evidence.
 """
 import base64
+import math
 import time
 
 import cv2
@@ -30,10 +31,11 @@ class TargetForegroundMissing(ValueError):
 
 
 class FrozenStripSegmenter:
-    def __init__(self, checkpoint):
+    def __init__(self, checkpoint, *, device='cuda'):
         import torch
         from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
         self.torch = torch
+        self.device = device
         self.processor = Mask2FormerImageProcessor.from_pretrained(checkpoint, local_files_only=True, do_resize=False)
         self.model, loading = Mask2FormerForUniversalSegmentation.from_pretrained(
             checkpoint, local_files_only=True, output_loading_info=True)
@@ -41,14 +43,14 @@ class FrozenStripSegmenter:
             raise ValueError(f'segmentation checkpoint mismatch: {loading}')
         if self.model.config.id2label != {0: 'top_strip', 1: 'covered_strip'}:
             raise ValueError('segmentation class mapping mismatch')
-        self.model.requires_grad_(False).eval().to('cuda')
+        self.model.requires_grad_(False).eval().to(self.device)
         self(np.zeros((480, 640, 3), np.uint8))
 
-    def __call__(self, rgb):
+    def __call__(self, rgb, *, score_threshold=.5):
         with self.torch.inference_mode():
-            batch = self.processor(images=[rgb], do_resize=False, return_tensors='pt').to('cuda')
+            batch = self.processor(images=[rgb], do_resize=False, return_tensors='pt').to(self.device)
             result = self.processor.post_process_instance_segmentation(
-                self.model(**batch), threshold=.5, mask_threshold=.5,
+                self.model(**batch), threshold=score_threshold, mask_threshold=.5,
                 overlap_mask_area_threshold=.8, target_sizes=[(480, 640)])[0]
             raw = result['segmentation'].cpu().numpy()
         instances = np.zeros((480, 640), np.uint16)
@@ -67,6 +69,11 @@ class FreshTargetInputs:
                 or not seed.get('snapshot_id') or not seed.get('target_id')):
             raise ValueError('explicit reviewed target seed required')
         self.seed = dict(seed)
+        self.segmentation_score_threshold = seed.get('segmentation_score_threshold', .5)
+        threshold = self.segmentation_score_threshold
+        if (type(threshold) not in (int, float) or not math.isfinite(threshold)
+                or not 0 < threshold <= 1):
+            raise ValueError('segmentation score threshold must be finite and in (0, 1]')
         self.target_id = seed['target_id']
         self.segmenter = segmenter
         mask = decode_mask(seed['mask_png'])
@@ -154,7 +161,12 @@ class FreshTargetInputs:
             prepared = dict(target_global_rgb=images['global_rgb'].copy(), grasp_rgb=images['grasp_rgb'].copy())
             evidence.update(source='raw_rgb_after_accepted_close', mask_png=None)
         else:
-            instances, segments = self.segmenter(images['global_rgb'])
+            if self.segmentation_score_threshold == .5:
+                instances, segments = self.segmenter(images['global_rgb'])
+            else:
+                instances, segments = self.segmenter(images['global_rgb'],
+                    score_threshold=self.segmentation_score_threshold)
+            evidence['segmentation_score_threshold'] = self.segmentation_score_threshold
             self.index += 1
             if self.separator is not None:
                 masks, separation = self.separator.step(self.index-1, instances, segments)
