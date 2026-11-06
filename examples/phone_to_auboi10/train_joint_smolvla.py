@@ -37,6 +37,9 @@ def parse_args(argv=None):
     parser.add_argument("--learning-rate", type=float, help="Override optimizer peak learning rate")
     parser.add_argument("--local-demo-fraction", type=float,
                         help="Expected sampling fraction for local_alignment (e.g. 0.5); remaining mass goes to full demos")
+    parser.add_argument("--sampling-mode", choices=("weighted_random", "full_coverage_local_oversample"),
+                        default="weighted_random",
+                        help="Keep historical weighted draws, or cover all observations then oversample local indices")
     parser.add_argument("--normalization-source", choices=("train_data", "base_checkpoint"), default="train_data",
                         help="base_checkpoint preserves saved AUBO processors for continuation; pooled new stats remain diagnostic")
     parser.add_argument("--checkpoint-steps", type=int, nargs="*", default=[],
@@ -60,6 +63,8 @@ def parse_args(argv=None):
             parser.error("local-demo-fraction must be finite and strictly between 0 and 1")
         if args.data_manifest is None or args.stage not in ("plan", "preflight", "train"):
             parser.error("local-demo-fraction requires a manifest and plan/preflight/train")
+    if args.sampling_mode == "full_coverage_local_oversample" and args.local_demo_fraction is None:
+        parser.error("full_coverage_local_oversample requires --local-demo-fraction")
     if args.normalization_source == "base_checkpoint" and args.stage not in ("plan", "preflight", "train"):
         parser.error("base_checkpoint normalization requires plan/preflight/train; evaluation uses its saved processors")
     if (len(set(args.checkpoint_steps)) != len(args.checkpoint_steps)
@@ -142,6 +147,8 @@ def read_continuation_state(args, prepared):
     for key in ("batch_size", "seed", "local_demo_fraction", "target_outline_width_px"):
         if source_plan.get(key) != getattr(args, key):
             raise ValueError(f"continuation training setting differs: {key}")
+    if source_plan.get("sampling_mode", "weighted_random") != args.sampling_mode:
+        raise ValueError("continuation training setting differs: sampling_mode")
     source_pointer = json.loads((path.parent / "best_checkpoint.json").read_text())
     if (Path(source_pointer["path"]).resolve() != args.base_path.resolve()
             or source_pointer["optimizer_steps"] != step):
@@ -204,7 +211,7 @@ def main(argv=None):
             prepared = prepare_training_data(args.train_root, args.train_evidence,
                 args.validation_root, args.validation_evidence,
                 train_source_root=args.train_source_root, validation_source_root=args.validation_source_root)
-    sampling = training_sampling_plan(prepared["train"], args.local_demo_fraction) \
+    sampling = training_sampling_plan(prepared["train"], args.local_demo_fraction, sampling_mode=args.sampling_mode) \
         if args.stage in ("preflight", "train") else None
     args.output.mkdir(parents=True, exist_ok=False)
     write_json(args.output / "plan.json", plan)
@@ -420,7 +427,8 @@ def run_model(args, prepared):
                     write_json(args.output / "best_checkpoint.json", dict(path=str(best_path),
                         optimizer_steps=start_step, primary=best_metrics["primary"],
                         primary_name=best_metrics["primary_name"], external_baseline=True))
-            sampler = make_training_sampler(prepared["train"], args.local_demo_fraction, seed=args.seed)
+            sampler = make_training_sampler(prepared["train"], args.local_demo_fraction, seed=args.seed,
+                                            sampling_mode=args.sampling_mode)
             batches = loader(train_dataset, shuffle=sampler is None, sampler=sampler)
             optimizer = cfg.get_optimizer_preset().build(params)
             scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, partial(training_lr_scale, schedule_steps=schedule_steps))

@@ -239,12 +239,13 @@ def test_concat_preserves_source_local_action_chunks(monkeypatch):
     assert ds[2]["action"].eq(9).all()
 
 
-@pytest.mark.parametrize("multiple_sources,target_conditioned,outline_width,continuation,balanced", [
-    (False, False, 2, False, False), (True, False, 2, False, False),
-    (False, True, 2, False, False), (True, True, 1, False, False),
-    (True, True, 2, True, True), (True, True, 2, False, True),
+@pytest.mark.parametrize("multiple_sources,target_conditioned,outline_width,continuation,balanced,sampling_mode", [
+    (False, False, 2, False, False, "weighted_random"), (True, False, 2, False, False, "weighted_random"),
+    (False, True, 2, False, False, "weighted_random"), (True, True, 1, False, False, "weighted_random"),
+    (True, True, 2, True, True, "weighted_random"), (True, True, 2, False, True, "weighted_random"),
+    (True, True, 2, False, True, "full_coverage_local_oversample"),
 ])
-def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monkeypatch, multiple_sources, target_conditioned, outline_width, continuation, balanced):
+def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monkeypatch, multiple_sources, target_conditioned, outline_width, continuation, balanced, sampling_mode):
     """Exercise orchestration without installing dependencies or training SmolVLA."""
     import json
     import sys
@@ -376,7 +377,7 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
             return dict(indices=list(range(len(rows))), observations=rows, full_observations=rows,
                         frames=len(rows), episodes=2, scenes=["toy-0", "toy-1"], points_per_phase=8)
         monkeypatch.setattr("lerobot.bamboo_sorting.policy.joint_checkpoint_selection.build_monitor_plan", toy_monitor)
-    sampling_args = ["--local-demo-fraction", "0.5"] if balanced else []
+    sampling_args = ["--local-demo-fraction", "0.5", "--sampling-mode", sampling_mode] if balanced else []
     normalization_args = ["--normalization-source", "base_checkpoint"] if continuation else []
     checkpoint_args = ["--validation-every", "1"] if selection else ["--checkpoint-steps", "1"]
     assert entry.main(["--stage", "train", "--steps", "2", "--batch-size", str(batch_size),
@@ -415,6 +416,7 @@ def test_training_loop_checkpoint_and_evaluation_with_toy_policy(tmp_path, monke
             assert normalization["stats"]["action"]["mean"][6] == (80 if continuation else 60)
             sampling = json.loads((folder/"training_sampling.json").read_text())
             assert sampling["expected_group_fractions"] == {"full": .5, "local_alignment": .5}
+            assert sampling["mode"] == ("balanced_demo_scopes" if sampling_mode == "weighted_random" else sampling_mode)
         groups = json.loads((output/"validation_by_demo_scope.json").read_text())["groups"]
         assert {k: v["frames"] for k, v in groups.items()} == {"full": 3, "local_alignment": 3}
     assert entry.main(["--stage", "evaluate", "--checkpoint", str(output / "final"),
@@ -624,8 +626,73 @@ def test_balanced_sampling_is_by_scope_not_folder_or_episode_length():
         training_sampling_plan({"frames": 100}, .5)
 
 
+@pytest.mark.parametrize("fraction,extra", [(.5, 7), (.8, 43), (5/17, 0)])
+def test_full_coverage_sampler_covers_every_index_and_only_repeats_local(fraction, extra):
+    import torch
+    from lerobot.bamboo_sorting.policy.joint_training import make_training_sampler, training_sampling_plan
+
+    record = {"sources": [{"frames": 7}, {"frames": 3, "demo_scope": "local_alignment"},
+                          {"frames": 5}, {"frames": 2, "demo_scope": "local_alignment"}], "frames": 17}
+    mode = "full_coverage_local_oversample"
+    plan = training_sampling_plan(record, fraction, sampling_mode=mode)
+    assert plan["base_draws_per_pass"] == 17 and plan["extra_local_draws_per_pass"] == extra
+    sampler = make_training_sampler(record, fraction, seed=42, sampling_mode=mode)
+    rng = torch.random.get_rng_state().clone()
+    first, second = list(sampler), list(sampler)
+    assert torch.equal(rng, torch.random.get_rng_state())
+    assert len(first) == len(sampler) == 17 + extra
+    assert first == list(make_training_sampler(record, fraction, seed=42, sampling_mode=mode))
+    assert second != first
+    counts = np.bincount(first, minlength=17)
+    local_indices = {7, 8, 9, 15, 16}
+    assert (counts >= 1).all()
+    assert all(counts[i] == 1 for i in range(17) if i not in local_indices)
+    assert sum(counts[i] - 1 for i in local_indices) == extra
+    for bad in (None, .2):
+        with pytest.raises(ValueError, match="local-demo-fraction"):
+            make_training_sampler(record, bad, seed=42, sampling_mode=mode)
+
+
+def test_full_coverage_sampler_uses_real_episode_bounded_chunks(tmp_path, empty_lerobot_dataset_factory):
+    """Exercise the actual dataset reader with filtered episodes and source boundaries."""
+    import torch
+    from lerobot.bamboo_sorting.policy.joint_training import load_prepared_dataset, make_training_sampler
+
+    features = {key: {"dtype": "float32", "shape": (7,), "names": list("abcdefg")}
+                for key in ("observation.state", "action")}
+    sources, identities = [], []
+    for si, lengths in enumerate(((4, 3, 2), (2, 3, 1))):
+        root = tmp_path / str(si)
+        raw = empty_lerobot_dataset_factory(root=root, features=features, use_videos=False, fps=25)
+        for ep, size in enumerate(lengths):
+            for frame in range(size):
+                values = np.full(7, si*10000 + ep*1000 + frame, dtype=np.float32)
+                values[-1] = 0
+                raw.add_frame({"observation.state": values.copy(), "action": values.copy(), "task": "test"})
+            raw.save_episode()
+        raw.finalize()
+        sources.append(dict(root=str(root), episodes=[0, 2], frames=lengths[0]+lengths[2],
+                            demo_scope="local_alignment" if si else "full"))
+        identities.extend((si, ep, frame, lengths[ep]) for ep in (0, 2) for frame in range(lengths[ep]))
+    record = dict(sources=sources, frames=len(identities))
+    dataset = load_prepared_dataset(record)
+    sampler = make_training_sampler(record, .5, seed=42, sampling_mode="full_coverage_local_oversample")
+    indices = list(sampler)
+    assert len(indices) == 12 and set(indices) == set(range(9))
+    for index in indices:
+        si, ep, frame, size = identities[index]
+        sample = dataset[index]
+        expected = torch.tensor([si*10000 + ep*1000 + min(frame+row, size-1) for row in range(50)])
+        assert int(sample["episode_index"]) == ep
+        assert int(sample["frame_index"]) == frame
+        assert torch.equal(sample["action"][:, 0], expected)
+        assert sample["action_is_pad"].tolist() == [frame+row >= size for row in range(50)]
+        assert sample["observation.state"][0] == expected[0]
+
+
 @pytest.mark.parametrize("options", [["--local-demo-fraction", "0"], ["--local-demo-fraction", "nan"],
                                      ["--local-demo-fraction", ".5", "--stage", "evaluate"],
+                                     ["--sampling-mode", "full_coverage_local_oversample"],
                                      ["--normalization-source", "base_checkpoint", "--stage", "smoke"]])
 def test_invalid_sampling_and_normalization_stages_are_refused(options):
     with pytest.raises(SystemExit):

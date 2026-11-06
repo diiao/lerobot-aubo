@@ -1,8 +1,10 @@
 """Offline preparation for full-joint AUBO SmolVLA. No hardware imports."""
 
 import copy
+from fractions import Fraction
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -353,8 +355,12 @@ def load_prepared_dataset(record, *, video_backend="pyav", target_outline_width_
     return ds
 
 
-def training_sampling_plan(record, local_demo_fraction=None):
+def training_sampling_plan(record, local_demo_fraction=None, *, sampling_mode="weighted_random"):
     """Probability mass belongs to full/local groups, not to source folders."""
+    if sampling_mode not in ("weighted_random", "full_coverage_local_oversample"):
+        raise ValueError("unknown training sampling mode")
+    if sampling_mode == "full_coverage_local_oversample" and local_demo_fraction is None:
+        raise ValueError("full coverage oversampling requires local-demo-fraction")
     sources = record.get("sources", [record])
     counts = dict.fromkeys(DEMO_SCOPES, 0)
     for source in sources:
@@ -374,19 +380,71 @@ def training_sampling_plan(record, local_demo_fraction=None):
         if not all(counts.values()):
             raise ValueError("balanced sampling requires both full and local_alignment sources")
         fractions = {"full": 1 - local_demo_fraction, "local_alignment": local_demo_fraction}
-    return {"mode": "uniform_frames" if local_demo_fraction is None else "balanced_demo_scopes",
+    plan = {"mode": "uniform_frames" if local_demo_fraction is None else "balanced_demo_scopes",
             "group_frames": counts, "expected_group_fractions": fractions,
             "within_group": "uniform_frames", "replacement": local_demo_fraction is not None,
             "draws_per_pass": total}
+    if sampling_mode == "full_coverage_local_oversample":
+        # Exact decimal arithmetic avoids an extra draw at ratios such as 0.8.
+        fraction = Fraction(str(local_demo_fraction))
+        original_fraction = counts["local_alignment"] / total
+        if local_demo_fraction < original_fraction:
+            raise ValueError("local-demo-fraction cannot be below the original fraction when only adding local samples")
+        local_draws = counts["local_alignment"] if local_demo_fraction == original_fraction else math.ceil(
+            counts["full"] * fraction / (1 - fraction))
+        draws = counts["full"] + local_draws
+        plan.update(mode=sampling_mode, draws_per_pass=draws, base_draws_per_pass=total,
+            extra_local_draws_per_pass=local_draws - counts["local_alignment"],
+            group_draws_per_pass={"full": counts["full"], "local_alignment": local_draws},
+            requested_local_demo_fraction=local_demo_fraction,
+            expected_group_fractions={"full": counts["full"] / draws, "local_alignment": local_draws / draws},
+            full_coverage_per_pass=True, replacement_scope="extra_local_draws_only",
+            sample_unit="existing source-local observation and its episode-bounded future action chunk")
+    return plan
 
 
-def make_training_sampler(record, local_demo_fraction, *, seed):
+class FullCoverageLocalSampler:
+    """Yield existing observation indices, never build or join action sequences.
+
+    Every complete pass includes each training index once, plus uniformly drawn
+    local indices with replacement. The dataset still owns source/episode lookup
+    and action padding. A private advancing generator isolates sampling RNG.
+    """
+    def __init__(self, total, local_indices, extra_local_draws, *, seed):
+        import torch
+
+        self.total = total
+        self.local_indices = torch.tensor(local_indices, dtype=torch.long)
+        self.extra_local_draws = extra_local_draws
+        self.generator = torch.Generator().manual_seed(seed)
+
+    def __len__(self):
+        return self.total + self.extra_local_draws
+
+    def __iter__(self):
+        import torch
+
+        extra = self.local_indices[torch.randint(len(self.local_indices), (self.extra_local_draws,),
+                                                generator=self.generator)]
+        indices = torch.cat((torch.arange(self.total), extra))
+        yield from indices[torch.randperm(len(indices), generator=self.generator)].tolist()
+
+
+def make_training_sampler(record, local_demo_fraction, *, seed, sampling_mode="weighted_random"):
     """Sample existing frame indices; never concatenate or splice trajectories."""
+    plan = training_sampling_plan(record, local_demo_fraction, sampling_mode=sampling_mode)
     if local_demo_fraction is None:
         return None
     from torch import Generator
     from torch.utils.data import WeightedRandomSampler
-    plan = training_sampling_plan(record, local_demo_fraction)
+    if sampling_mode == "full_coverage_local_oversample":
+        local_indices, offset = [], 0
+        for source in record.get("sources", [record]):
+            if source.get("demo_scope", "full") == "local_alignment":
+                local_indices.extend(range(offset, offset + source["frames"]))
+            offset += source["frames"]
+        return FullCoverageLocalSampler(record["frames"], local_indices,
+                                        plan["extra_local_draws_per_pass"], seed=seed)
     weights = np.concatenate([np.full(source["frames"],
         plan["expected_group_fractions"][source.get("demo_scope", "full")]
         / plan["group_frames"][source.get("demo_scope", "full")], dtype=np.float64)

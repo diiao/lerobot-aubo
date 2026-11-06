@@ -593,7 +593,9 @@ GPU 副本清单：同目录下的 `sources_remote.json`。
 
 本轮抽样与归一化选项：
 
-- `--local-demo-fraction 0.5`：旧整段／新局部各分配50%的**抽样概率**，组内按帧均匀抽样、有放回；不是每个目录各占一份，也不保证每个小批次恰好一半。可调整为其他0～1之间的比例，但须保留两类来源。未传时沿用按所有帧打乱。50步动作块只在原来源和原episode内取样，尾部补齐；同一局部示教内允许从对准自然跨到夹紧、搬运。
+- `--local-demo-fraction 0.5`：指定整段／局部各占50%。默认`--sampling-mode weighted_random`保留历史的组内均匀、有放回加权抽样；它不保证每轮覆盖全部起始帧，也不保证每个batch各半。未传比例时沿用所有帧随机打乱。
+- `--sampling-mode full_coverage_local_oversample --local-demo-fraction 0.5`：每轮先放入全部原训练样本索引各一次，再从局部纠偏索引池均匀有放回补采，整体打乱，使两组每轮使用次数各占50%。比例不得低于局部样本原有占比，避免以“过采样”名义丢弃原样本；整数数量向上取整，实际组占比写入`training_sampling.json`。私有seed生成器每轮推进，不在每轮重置。该选项仅改变起始帧索引，不增加或重新拼装轨迹。
+- **动作块边界**：现有多来源目录通过`ConcatDataset`路由全局索引，各子数据集仍由原始`LeRobotDataset`在自身episode内读取未来50行动作。不能从打乱后的相邻样本拼成未来动作；不足50行时只重复本episode末行动作并保留`action_is_pad`。一个batch可以包含不同episode的独立样本，单个动作块不能跨episode；同一episode内可以自然跨越对准、夹紧、搬运阶段。
 - `--normalization-source train_data`：本轮重新训练使用此模式，从已选65堆训练数据计算状态和动作统计，建立配套归一化／反归一化，验证数据不参与。`train_only_stats.json`和`data_preflight.json`保存训练统计，`normalization.json`记录实际使用值。抽样比例与归一化来源独立，50%局部抽样同样支持重新训练。既有`base_checkpoint`模式只供另行明确的旧AUBO检查点续训，保持该旧模型的处理器含义；本轮不选它。
 
 `preflight`先检查来源和整堆划分并生成`training_sampling.json`，不加载模型。新清单需要重新审计，不能复用仅含旧25个来源的`--prepared-data`。本轮预检已含新整堆划分、全部目标接口和新训练统计，与模型初始化方式无关，重新训练可直接复用。验证集不做均衡抽样，`validation_by_demo_scope.json`分别报告整段和局部的离线动作指标，`validation_by_source.json`保留来源细分；这些均不能替代物理抓取评价。
@@ -650,11 +652,11 @@ GPU 副本清单：同目录下的 `sources_remote.json`。
 
 用户要求参考Git历史配置，恢复目标轮廓并重新训练100000步，选模规则保持，启动须另行最终授权。已先提交当前项目`c403e24d`，未推送；历史依据为`9cb6fe66`的局部示教混合训练。目标输入模块、SmolVLA适配器及`SELECTION_RULE`与该历史提交逐项核对一致，详见[历史配置核对](../../artifacts/training/stack_target_outline_100k/git_history_configuration_check.json)。
 
-- **初始化与数据**：使用远端已缓存的原始`lerobot/smolvla_base`，从0步学习AUBO任务；不从原图70000步或旧轮廓任务权重继续。复用原[轮廓来源清单与已审计预检](../../artifacts/training/stack_local_alignment/sources_remote.json)，训练65堆237条152192帧、验证12堆44条27819帧；归一化沿用这些训练示教的专属统计，验证不参与。整段／局部各50%抽样概率，原数据、已接受标注与缓存原地复用。
+- **初始化与数据**：使用远端已缓存的原始`lerobot/smolvla_base`，从0步学习AUBO任务；不从原图70000步或旧轮廓任务权重继续。复用原[轮廓来源清单与已审计预检](../../artifacts/training/stack_local_alignment/sources_remote.json)，训练65堆237条152192帧、验证12堆44条27819帧；归一化沿用这些未重复训练示教的专属统计，验证不参与。按用户随后确认启用`--sampling-mode full_coverage_local_oversample --local-demo-fraction 0.5`：152192个原始训练起始帧每轮各一次，再额外抽取61214个纠偏索引，共213406个独立样本，整段／局部各106703次。batch 8每完整轮26676个更新步（末batch为6），100000步完成3个全覆盖轮并进入第4轮。原数据、已接受标注与缓存原地复用；没有按过采样后的次数重算归一化。
 - **目标轮廓的含义**：同帧目标可见掩码生成向内2像素紫色边界，只在接近阶段写入全局RGB（`target_global_rgb`）；腕部图保持原图，首次实际接受闭爪后的搬运阶段恢复原始双RGB。目标身份用于绑定轮廓，A／B／C及顺序不作为额外数值输入。输出仍为50×7绝对关节／夹爪动作，数据25Hz、生成10步、骨干冻结及动作专家设置沿用历史。
 - **训练预算**：总计100000次新优化，batch 8、训练seed 42、峰值学习率`1e-4`、PyAV；沿用1000步预热＋余弦衰减的方法，总调度长度为100000步，终值`2.5e-6`。预算延长会改变同一步数的学习率；与旧60000步轮廓、70000步原图或低学习率续训模型比较时，不能把差异只归因于目标轮廓。
 - **选模与保存**：完全沿用[局部示教混合训练的主指标与防退步规则](#局部示教混合训练)，每10000步检查，共10轮；固定2540个观察、每阶段8点、seed42／43／44，主指标严格改善且所有原护栏通过才替换best，loss仅诊断。不自动早停，仅保留严格重载后的best及final，并保留所有评估报告；新训练的自动删除只作用于新输出拥有的被替代best。全量复核维持44条27819帧、seed42，不改写固定监控选出的best。[规则核对](../../artifacts/training/stack_target_outline_100k/selection_rule_preservation_check.json)已通过。
-- **准备验收**：45个来源180个真实样本检查通过，覆盖各来源接近首／末及搬运首／末；轮廓内边界、搬运原图以及腕图／状态／动作／补齐标记不变均核对通过。86409个接近帧引用的已接受轮廓文件存在；复用原审计，未重复全量内容哈希或逐帧重新审核。训练专属统计与原图视图一致，新目标处理器动作极值往返最大误差0。目视抽查完整／局部训练的两张目标输入图，不当作全视频质量或实机验收。见[输入接口](../../artifacts/training/stack_target_outline_100k/target_dataset_interface_check.json)、[处理器](../../artifacts/training/stack_target_outline_100k/processor_check.json)及[准备就绪](../../artifacts/training/stack_target_outline_100k/pretraining_readiness.json)。本次197项相关CPU代码测试通过，未加载策略权重、使用GPU或访问硬件。
+- **准备验收**：45个来源180个真实样本检查通过，覆盖各来源接近首／末及搬运首／末；轮廓内边界、搬运原图以及腕图／状态／动作／补齐标记不变均核对通过。86409个接近帧引用的已接受轮廓文件存在；复用原审计，未重复全量内容哈希或逐帧重新审核。训练专属统计与原图视图一致，新目标处理器动作极值往返最大误差0。目视抽查完整／局部训练的两张目标输入图，不当作全视频质量或实机验收。见[输入接口](../../artifacts/training/stack_target_outline_100k/target_dataset_interface_check.json)、[处理器](../../artifacts/training/stack_target_outline_100k/processor_check.json)及[准备就绪](../../artifacts/training/stack_target_outline_100k/pretraining_readiness.json)。原准备的197项CPU检查保留为历史；采样更新后58项相关CPU回归通过，含原始读取器的非连续episode／多来源动作块边界检查及训练／选模／续训编排。生产数据采样边界核对见[采样与episode检查](../../artifacts/training/stack_target_outline_100k/sampling_boundary_check.json)。未加载策略权重、使用GPU或访问硬件。
 
 唯一[启动提案](../../artifacts/training/stack_target_outline_100k/training_launch_proposal.json)已填写完整`train_argv`；独立源码及准备目录为远端`artifacts/training/stack_target_outline_100k/`，对应本地同名记录；拟输出为远端`outputs/joint_stack_target_outline_100k_smolvla`，目前不存在。只传约1.05MB源码及配置，未复制模型或重传原数据。监督脚本`supervise_training.py`已准备，授权检查为false；没有后台等待授权／GPU空闲后自动启动的进程。用户授权后才更新本轮`training_authorization.json`并启动一次；届时重新检查GPU占用及输出目录，不覆盖既有任务。当前`training_authorized=false`、`training_started=false`、优化步数0，详见[授权门检查](../../artifacts/training/stack_target_outline_100k/authorization_gate_check.json)。
 
