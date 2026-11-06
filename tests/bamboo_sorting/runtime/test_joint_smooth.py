@@ -403,18 +403,25 @@ def test_baseline_stack_accepts_one_cycle_without_target_files(monkeypatch,capsy
     assert plan['requested_suction_cycles']==1 and plan['max_seconds']==120
 
 
-def test_raw_rgb_plan_keeps_current_weights_without_target_selection(monkeypatch,capsys):
+@pytest.mark.parametrize('profile',['local-alignment-70000','raw-rgb-70000'])
+def test_raw_rgb_plan_keeps_current_weights_without_target_selection(monkeypatch,capsys,profile):
     m=load_entry(monkeypatch)
     def forbidden(*a,**kw):raise AssertionError('hardware/model accessed')
     monkeypatch.setattr(m.continuous,'ReadOnlyStation',forbidden)
     monkeypatch.setattr(m.continuous,'InferencePipe',forbidden)
-    argv=['--model','target-stack','--target-stack-model','local-alignment-70000','--raw-rgb',
+    argv=['--model','target-stack','--target-stack-model',profile,'--raw-rgb',
           '--cycles','4','--transport-age-aligned','--latency-tolerant','--max-seconds','600']
     assert m.main(argv)==0
     plan=json.loads(capsys.readouterr().out)
-    assert plan['checkpoint']==m.TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT
-    assert plan['checkpoint_sha256']==m.TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA
-    assert plan['input_ablation']=='raw_rgb' and plan['target_conditioning_enabled'] is False
+    prefix='STACK_RAW_RGB_70000' if profile=='raw-rgb-70000' else 'TARGET_STACK_LOCAL_ALIGNMENT_70000'
+    assert plan['checkpoint']==getattr(m,prefix+'_CHECKPOINT')
+    assert plan['checkpoint_sha256']==getattr(m,prefix+'_MODEL_SHA')
+    assert plan['target_conditioning_enabled'] is False
+    if profile=='raw-rgb-70000':
+        assert plan['input_mode']=='raw_rgb' and plan['raw_trained_checkpoint'] is True
+        assert plan['adapter_target_metadata'] is None and 'input_ablation' not in plan
+        with pytest.raises(SystemExit):m.main(['--model','target-stack','--target-stack-model',profile])
+    else:assert plan['input_ablation']=='raw_rgb'
     assert plan['segmentation_enabled'] is False and plan['image_codec']=='rgb_zlib'
     assert not any(k in plan for k in ('target_id','target_sequence','seed_snapshot_id','segmentation_checkpoint'))
     assert plan['requested_suction_cycles']==4 and plan['automatic_home'] is True
@@ -428,15 +435,20 @@ def test_raw_rgb_plan_keeps_current_weights_without_target_selection(monkeypatch
     with pytest.raises(SystemExit):m.main(['--model','target-stack','--raw-rgb'])
 
 
-def test_raw_rgb_pipe_preserves_pixels_and_uses_no_scene_identity(monkeypatch,tmp_path):
+@pytest.mark.parametrize('profile',['local-alignment-70000','raw-rgb-70000'])
+def test_raw_rgb_pipe_preserves_pixels_and_uses_no_scene_identity(monkeypatch,tmp_path,profile):
     import base64
     import zlib
     from lerobot.bamboo_sorting.runtime import inference as inf
     from lerobot.bamboo_sorting.policy.joint_target import TARGET_IMAGE_KEY
     from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
     m=load_entry(monkeypatch)
+    raw_trained=profile=='raw-rgb-70000'
+    prefix='STACK_RAW_RGB_70000' if raw_trained else 'TARGET_STACK_LOCAL_ALIGNMENT_70000'
+    expected_sha=getattr(m,prefix+'_MODEL_SHA')
     args,sequence,target_mode,approach,mixed,timeout,parser=m.parse_args(
-        ['--model','target-stack','--target-stack-model','local-alignment-70000','--raw-rgb'])
+        ['--model','target-stack','--target-stack-model',profile,'--raw-rgb'])
     _,_,target_options,_=m.resolve_targets(args,sequence,target_mode,parser)
     options=m.resolve_config(args,sequence,target_mode,approach,mixed,timeout,target_options)['pipe_options']
     launches=[]
@@ -445,22 +457,29 @@ def test_raw_rgb_pipe_preserves_pixels_and_uses_no_scene_identity(monkeypatch,tm
         def wait(self,timeout):pass
     monkeypatch.setattr(inf.subprocess,'Popen',Process)
     chunk=[[0.]*7 for _ in range(50)]
-    messages=iter([dict(ready=True,checkpoint_sha256=m.TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
-        contract=target_policy_contract_record(),action_chunk_available=True,target_live=False),
-        dict(id=0,checkpoint_sha256=m.TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
+    messages=iter([dict(ready=True,checkpoint_sha256=expected_sha,
+        contract=joint_contract_record() if raw_trained else target_policy_contract_record(),
+        action_chunk_available=True,target_live=False),
+        dict(id=0,checkpoint_sha256=expected_sha,
              shape=[50,7],action=chunk[0],raw_action=chunk[0],action_chunk=chunk,raw_action_chunk=chunk)])
     monkeypatch.setattr(inf.InferencePipe,'receive',lambda self,timeout:next(messages))
     pipe=inf.InferencePipe(tmp_path,**options)
     try:
-        assert '--target-conditioned' in launches[0][-1]
+        assert ('--target-conditioned' in launches[0][-1]) is not raw_trained
         assert '--target-segmentation-checkpoint' not in launches[0][-1]
         images={'global_rgb':np.arange(480*640*3,dtype=np.uint8).reshape(480,640,3),
                 'grasp_rgb':np.full((480,640,3),91,np.uint8)}
-        result=pipe.predict(0,[0.]*7,images,codec='rgb_zlib',raw_rgb_phase='approach')
+        phase_options={} if raw_trained else {'raw_rgb_phase':'approach'}
+        result=pipe.predict(0,[0.]*7,images,codec='rgb_zlib',**phase_options)
         packet=json.loads(pipe.process.stdin.getvalue())
-        assert set(packet['images'])=={TARGET_IMAGE_KEY,'grasp_rgb'}
-        assert zlib.decompress(base64.b64decode(packet['images'][TARGET_IMAGE_KEY]))==images['global_rgb'].tobytes()
+        global_key='global_rgb' if raw_trained else TARGET_IMAGE_KEY
+        assert set(packet['images'])=={global_key,'grasp_rgb'}
+        assert zlib.decompress(base64.b64decode(packet['images'][global_key]))==images['global_rgb'].tobytes()
         assert zlib.decompress(base64.b64decode(packet['images']['grasp_rgb']))==images['grasp_rgb'].tobytes()
+        if raw_trained:
+            assert not any(k in packet for k in ('target_input','target_contract','target_seed','target_motion'))
+            assert 'input_ablation' not in result
+            return
         assert packet['target_input']==dict(target_id='unselected',frame_id='raw_rgb/0',phase='approach')
         assert 'target_seed' not in packet and 'target_motion' not in packet
         assert result['input_ablation']['outline_applied'] is False
@@ -472,10 +491,13 @@ def test_raw_rgb_pipe_preserves_pixels_and_uses_no_scene_identity(monkeypatch,tm
 
 
 @pytest.mark.parametrize('home_failure',[False,True])
-def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch,home_failure):
+@pytest.mark.parametrize('profile',['local-alignment-70000','raw-rgb-70000'])
+def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch,home_failure,profile):
     from concurrent.futures import Future
     from lerobot.robots.aubo_i10 import aubo_i10
     m=load_entry(monkeypatch)
+    raw_trained=profile=='raw-rgb-70000'
+    expected_checkpoint=(m.STACK_RAW_RGB_70000_CHECKPOINT if raw_trained else m.TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT)
     runtime=m.continuous
     clock=[10.];q=[*START_DEG,0.];enabled=[False]
     workers=[];homes=[];io_commands=[];phases=[]
@@ -503,13 +525,16 @@ def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch
     class Pipe:
         def __init__(self,output,**kw):
             assert not enabled[0]
-            assert kw['checkpoint']==m.TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT
-            assert kw['raw_rgb_ablation'] is True and 'live_target_seed' not in kw
+            assert kw['checkpoint']==expected_checkpoint and 'live_target_seed' not in kw
+            assert kw['target_conditioned'] is not raw_trained
+            assert bool(kw.get('raw_rgb_ablation')) is not raw_trained
             self.index=len(workers);workers.append(self.index);self.requests=0
         def predict(self,index,state,images,**kw):
             assert 'target_input' not in kw and 'target_motion' not in kw
             assert kw['codec']=='rgb_zlib'
-            phase=kw['raw_rgb_phase'];phases.append((self.index,phase))
+            if raw_trained:assert 'raw_rgb_phase' not in kw
+            phase=('transport' if state[-1]==100 else 'approach') if raw_trained else kw['raw_rgb_phase']
+            phases.append((self.index,phase))
             assert phase==('transport' if state[-1]==100 else 'approach')
             if self.requests==0:
                 assert phase=='approach' and images['global_rgb'][0,0,0]==len(homes)
@@ -547,7 +572,7 @@ def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch
     monkeypatch.setattr(runtime,'home_to_start',home)
     monkeypatch.setattr(aubo_i10,'AuboI10Robot',Suction)
     out=tmp_path/'run'
-    assert m.main(['--execute','--model','target-stack','--target-stack-model','local-alignment-70000',
+    assert m.main(['--execute','--model','target-stack','--target-stack-model',profile,
         '--raw-rgb','--cycles','4','--transport-age-aligned','--latency-tolerant',
         '--max-seconds','600','--output',str(out)])==int(home_failure)
     complete=json.loads((out/'complete.json').read_text())
@@ -556,7 +581,9 @@ def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch
     assert io_commands==[100.,0.]*(1 if home_failure else 4)
     assert all((i,'approach') in phases and (i,'transport') in phases for i in workers)
     assert complete['physical_grasp_success'] is None and complete['target_id'] is None
-    assert complete['input_ablation']=='raw_rgb' and enabled[0] is False
+    assert enabled[0] is False
+    if raw_trained:assert complete['input_mode']=='raw_rgb' and 'input_ablation' not in complete
+    else:assert complete['input_ablation']=='raw_rgb'
     if home_failure:assert 'test home failure' in complete['failure']
     else:assert complete['failure'] is None
 

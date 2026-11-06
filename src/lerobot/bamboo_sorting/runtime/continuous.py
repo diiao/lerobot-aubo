@@ -201,8 +201,9 @@ def setup_continuous(state):
             print("实验性目标运动跟随：跟踪失败时保留上次参考，前景支持不足仅作诊断；目标当前像素为空时停稳重观察。请在预览中复核感知提示。", flush=True)
         if args.transport_age_aligned:
             print("本轮搬运按观察年龄取步；保留首次释放边界，到达目标后才松爪。", flush=True)
-    elif state.config.get('raw_rgb_ablation'):
-        print(f"原始双RGB对照：同一70000步模型，不指定竹条或顺序，共{state.config['expected_cycles']}轮抓放；轮间自动归位重新观察。", flush=True)
+    elif state.config.get('raw_rgb'):
+        description = '旧轮廓模型原图输入对照' if state.config['raw_rgb_ablation'] else '无轮廓训练模型'
+        print(f"{description}：不指定竹条或顺序，共{state.config['expected_cycles']}轮抓放；轮间自动归位重新观察。", flush=True)
         print("已关闭目标分割与描边；程序开合周期不等于物理抓取成功，请现场核对并在抓偏时停止。", flush=True)
     print("加载模型、连接相机；尚未发送运动。", flush=True)
     state.pipe = InferencePipe(output, task=state.task, **state.config["pipe_options"])
@@ -323,7 +324,7 @@ def run_targets(state):
             discarded = {"index": state.inflight_index, "discarded_prediction": result,
                 "reason": "observation_precedes_suction_change",
                 "observed_state": state.observed_state, "sensor_times": state.sensor_times}
-            if state.args.model == "baseline-stack" or config.get('raw_rgb_ablation'):
+            if state.args.model == "baseline-stack" or config.get('raw_rgb'):
                 discarded["request_phase"] = state.request_phase
             log(state.trace, discarded)
         if state.future is not None and future_ready:
@@ -396,7 +397,7 @@ def accept_prediction(state, result):
     trace = {"index": state.inflight_index, "task": state.task,
              "observed_state": state.observed_state, "sensor_times": state.sensor_times,
              "prediction": result, "received_at": time.perf_counter()}
-    if state.args.model == "baseline-stack" or config.get('raw_rgb_ablation'):
+    if state.args.model == "baseline-stack" or config.get('raw_rgb'):
         trace["request_phase"] = state.request_phase
     log(state.trace, trace)
     candidate = result["action"]
@@ -510,7 +511,7 @@ def command_goal(state):
         "command_tcp": target_tcp}
     if state.sequence:
         command_record.update(target_id=state.current_target_id, pick_index=state.completed_cycles)
-    elif config.get('raw_rgb_ablation'):
+    elif config.get('raw_rgb'):
         command_record['pick_index'] = state.completed_cycles
     if config["approach"]:
         command_record.update(prediction_index=state.prediction_id, action_selection=state.selection,
@@ -548,7 +549,7 @@ def command_goal(state):
             if state.preview is not None:
                 state.preview.publish(target_id=state.current_target_id, phase="transport",
                     status="gripper command accepted; waiting for next observation", jpeg=None)
-        elif (state.args.model == "baseline-stack" or config.get('raw_rgb_ablation')) and state.goal[-1] == 100 and state.baseline_close_time is None:
+        elif (state.args.model == "baseline-stack" or config.get('raw_rgb')) and state.goal[-1] == 100 and state.baseline_close_time is None:
             # Only a successfully accepted close command starts transport;
             # predicted or planned rows never update this clock.
             state.baseline_close_time = accepted_at
@@ -569,7 +570,7 @@ def command_goal(state):
             if state.sequence:
                 log(state.trace, {"target_cycle_completed": {"target_id": state.current_target_id,
                     "completed_cycles": state.completed_cycles, "physical_grasp_success": None}})
-            elif config.get('raw_rgb_ablation'):
+            elif config.get('raw_rgb'):
                 log(state.trace, {'pick_cycle_completed': {'pick_index': state.completed_cycles-1,
                     'completed_cycles': state.completed_cycles, 'physical_grasp_success': None}})
             if state.completed_cycles == config["expected_cycles"]:
@@ -577,7 +578,7 @@ def command_goal(state):
                 state.reason = ("model_suction_cycle_completed" if config["expected_cycles"] == 1
                                 else "model_suction_cycles_completed")
                 return "done"
-            if state.sequence or config.get('raw_rgb_ablation'):
+            if state.sequence or config.get('raw_rgb'):
                 switch_target(state)
                 return "switch"
         # IO readback can take 175 ms; do not catch up missed ticks.
@@ -596,7 +597,7 @@ def command_goal(state):
 
 def switch_target(state):
     """End the old servo/worker, home, and start the next pick session."""
-    raw_rgb = state.config.get('raw_rgb_ablation', False)
+    raw_rgb = state.config.get('raw_rgb', False)
     state.servo._require_zero(state.motion.setServoMode(False), "disable servo between targets")
     state.servo._wait_servo(False, timeout_s=1.)
     state.owned = False
@@ -655,7 +656,8 @@ def switch_target(state):
     state.deadline = state.next_tick + state.config["max_seconds"]
     if raw_rgb:
         log(state.trace, {'pick_started': {'pick_index': state.completed_cycles,
-            'selected_target_id': None, 'accepted_close_time': None, 'input_ablation': 'raw_rgb'}})
+            'selected_target_id': None, 'accepted_close_time': None,
+            **({'input_ablation': 'raw_rgb'} if state.config['raw_rgb_ablation'] else {'input_mode': 'raw_rgb'})}})
     else:
         log(state.trace, {"target_started": {"target_id": state.current_target_id,
             "remaining_targets": state.sequence[state.completed_cycles:], "accepted_close_time": None}})
@@ -699,7 +701,7 @@ def request_observation(state):
     else:
         state.metadata = None
         state.request_phase = (("transport" if is_transport(state.sensor_times[0], state.baseline_close_time)
-                                else "approach") if state.args.model == "baseline-stack" or config.get('raw_rgb_ablation') else None)
+                                else "approach") if state.args.model == "baseline-stack" or config.get('raw_rgb') else None)
         worker = (partial(infer, state, raw_rgb_phase=state.request_phase)
                   if config.get('raw_rgb_ablation') else partial(infer, state))
         state.future = state.pool.submit(worker, state.inflight_index,
@@ -753,9 +755,11 @@ def finalize_continuous(state):
         "requested_suction_cycles": state.config["expected_cycles"],
         "completed_suction_cycles": state.completed_cycles,
         **({"first_accepted_close_s": state.baseline_close_time}
-           if state.args.model == "baseline-stack" or state.config.get('raw_rgb_ablation') else {}),
+           if state.args.model == "baseline-stack" or state.config.get('raw_rgb') else {}),
         **({'input_ablation': 'raw_rgb', 'target_conditioning_enabled': False}
-           if state.config.get('raw_rgb_ablation') else {}),
+           if state.config.get('raw_rgb_ablation') else
+           {'input_mode': 'raw_rgb', 'target_conditioning_enabled': False}
+           if state.config.get('raw_rgb') else {}),
         "failure": state.failure, "suction_cycle_commanded": state.cycle,
         "physical_grasp_success": None, "video": state.video_result})
     print(f"结束：{state.reason}，记录：{state.output.resolve()}", flush=True)

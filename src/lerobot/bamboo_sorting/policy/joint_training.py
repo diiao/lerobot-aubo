@@ -1,5 +1,6 @@
 """Offline preparation for full-joint AUBO SmolVLA. No hardware imports."""
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -277,6 +278,9 @@ def read_prepared_training_data(path, manifest, *, target_conditioned=False, tar
         if len(inputs) != len(records) or sum(r["frames"] for r in records) != prepared[split]["frames"]:
             raise ValueError("prepared data source count or frame count mismatch")
         for source, record in zip(inputs, records, strict=True):
+            if not target_conditioned and any(k in record for k in (
+                    "target_annotations", "target_frames", "target_episode_metadata")):
+                raise ValueError("raw training data must not contain target inputs")
             if source.get("selection_scenes") != record.get("selection_scenes"):
                 raise ValueError("prepared data scene selection mismatch; audit the new manifest first")
             if source.get("selection_scenes") and record.get("effective_split") != split:
@@ -294,6 +298,40 @@ def read_prepared_training_data(path, manifest, *, target_conditioned=False, tar
                 raise ValueError("prepared target frame coverage mismatch")
     require_joint_normalization_stats(prepared["train_only_stats"])
     return prepared
+
+
+def prepare_raw_training_data(audited_path, audited_manifest, raw_manifest):
+    """Reuse audited captures/splits/stats while explicitly removing outline inputs.
+
+    This is a new dataset view, not a fresh content hash audit. Source manifests
+    must differ only by their annotation references; raw interfaces are checked
+    by the dataset loaders before training. Original files are never rewritten.
+    """
+    prepared = read_prepared_training_data(audited_path, audited_manifest, target_conditioned=True)
+    original, raw = map(read_data_manifest, (audited_manifest, raw_manifest))
+    result = copy.deepcopy(prepared)
+    result["contract"] = joint_contract_record()
+    for split in ("train", "validation"):
+        before = original[split] if isinstance(original[split], list) else [original[split]]
+        after = raw[split] if isinstance(raw[split], list) else [raw[split]]
+        expected = [{k: v for k, v in item.items() if k != "target_annotations"} for item in before]
+        if after != expected:
+            raise ValueError("raw manifest must preserve audited source order, scenes and demo scopes")
+        for record in result[split].get("sources", [result[split]]):
+            metadata = record.pop("target_episode_metadata")
+            if {m["episode_index"] for m in metadata} != set(record["episodes"]):
+                raise ValueError("audited episode metadata coverage differs")
+            record["episode_metadata"] = [dict(episode_index=m["episode_index"], scene_id=m["scene_id"])
+                                          for m in metadata]
+            record.pop("target_annotations")
+            record.pop("target_frames")
+    if set(result["train"]["scenes"]) & set(result["validation"]["scenes"]):
+        raise ValueError("scene leakage between training and validation")
+    result["preparation_provenance"] = dict(mode="raw_rgb_view_of_audited_captures",
+        audited_data=str(Path(audited_path).resolve()), audited_manifest=str(Path(audited_manifest).resolve()),
+        source_selection_unchanged=True, train_only_stats_unchanged=True,
+        content_hashes_reused=True, fresh_content_hash_audit=False, original_annotations_preserved=True)
+    return result
 
 
 def load_prepared_dataset(record, *, video_backend="pyav", target_outline_width_px=2):

@@ -539,6 +539,73 @@ def test_thin_prepared_data_requires_explicit_width_and_accepts_original_source_
     assert read_prepared_training_data(saved,manifest,**kwargs)==value
 
 
+def test_raw_preflight_preserves_audited_captures_stats_and_refuses_outline_inputs(tmp_path):
+    import copy
+    import json
+    from lerobot.bamboo_sorting.aubo_joint_contract import joint_contract_record
+    from lerobot.bamboo_sorting.policy.joint_target_policy import target_policy_contract_record
+    from lerobot.bamboo_sorting.policy.joint_training import (
+        prepare_raw_training_data, read_data_manifest, read_prepared_training_data,
+    )
+    from tests.bamboo_sorting.capture_fakes import stats
+    sources={k:[dict(root=k,evidence_root=k+'_evidence',target_annotations=k+'.json')]
+             for k in ('train','validation')}
+    target_manifest=tmp_path/'target.json';raw_manifest=tmp_path/'raw.json'
+    target_manifest.write_text(json.dumps(dict(schema_version='AuboJointTrainingSourcesV1',**sources)))
+    raw_sources=copy.deepcopy(sources)
+    for split in sources:
+        (tmp_path/split).mkdir();(tmp_path/(split+'_evidence')).mkdir()
+        (tmp_path/(split+'.json')).write_text('{}')
+        raw_sources[split][0].pop('target_annotations')
+    raw_manifest.write_text(json.dumps(dict(schema_version='AuboJointTrainingSourcesV1',**raw_sources)))
+    resolved=read_data_manifest(target_manifest)
+    target=dict(contract=target_policy_contract_record(),train_only_stats=stats(),
+        **{split:dict(sources=[dict(**resolved[split][0],episodes=[0],frames=1,
+            target_frames=[dict(episode_index=0,frame_index=0)],dataset_sha256={'video':'audited'},
+            target_episode_metadata=[dict(episode_index=0,scene_id=split,target_id='A')])],
+            frames=1,scenes=[split]) for split in sources})
+    audit=tmp_path/'target_audit.json';audit.write_text(json.dumps(target))
+    original=audit.read_bytes()
+    raw=prepare_raw_training_data(audit,target_manifest,raw_manifest)
+    assert raw['contract']==joint_contract_record() and raw['train_only_stats']==target['train_only_stats']
+    for split in sources:
+        record=raw[split]['sources'][0]
+        assert record['episode_metadata']==[dict(episode_index=0,scene_id=split)]
+        assert record['dataset_sha256']=={'video':'audited'}
+        assert not any(k.startswith('target_') for k in record)
+    assert audit.read_bytes()==original and (tmp_path/'train.json').is_file()
+    saved=tmp_path/'raw_audit.json';saved.write_text(json.dumps(raw))
+    assert read_prepared_training_data(saved,raw_manifest)==raw
+    raw['train']['sources'][0]['target_frames']=[{}]
+    saved.write_text(json.dumps(raw))
+    with pytest.raises(ValueError,match='must not contain target inputs'):
+        read_prepared_training_data(saved,raw_manifest)
+    raw_sources['train'][0]['selection_scenes']=['different-pile']
+    raw_manifest.write_text(json.dumps(dict(schema_version='AuboJointTrainingSourcesV1',**raw_sources)))
+    with pytest.raises(ValueError,match='preserve audited source order'):
+        prepare_raw_training_data(audit,target_manifest,raw_manifest)
+
+
+def test_raw_periodic_plan_and_explicit_preflight_conversion_do_not_start_training(tmp_path,capsys):
+    import json
+    entry=_entry()
+    assert entry.main(['--data-manifest','raw.json','--validation-every','10000',
+        '--local-demo-fraction','.5','--steps','60000','--output',str(tmp_path/'training')])==0
+    plan=json.loads(capsys.readouterr().out)
+    assert plan['target_conditioned'] is False and plan['checkpoint_retention']=='verified_best_and_final'
+    assert not (tmp_path/'training').exists()
+    manifest=tmp_path/'raw.json'
+    manifest.write_text(json.dumps(dict(schema_version='AuboJointTrainingSourcesV1',
+        train=[dict(root='train',evidence_root='train_evidence')],
+        validation=[dict(root='validation',evidence_root='validation_evidence')])))
+    options=['--stage','preflight','--data-manifest',str(manifest),
+        '--audited-target-data','audit.json','--audited-target-manifest','target.json',
+        '--output',str(tmp_path/'preflight')]
+    assert entry.parse_args(options).audited_target_data==Path('audit.json')
+    for extra in (['--target-conditioned'],['--stage','train'],['--prepared-data','old.json']):
+        with pytest.raises(SystemExit):entry.parse_args(options+extra)
+
+
 def test_balanced_sampling_is_by_scope_not_folder_or_episode_length():
     from lerobot.bamboo_sorting.policy.joint_training import make_training_sampler, training_sampling_plan
     record = {"sources": [{"frames": 100}, {"frames": 900},

@@ -18,6 +18,10 @@ def parse_args(argv=None):
     parser.add_argument("--data-manifest", type=Path, help="Explicit training and validation sources")
     parser.add_argument("--prepared-data", type=Path,
                         help="Reuse an audited data_preflight.json with the same manifest; no repeated full hashing")
+    parser.add_argument("--audited-target-data", type=Path,
+                        help="Raw preflight only: derive a raw RGB view from an existing target data audit")
+    parser.add_argument("--audited-target-manifest", type=Path,
+                        help="Original manifest matching --audited-target-data; originals remain unchanged")
     parser.add_argument("--target-conditioned", action="store_true",
                         help="Approach-only target outline; every source needs reviewed target_annotations")
     parser.add_argument("--target-outline-width-px", type=int, choices=(1, 2), default=2,
@@ -70,8 +74,8 @@ def parse_args(argv=None):
     if len(set(args.validation_seeds)) != len(args.validation_seeds):
         parser.error("validation-seeds must be distinct")
     if args.validation_every:
-        if args.stage not in ("plan", "train") or not args.target_conditioned or not args.data_manifest:
-            parser.error("periodic selection requires target-conditioned manifest plan/train")
+        if args.stage not in ("plan", "train") or not args.data_manifest:
+            parser.error("periodic selection requires manifest plan/train")
         if args.checkpoint_steps:
             parser.error("periodic best/final retention cannot also retain explicit checkpoint-steps")
     if args.resume_training_state is not None:
@@ -82,6 +86,10 @@ def parse_args(argv=None):
             parser.error("resume-training-state preserves the saved learning rate; do not override it")
     if args.prepared_data is not None and (args.data_manifest is None or args.stage not in ("plan", "train", "evaluate")):
         parser.error("prepared-data requires a manifest and plan/train/evaluate")
+    if args.audited_target_data is not None or args.audited_target_manifest is not None:
+        if (not all((args.audited_target_data, args.audited_target_manifest, args.data_manifest))
+                or args.stage not in ("plan", "preflight") or args.target_conditioned or args.prepared_data):
+            parser.error("audited target conversion requires both audited-target options, a raw manifest and plan/preflight")
     if args.target_conditioned and args.stage in ("preflight", "train", "evaluate") and args.data_manifest is None:
         parser.error("--target-conditioned requires --data-manifest")
     if args.data_manifest and any(getattr(args, name) is not None for name in
@@ -110,7 +118,8 @@ def parse_args(argv=None):
             if any(output == p or p in output.parents or output in p.parents for p in protected):
                 parser.error("output must be independent of manifest and source roots")
         for path in (args.train_root, args.validation_root, args.train_evidence, args.validation_evidence, args.prepared_data,
-                     args.base_path, args.vlm_path, args.checkpoint, args.resume_training_state):
+                     args.base_path, args.vlm_path, args.checkpoint, args.resume_training_state,
+                     args.audited_target_data, args.audited_target_manifest):
             if path is not None and (output == path.resolve() or path.resolve() in output.parents
                                      or output in path.resolve().parents):
                 parser.error("output must be independent of input roots")
@@ -177,11 +186,15 @@ def main(argv=None):
     if args.stage == "plan":
         return 0
     from lerobot.bamboo_sorting.policy.joint_training import (
-        prepare_training_data, prepare_training_manifest, read_prepared_training_data, training_sampling_plan, write_json,
+        prepare_training_data, prepare_training_manifest, prepare_raw_training_data,
+        read_prepared_training_data, training_sampling_plan, write_json,
     )
     prepared = None
     if args.stage != "smoke":
-        if args.prepared_data:
+        if args.audited_target_data:
+            prepared = prepare_raw_training_data(args.audited_target_data, args.audited_target_manifest,
+                                                 args.data_manifest)
+        elif args.prepared_data:
             prepared = read_prepared_training_data(args.prepared_data, args.data_manifest,
                                                   target_conditioned=args.target_conditioned,
                                                   target_outline_width_px=args.target_outline_width_px)

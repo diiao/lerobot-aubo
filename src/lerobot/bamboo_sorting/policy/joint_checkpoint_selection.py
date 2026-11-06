@@ -46,15 +46,29 @@ def build_monitor_plan(record, *, points_per_phase=8):
                       enumerate(zip(data["episode_index"], data["frame_index"], strict=True))}
         if len(identities) != len(data["frame_index"]):
             raise ValueError("duplicate expert frame identity")
-        metadata = {e["episode_index"]: e for e in source["target_episode_metadata"]}
+        if "target_frames" in source:
+            frame_records = source["target_frames"]
+            episode_metadata = source["target_episode_metadata"]
+        else:
+            episode_metadata = source.get("episode_metadata")
+            if episode_metadata is None:
+                capture = json.loads((Path(source["evidence_root"]) / "session.json").read_text())
+                episode_metadata = [dict(episode_index=a["episode_index"], scene_id=a["metadata"]["scene_id"])
+                    for a in capture["attempts"] if a["status"] == "saved_pending_finalize"
+                    and a["episode_index"] in source["episodes"]]
+            frame_records = [dict(episode_index=ep, frame_index=frame)
+                             for ep in source["episodes"] for episode, frame in identities if episode == ep]
+        metadata = {e["episode_index"]: e for e in episode_metadata}
+        if len(metadata) != len(episode_metadata) or set(metadata) != set(source["episodes"]):
+            raise ValueError("selected episode metadata coverage changed")
         positions = {}
-        for i, row in enumerate(source["target_frames"]):
+        for i, row in enumerate(frame_records):
             positions.setdefault(row["episode_index"], []).append(i)
-        if set(positions) != set(source["episodes"]) or len(source["target_frames"]) != source["frames"]:
+        if set(positions) != set(source["episodes"]) or len(frame_records) != source["frames"]:
             raise ValueError("selected episode/frame coverage changed")
         for ep in source["episodes"]:
             rows = positions[ep]
-            frames = np.asarray([source["target_frames"][i]["frame_index"] for i in rows])
+            frames = np.asarray([frame_records[i]["frame_index"] for i in rows])
             selected = [identities[(ep, int(f))] for f in frames]
             states = np.asarray(data["observation.state"], dtype=float)[selected]
             actions = np.asarray(data["action"], dtype=float)[selected]

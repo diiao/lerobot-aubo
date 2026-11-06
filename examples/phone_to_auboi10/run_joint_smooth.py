@@ -16,6 +16,8 @@ from lerobot.bamboo_sorting.model_profiles import (
     MIXED_REMOTE_ROOT, TARGET_STACK_REMOTE_ROOT,
     TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT, TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
     TARGET_STACK_LOCAL_ALIGNMENT_70000_SERVICE_ROOT, TARGET_STACK_LOCAL_ALIGNMENT_70000_PYTHONPATH,
+    STACK_RAW_RGB_70000_CHECKPOINT, STACK_RAW_RGB_70000_MODEL_SHA,
+    STACK_RAW_RGB_70000_SERVICE_ROOT, STACK_RAW_RGB_70000_PYTHONPATH,
 )
 from lerobot.bamboo_sorting.policy.joint_target_policy import TargetInputSession
 from lerobot.bamboo_sorting.runtime.continuous import MAX_TARGET_REOBSERVATIONS, execute_continuous
@@ -39,10 +41,10 @@ def parse_args(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
                    help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
-    p.add_argument('--target-stack-model',choices=('original','three-four','local-alignment','local-alignment-70000','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
-                   help='2px defaults to three-four; local-alignment selects 60000 steps, local-alignment-70000 selects the continued best; PI05 choices remain separate')
+    p.add_argument('--target-stack-model',choices=('original','three-four','local-alignment','local-alignment-70000','raw-rgb-70000','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
+                   help='2px defaults to three-four; local-alignment-70000 is the old continued best; raw-rgb-70000 is the raw-trained best and requires --raw-rgb')
     p.add_argument('--raw-rgb',action='store_true',
-                   help='local-alignment-70000 input ablation: unchanged checkpoint, raw dual RGB, no selected target or order; home between cycles')
+                   help='Raw dual RGB, no selected target or order, home between cycles; raw-rgb-70000 uses the raw-trained model, local-alignment-70000 keeps the old input ablation')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
     p.add_argument('--target-preview',action='store_true',help='Read-only localhost view of same-request RGB and predicted target outline')
     p.add_argument('--track-target-motion',action='store_true',help='Experimental target-stack RGB motion references with current-foreground checks')
@@ -74,9 +76,12 @@ def parse_args(argv=None):
                                    and args.target_outline_width_px == 2 else 'original')
     target_mode=args.model in ('target-pair','target-stack') and not args.raw_rgb
     stack=args.model in ('target-stack','baseline-stack')
+    if args.target_stack_model=='raw-rgb-70000' and not args.raw_rgb:
+        p.error('--target-stack-model raw-rgb-70000 requires --raw-rgb')
     if args.raw_rgb:
-        if args.model!='target-stack' or args.target_stack_model!='local-alignment-70000' or args.target_outline_width_px!=2:
-            p.error('--raw-rgb requires target-stack local-alignment-70000 with its saved 2px checkpoint contract')
+        if (args.model!='target-stack' or args.target_stack_model not in ('local-alignment-70000','raw-rgb-70000')
+                or args.target_outline_width_px!=2):
+            p.error('--raw-rgb requires target-stack with local-alignment-70000 or raw-rgb-70000')
         forbidden=[name for name,value in (
             ('--target-snapshot',args.target_snapshot),('--target-selections',args.target_selections),
             ('--target-id',args.target_id),('--target-sequence',args.target_sequence),
@@ -149,7 +154,12 @@ def parse_args(argv=None):
 def resolve_targets(args, sequence, target_mode, parser):
     """Load reviewed seeds and model options; no hardware or model access."""
     target_session=None;target_seed=None;target_options=None;target_setups=None
-    if args.raw_rgb:
+    if args.raw_rgb and args.target_stack_model=='raw-rgb-70000':
+        target_options=dict(remote_root=TARGET_STACK_REMOTE_ROOT,
+            checkpoint=STACK_RAW_RGB_70000_CHECKPOINT,expected_sha256=STACK_RAW_RGB_70000_MODEL_SHA,
+            inference_script=STACK_RAW_RGB_70000_SERVICE_ROOT+'/joint_inference_stdio.py',
+            pythonpath=STACK_RAW_RGB_70000_PYTHONPATH,target_conditioned=False,return_action_chunk=True)
+    elif args.raw_rgb:
         target_options=dict(remote_root=TARGET_STACK_REMOTE_ROOT,
             checkpoint=TARGET_STACK_LOCAL_ALIGNMENT_70000_CHECKPOINT,
             expected_sha256=TARGET_STACK_LOCAL_ALIGNMENT_70000_MODEL_SHA,
@@ -228,7 +238,7 @@ def resolve_config(args, sequence, target_mode, approach, mixed, inference_timeo
         max_control_gap=max_control_gap,max_state_age=max_state_age,mixed=mixed,
         model_sha=model_sha,pipe_options=pipe_options,inference_timeout_s=inference_timeout_s,
         approach=approach,lossless_images=target_mode or args.model=='baseline-stack' or args.raw_rgb,
-        raw_rgb_ablation=args.raw_rgb,
+        raw_rgb=args.raw_rgb,raw_rgb_ablation=bool(args.raw_rgb and target_options.get('raw_rgb_ablation',False)),
         motion_limit_scale=args.motion_limit_scale,
         hold_action_until_replan=args.hold_action_until_replan,
         observe_after_arrival=args.observe_after_arrival,execution_paced=args.execution_paced)
@@ -289,7 +299,7 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                 empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
         if args.target_stack_model != 'original':
             plan['target_stack_model']=args.target_stack_model
-        if args.target_stack_model in ('local-alignment','local-alignment-70000'):
+        if args.target_stack_model in ('local-alignment','local-alignment-70000','raw-rgb-70000'):
             plan['inference_pythonpath']=target_options['pythonpath']
         if args.target_stack_model in ('pi05-29000','pi05-fp32-128','pi05-fp32-21000'):
             plan.update(inference_python=target_options['remote_python'],
@@ -299,14 +309,18 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                 plan.update(inference_precision='FP32 expert weights; BF16 autocast from saved precision contract',
                             inference_precision_contract=target_options['expected_precision_contract'])
     if args.raw_rgb:
-        plan.update(input_ablation='raw_rgb',target_conditioning_enabled=False,
+        plan.update(target_conditioning_enabled=False,
             checkpoint=target_options['checkpoint'],inference_script=target_options['inference_script'],
             target_input='no selected target or order; raw global_rgb and grasp_rgb plus unchanged 7D state/task',
             segmentation_enabled=False,image_codec='rgb_zlib',
-            adapter_target_metadata='constant unselected identity for saved adapter validation only; not a policy input',
             transport_phase_source='first accepted close command clock; bound to each request at capture',
             automatic_home=expected_cycles>1,homing_between_cycles_only=True,
             max_seconds_scope='per_cycle',inference_session_per_cycle=True)
+        if config['raw_rgb_ablation']:
+            plan.update(input_ablation='raw_rgb',
+                adapter_target_metadata='constant unselected identity for saved adapter validation only; not a policy input')
+        else:
+            plan.update(input_mode='raw_rgb',raw_trained_checkpoint=True,adapter_target_metadata=None)
     plan.update(target_preview=args.target_preview,track_target_motion=args.track_target_motion)
     if args.hold_action_until_replan:
         plan.update(hold_action_until_replan=True,

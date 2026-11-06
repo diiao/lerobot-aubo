@@ -120,6 +120,15 @@ def test_real_parquet_monitor_covers_all_scenes_phases_and_event_boundaries(tmp_
     assert plan["scenes"] == ["a"] and plan["episodes"] == 1 and plan["frames"] < 180
     assert {r["phase"] for r in plan["observations"]} == set(("initial_hold", "onset", "approach", "preclose", "transport", "release"))
     assert {61, 70, 79, 80, 81, 90, 131, 140, 149, 150, 151, 160} <= set(plan["indices"])
+    source.pop('target_frames')
+    source['episode_metadata']=source.pop('target_episode_metadata')
+    assert build_monitor_plan(record)==plan  # Same held-out observations, with no mask inputs.
+    source.pop('episode_metadata')
+    source['evidence_root']=str(tmp_path/'evidence')
+    evidence=Path(source['evidence_root']);evidence.mkdir()
+    (evidence/'session.json').write_text(json.dumps(dict(attempts=[dict(
+        episode_index=0,status='saved_pending_finalize',metadata=dict(scene_id='a'))])))
+    assert build_monitor_plan(record)==plan  # Fresh raw preflights can use capture metadata directly.
     values["action"] = np.zeros((180, 7)).tolist()
     pq.write_table(pa.table(values), root / "data/chunk-000/file-000.parquet")
     with pytest.raises(ValueError, match="one expert close"):
