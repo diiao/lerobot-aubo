@@ -41,8 +41,8 @@ def parse_args(argv=None):
     p.add_argument('--target-id',help='Explicit target identity, e.g. s-001')
     p.add_argument('--target-outline-width-px',type=int,choices=(1,2),default=2,
                    help='target-stack: 1 selects the thin-outline final; default 2 matches the selected original or three-four model')
-    p.add_argument('--target-stack-model',choices=('original','three-four','local-alignment','local-alignment-70000','raw-rgb-70000','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
-                   help='2px defaults to three-four; local-alignment-70000 is the old continued best; raw-rgb-70000 is the raw-trained best and requires --raw-rgb')
+    p.add_argument('--target-stack-model',choices=('original','three-four','local-alignment','local-alignment-70000','target-outline-100000','raw-rgb-70000','pi05-29000','pi05-fp32-128','pi05-fp32-21000'),default=None,
+                   help='2px defaults to three-four; target-outline-100000 selects the new target-outline best; raw-rgb-70000 requires --raw-rgb')
     p.add_argument('--raw-rgb',action='store_true',
                    help='Raw dual RGB, no selected target or order, home between cycles; raw-rgb-70000 uses the raw-trained model, local-alignment-70000 keeps the old input ablation')
     p.add_argument('--target-sequence',nargs='+',help='target-stack: ordered remaining targets; automatically home between picks')
@@ -299,7 +299,7 @@ def build_plan(args, sequence, target_mode, target_seed, target_options, config)
                 empty_target_policy='stop servo, clear actions, preserve gripper; fresh observations only')
         if args.target_stack_model != 'original':
             plan['target_stack_model']=args.target_stack_model
-        if args.target_stack_model in ('local-alignment','local-alignment-70000','raw-rgb-70000'):
+        if args.target_stack_model in ('local-alignment','local-alignment-70000','target-outline-100000','raw-rgb-70000'):
             plan['inference_pythonpath']=target_options['pythonpath']
         if args.target_stack_model in ('pi05-29000','pi05-fp32-128','pi05-fp32-21000'):
             plan.update(inference_python=target_options['remote_python'],

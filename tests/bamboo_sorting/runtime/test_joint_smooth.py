@@ -591,6 +591,7 @@ def test_raw_rgb_four_cycles_reobserve_and_reset_after_home(tmp_path,monkeypatch
 @pytest.mark.parametrize('profile,prefix', [
     ('local-alignment','TARGET_STACK_LOCAL_ALIGNMENT'),
     ('local-alignment-70000','TARGET_STACK_LOCAL_ALIGNMENT_70000'),
+    ('target-outline-100000','TARGET_STACK_OUTLINE_100000'),
 ])
 def test_local_alignment_selects_weights_and_saved_processors_without_changing_control(monkeypatch,capsys,tmp_path,profile,prefix):
     m=load_entry(monkeypatch)
@@ -617,10 +618,10 @@ def test_local_alignment_selects_weights_and_saved_processors_without_changing_c
     assert new['inference_pythonpath']==getattr(profiles,prefix+'_PYTHONPATH')
     assert old['checkpoint']==profiles.TARGET_STACK_THREE_FOUR_CHECKPOINT
     changed={'checkpoint','checkpoint_sha256','target_stack_model','inference_script','inference_pythonpath'}
-    if profile=='local-alignment-70000':changed.add('segmentation_score_threshold')
+    if profile in ('local-alignment-70000','target-outline-100000'):changed.add('segmentation_score_threshold')
     assert {k for k in new if new[k]!=old.get(k)}==changed
     assert old['segmentation_score_threshold']==.5
-    assert new['segmentation_score_threshold']==(.2 if profile=='local-alignment-70000' else .5)
+    assert new['segmentation_score_threshold']==(.2 if profile in ('local-alignment-70000','target-outline-100000') else .5)
     assert new['control_hz']==25 and new['max_camera_age_ms']==400
     assert new['max_prediction_age_s']==1.5 and new['watchdog_s']==1.5
     assert new['target_sequence']==['C','A','B']

@@ -71,6 +71,16 @@ TARGET_STACK_LOCAL_ALIGNMENT_70000_PYTHONPATH = (
     TARGET_STACK_REMOTE_ROOT + '/artifacts/training/stack_local_alignment/continuation/source_snapshot/src'
     ':/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/deps'
 )
+TARGET_STACK_OUTLINE_100000_CHECKPOINT = (
+    TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_target_outline_100k_smolvla/checkpoints/best_step_100000'
+)
+TARGET_STACK_OUTLINE_100000_MODEL_SHA = '85b9783d26711afce5db7ff2a0c1842982fe9b7c6b8be9f34ec45de92c2bebfd'
+TARGET_STACK_OUTLINE_100000_SERVICE_ROOT = TARGET_STACK_REMOTE_ROOT + '/artifacts/joint_stack_target_outline_100000_live_service'
+TARGET_STACK_OUTLINE_100000_SEGMENTATION_SCORE_THRESHOLD = .2
+TARGET_STACK_OUTLINE_100000_PYTHONPATH = (
+    TARGET_STACK_REMOTE_ROOT + '/artifacts/training/stack_target_outline_100k/source_snapshot/src'
+    ':/home/rentao/program/lerobot-aubo-strip-segmentation-20261005/deps'
+)
 STACK_RAW_RGB_70000_CHECKPOINT = (
     TARGET_STACK_REMOTE_ROOT + '/outputs/joint_stack_raw_rgb_smolvla/checkpoints/best_step_070000'
 )
